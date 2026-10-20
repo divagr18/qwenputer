@@ -546,7 +546,7 @@ class RvChat:
                 for n in st["heads"]:
                     nv = len(n.vheads())
                     if n.name in self.c.store.persistent:
-                        S_ = st["S"][0, j:j + nv].float().cpu().numpy()
+                        S_ = st["S"][0, j:j + nv].detach().float().cpu().numpy()
                         out[n.name] = [{int(r): S_[x, r].astype(np.float64)
                                         for r in np.nonzero(np.abs(S_[x]).sum(1))[0]}
                                        for x in range(nv)]
@@ -560,7 +560,7 @@ class RvChat:
                 st = obj.layers[L].recurrent_states[0]
                 vs = []
                 for x in range(len(n.vheads())):
-                    S_ = st[0, j * r_ + x].float().cpu().numpy()
+                    S_ = st[0, j * r_ + x].detach().float().cpu().numpy()
                     vs.append({int(r): S_[r].astype(np.float64)
                                for r in np.nonzero(np.abs(S_).sum(1))[0]})
                 out[name] = vs
