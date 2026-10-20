@@ -66,7 +66,16 @@ for _n, _s in FAMILY_SIZES:
 CTRL = _base
 CONTROL_NAMES = ["NT", "ST0", "ST1", "SS0", "SS1", "HALT", "GO", "SC"]
 CONTROLS = {n: CTRL + i for i, n in enumerate(CONTROL_NAMES)}
-VOCAB = CTRL + len(CONTROL_NAMES)
+# the object store's chip tokens (rv/store.py), after the controls: SP probe (dir slot), SN / SA
+# a put / append into chunk g, SO an order entry, SG a get's chunk, SL a list index, SD a delete
+STORE_FAMILY_SIZES = [("SP", 1024), ("SN", 1024), ("SA", 1024), ("SO", 1024), ("SG", 1024),
+                      ("SL", 1024), ("SD", 1)]
+STORE_FAMILIES = {}
+_base = CTRL + len(CONTROL_NAMES)
+for _n, _s in STORE_FAMILY_SIZES:
+    STORE_FAMILIES[_n] = (_base, _s)
+    _base += _s
+VOCAB = _base
 FINAL = {"F0", "F1", "F2", "J", "R", "BYTE", "NT", "ST0", "ST1", "SS0", "SS1", "HALT"}
 PAYLOAD_BITS = {n: (s - 1).bit_length() for n, s in FAMILY_SIZES}
 
@@ -98,7 +107,11 @@ def family(t: int) -> tuple[str, int]:
     if t >= CTRL:
         if t >= VOCAB:
             raise ValueError(f"not an rv token: {t}")
-        return CONTROL_NAMES[t - CTRL], 0
+        if t < CTRL + len(CONTROL_NAMES):
+            return CONTROL_NAMES[t - CTRL], 0
+        for name, (base, size) in STORE_FAMILIES.items():
+            if base <= t < base + size:
+                return name, t - base
     for name, (base, size) in FAMILIES.items():
         if base <= t < base + size:
             return name, t - base
@@ -108,7 +121,7 @@ def family(t: int) -> tuple[str, int]:
 def tok(name: str, payload: int = 0) -> int:
     if name in CONTROLS:
         return CONTROLS[name]
-    base, size = FAMILIES[name]
+    base, size = FAMILIES[name] if name in FAMILIES else STORE_FAMILIES[name]
     assert 0 <= payload < size, (name, payload)
     return base + payload
 

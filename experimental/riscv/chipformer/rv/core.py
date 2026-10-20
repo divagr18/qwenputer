@@ -47,7 +47,7 @@ from chipformer.rv import spec as S
 T4B = Target(key_heads=16, value_heads=32, intermediate=9216)  # Qwen3.5-4B's layers
 # output family ids: the chip families and controls, then Q (P3: a printable Qwen token, the echo
 # of a putchar; its payload indexes the bridge's printable tokens)
-OUT_NAMES = list(S.FAMILIES) + S.CONTROL_NAMES + ["Q"]
+OUT_NAMES = list(S.FAMILIES) + S.CONTROL_NAMES + ["Q"] + list(S.STORE_FAMILIES)
 FAM_ID = {n: i for i, n in enumerate(OUT_NAMES)}
 NFAM = (len(OUT_NAMES) - 1).bit_length()  # family id bits in the output code
 NPAY = 16  # payload bits in the output code
@@ -296,11 +296,14 @@ def add_nibbles(c, a_bits, b_bits, n_nib, lits, name):
     return r
 
 
-def build(target: Target | None = None, text=None) -> RvCore:
+def build(target: Target | None = None, text=None, store=None) -> RvCore:
     """The circuit; with ``text`` (P3) also the bridge to Qwen's text: a tool call's text goes
     into a buffer the program reads (TEXT_ADDR), ``</tool_call>`` starts a run (GO), putchar
-    output is echoed as Qwen tokens, and the circuit owns the positions of a run."""
+    output is echoed as Qwen tokens, and the circuit owns the positions of a run. With
+    ``store`` (a store.Config, needs ``text``) also the object store (store.py, store_rv.py): a
+    store call's ``</tool_call>`` goes to the store instead of the machine."""
     c = RvCore(target, text)
+    c.store = None
     no_text = c.is_text if text else 0  # text tokens do not count as tokens of a record
     one, fam, pay, kk = c.one, c.fam, c.pay, c.kk
     isV, isJR = fam["V"], fam["J"] + fam["R"]
@@ -1117,18 +1120,30 @@ def build(target: Target | None = None, text=None) -> RvCore:
         case([jeq(1 + k), any_fault], "HEX", pc_bits[4 * (7 - k):4 * (8 - k)])
     case([jeq(9), any_fault], "HALT")
     owner = None
+    st = None
     if text:
         cases.append(([fam["BYTE"]], "Q", c.pay["BYTE"]))
         nl = text.printable_index(text.NL)  # a run ends in a newline
         cases.append(([fam["HALT"]], "Q", [one if nl >> i & 1 else Expr() for i in range(9)]))
         cases.append(([c.isTCC], "GO", 0))
+        not_store = []
+        if store is not None:
+            from chipformer.rv import store_rv
+
+            st = store_rv.build(c, store, armed)
+            c.store = st
+            not_store = [one - st.call]
         # who predicts the next token: the circuit from </tool_call> through a run's last echo
-        owner = c.node(c.t_and([running]) + c.t_and([fam["HALT"]])
-                       + c.t_and([c.isTCC, one - running]), "owner")
+        # (a store call's answer is the store's: S)
+        rv_owner = c.node(c.t_and([running]) + c.t_and([fam["HALT"]])
+                          + c.t_and([c.isTCC, one - running, *not_store]), "owner")
+        owner = rv_owner + st.S if st is not None else rv_owner
     c.owner = owner
-    own = [owner] if text else []
-    fam_cases = [(l_, FAM_ID[fn]) for l_, fn, _ in cases]
-    pay_cases = [(l_, pl) for l_, _, pl in cases if not isinstance(pl, int)]
+    own = [rv_owner] if text else []
+    # the core's cases hold only where the core owns the position; the store's carry S
+    all_cases = [(l_ + own, fn, pl) for l_, fn, pl in cases] + (st.cases if st else [])
+    fam_cases = [(l_, FAM_ID[fn]) for l_, fn, _ in all_cases]
+    pay_cases = [(l_, pl) for l_, _, pl in all_cases if not isinstance(pl, int)]
     if text:
         # merged: no separate select dims (they would outlive the exit and reach Qwen's norms);
         # predictions read the exit's code dims
@@ -1142,18 +1157,36 @@ def build(target: Target | None = None, text=None) -> RvCore:
     # the exit: the input code is cleared, and the same cases write KAPPA * (2 * bit - 1) into
     # the code dims in the output stage itself (no extra layer); a stock output head tied to the
     # embedding then scores every token by how many code bits agree
-    for e in c.code:
+    id_code = st.yc if st else []
+    for e in c.code + id_code:
         c.ffn([(-1, one, e), (1, one, -1 * e)], "code.clear", into=e)
+    # an any-print (the store printing a token by its id) leaves the class code at 0 and puts
+    # KAPPA * (2 bit - 1) of the token's id into the id code dims
     for i, e in enumerate(c.code):
         cs, bit = (fam_cases, i) if i < NFAM else (pay_cases, i - NFAM)
         terms = c.t_and(own, -KAPPA) if text else c.t_const(-KAPPA)
+        if st:  # -KAPPA where the store owns the position, but 0 at its any-prints
+            terms += c.t_and([st.S], -KAPPA)
+            for lits, _ in st.any_cases:
+                terms += c.t_and(lits, KAPPA)
         for lits, val_ in cs:
             if isinstance(val_, int):
                 if val_ >> bit & 1:
-                    terms += c.t_and(lits + own, 2 * KAPPA)
+                    terms += c.t_and(lits, 2 * KAPPA)
             elif bit < len(val_) and val_[bit].terms:
-                terms += c.t_and([*lits, val_[bit]] + own, 2 * KAPPA)
+                terms += c.t_and([*lits, val_[bit]], 2 * KAPPA)
         c.ffn(terms, f"exit.code{i}", into=e, min_level=exit_min)
+    for i, e in enumerate(id_code):
+        terms = []
+        for lits, bits in st.any_cases:
+            v = bits[i]
+            terms += c.t_and(lits, -KAPPA)
+            if isinstance(v, int):
+                if v:
+                    terms += c.t_and(lits, 2 * KAPPA)
+            else:
+                terms += c.t_and([*lits, v], 2 * KAPPA)
+        c.ffn(terms, f"exit.id{i}", into=e, min_level=exit_min)
     c.keep = [next(iter(e.terms)) for e in c.code]
     if text:
         # tau: 0 wherever the circuit predicts (chip tokens: -1 + 1; owned text: TAU - TAU), the
@@ -1161,6 +1194,7 @@ def build(target: Target | None = None, text=None) -> RvCore:
         c.ffn([(1, c.mu, one)] + c.t_and([owner, c.is_text], -TAU_TEXT), "exit.tau",
               into=c.tau, min_level=exit_min)
         c.keep += [next(iter(c.tau.terms)), next(iter(c.mu.terms))]
+        c.keep += [next(iter(e.terms)) for e in id_code]  # (the store's id code last)
     c.probe = {"w": w, "anchor": anchor, "cnt": cnt, "jt": jt, "vt": vt, "A": A, "B": B, "C": C,
                "imm": imm, "r": r, "val": val, "mem": mem, "ld": ld, "k0": k0, "k1": k1,
                "taken": taken, "logic": logic, "shift": shift, "merged": merged,
@@ -1281,7 +1315,8 @@ def decode_code(fid: int, p: int, text=None) -> int:
         return -1 if q is None else S.TEXT_TOKEN + q
     if nm in S.CONTROLS:
         return S.tok(nm)
-    return S.tok(nm, p) if p < S.FAMILIES[nm][1] else -1
+    size = (S.FAMILIES[nm] if nm in S.FAMILIES else S.STORE_FAMILIES[nm])[1]
+    return S.tok(nm, p) if p < size else -1
 
 
 def predictions(c: RvCore, mat: np.ndarray) -> list[int]:
@@ -1290,15 +1325,25 @@ def predictions(c: RvCore, mat: np.ndarray) -> list[int]:
         return [np.rint(sum(mat[:, d] * float(w_) for d, w_ in e.terms.items()))
                 if e.terms else np.zeros(mat.shape[0]) for e in es]
 
+    idv = None
     if c.out_fam is None:  # merged: the exit's code dims (KAPPA * (2 bit - 1) where it owns)
         cb = [(sum(mat[:, d] * float(w_) for d, w_ in e.terms.items()) > 0).astype(int)
               for e in c.code]
         fb, pb = cb[:NFAM], cb[NFAM:]
+        if getattr(c, "store", None):
+            idv = np.stack([ir_ev(e, mat) for e in c.store.yc], 1)
     else:
         fb, pb = bits(c.out_fam), bits(c.out_pay)
     out = []
     for t in range(mat.shape[0]):
+        if idv is not None and (idv[t] != 0).any():  # an any-print
+            out.append(S.TEXT_TOKEN + int(sum(int(v > 0) << i for i, v in enumerate(idv[t]))))
+            continue
         fid = int(sum(int(fb[i][t]) << i for i in range(NFAM)))
         p = int(sum(int(pb[i][t]) << i for i in range(NPAY)))
         out.append(decode_code(fid, p, c.text))
     return out
+
+
+def ir_ev(e, mat):
+    return sum((mat[:, d] * float(w_) for d, w_ in e.terms.items()), np.zeros(mat.shape[0]))

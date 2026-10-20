@@ -130,6 +130,9 @@ class Graph:
         self.one = Expr({ONE: 1})
         self.units: dict[int, int] = {}  # sublayer -> FFN units used
         self.heads: dict[int, int] = {}  # sublayer -> key heads used
+        # dims that can hold large values (> 2^8): their slot is never handed over by a
+        # subtraction in the MLP that writes the new value (1 - 2^26 is not exact in fp32)
+        self.big: set[int] = set()
 
     # --- dims -----------------------------------------------------------------
 
@@ -383,7 +386,8 @@ DECAY_LEVELS = np.array([0.0] + [A_BIT * 2.0**-k for k in range(127)])
 RMS_EPS = 1e-6  # Qwen3.5 rms_norm_eps (the gated output norm)
 
 
-def kernel_check(o_rows: list, q: np.ndarray, n_cols: int, ideal: np.ndarray) -> None:
+def kernel_check(o_rows: list, q: np.ndarray, n_cols: int, ideal: np.ndarray,
+                 tiny: float = 0.0) -> None:
     """A read as the HF torch Gated DeltaNet computes it, against the IR's exact value.
 
     q (all key dims) is L2-normalized in fp32 and scaled by 1/sqrt(128) (the recurrent kernel
@@ -391,7 +395,7 @@ def kernel_check(o_rows: list, q: np.ndarray, n_cols: int, ideal: np.ndarray) ->
     (the kernel's output dtype); the gated RMSNorm then normalizes o in fp32 and casts to bf16.
     The result must equal the IR's exact normalized row on every column. (One-hot queries give a
     scale of 2^-3.5, so only 0/power-of-2 data survives the bf16 cast; 2-hot queries give
-    2^-4.)
+    2^-4.) Columns whose exact value is below the head's ``tiny`` may differ (as in evaluate).
     """
     import torch
 
@@ -405,7 +409,7 @@ def kernel_check(o_rows: list, q: np.ndarray, n_cols: int, ideal: np.ndarray) ->
         h = o.to(torch.bfloat16).float()
         var = h.pow(2).mean()
         normed = (h * torch.rsqrt(var + RMS_EPS)).to(torch.bfloat16).double().numpy()
-        bad = normed != ideal
+        bad = (normed != ideal) & ~((np.abs(ideal) < tiny) & (np.abs(normed) < tiny))
         if bad.any():
             col = int(np.argmax(bad))
             raise ExactnessError(f"{name} kernel read: column {col} is {normed[col]!r}, "
@@ -492,7 +496,7 @@ def eval_head(node: Head, m: np.ndarray, chip: np.ndarray, check: bool,
                 if kernel and check:
                     rows = [(state[s], j) for j, (s, w) in enumerate(
                         (s, w) for s, w in zip(qi, q[t]) if w > 0) if s in state]
-                    kernel_check(rows, q[t], node.n_cols, out[t])
+                    kernel_check(rows, q[t], node.n_cols, out[t], node.tiny)
         if carry is not None:
             carry[ni, "S", x_] = state
         for col, d, w in vh.out:

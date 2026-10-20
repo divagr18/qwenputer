@@ -21,11 +21,20 @@ from chipformer.rv import core, elf, ref
 from chipformer.rv import spec as S
 
 
-def replay_ids(c, T, v0, prompt, gen, firmware) -> dict:
+def replay_ids(c, T, v0, prompt, gen, firmware, store_dev=None, store_init=None) -> dict:
+    """``store_dev`` / ``store_init``: the store's reference state and the matching head
+    states (chat.save_store) the record started from; empty when None."""
+    import copy
+
     stream = [i - v0 if i >= v0 else BR.text_token(i) for i in prompt + gen]
     m = ref.Machine.from_program(elf.program(firmware))
     BR.park(m)
-    ses = BR.Session(T, m)
+    if c.store is not None:
+        from chipformer.rv import store as ST
+
+        ses = ST.StoreSession(T, m, c.store.cfg, copy.deepcopy(store_dev))
+    else:
+        ses = BR.Session(T, m)
     ses.history(prompt)
     skip = {x for x in range(len(prompt)) if prompt[x] == T.TCC}
     pos = len(prompt)
@@ -47,6 +56,8 @@ def replay_ids(c, T, v0, prompt, gen, firmware) -> dict:
     m2 = ref.Machine.from_program(elf.program(firmware))
     BR.park(m2)
     core.snapshot(c, m2)
+    for name, n in (c.store.persistent.items() if c.store is not None else ()):
+        n.init = None if store_init is None else store_init.get(name)
     carry, preds, owns = {}, [], []  # per chunk: a long stream's whole matrix is GBs
     for a in range(0, len(stream), 2048):
         mat = ir.evaluate(c, stream[a:a + 2048], carry=carry)
@@ -71,8 +82,13 @@ def main() -> None:
     meta = json.loads((Path(args.model) / "chipformer.json").read_text())
     T = BR.Text(Path(args.model) / "tokenizer.json")
     cfg = json.loads((Path(args.model) / "config.json").read_text())
+    store = None
+    if meta.get("store"):
+        from chipformer.rv.store import Config
+
+        store = Config(**meta["store"])
     c = core.build(Target(cfg["linear_num_key_heads"], cfg["linear_num_value_heads"],
-                          cfg["intermediate_size"]), T)
+                          cfg["intermediate_size"]), T, store)
     tot = {"records": 0, "ok": 0, "positions": 0, "owned": 0}
     for line in Path(args.records).read_text().splitlines()[: args.limit]:
         r = json.loads(line)

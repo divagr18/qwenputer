@@ -266,8 +266,10 @@ class FreeRun:
         ids = np.zeros(nf, dtype=np.int64)
         small, row0, table = np.zeros(nf, dtype=bool), np.zeros(nf, dtype=np.int64), []
         for f, nm in enumerate(C.OUT_NAMES):
+            if nm == "Q":  # (a text token: the standalone machine never predicts one)
+                continue
             t0 = S.tok(nm) if nm in S.CONTROLS else S.tok(nm, 0)
-            size = 1 if nm in S.CONTROLS else S.FAMILIES[nm][1]
+            size = 1 if nm in S.CONTROLS else (S.FAMILIES.get(nm) or S.STORE_FAMILIES[nm])[1]
             ids[f] = t0
             base[f] = self.ex.embed([t0])[0].cpu().numpy()
             if size <= 4096:

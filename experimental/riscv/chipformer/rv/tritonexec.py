@@ -11,7 +11,8 @@ weights kept as sparse rows (CSR, padded per sublayer to a power-of-2 width KP s
          head's keys reach), the one-row write (key = argmax), the read of the query's rows only
          (at most QHOT of them, found by argmax), the ballast norm, the gate and the output
          columns into the output buffer
-  apply  residual += output buffer; after a head sublayer its lag history moves on
+  apply  residual += output buffer (rounded to bf16, as the HF model's residual); after a
+         head sublayer its lag history moves on
 
     Executor2(c, batch).step(x) -> x after the whole circuit (in place)
 """
@@ -66,7 +67,12 @@ def _ffn_kernel(x_ptr, y_ptr, D, U, rpa, ixa, wa, rpb, ixb, wb, coef, outd,
     ib = tl.load(ixb + b0[:, None] + kb[None, :], mask=mb, other=0)
     bv = tl.sum(tl.load(wb + b0[:, None] + kb[None, :], mask=mb, other=0.0)
                 * tl.load(xb + ib, mask=mb, other=0.0), axis=1)
-    val = tl.load(coef + u, mask=m, other=0.0) * av * tl.maximum(bv, 0.0)
+    # as the HF MLP (and ir.eval_ffn's hardware model): the gate K * b, the up a / K and their
+    # product are bf16 values (K = 128); exact for exact inputs, and it drops fp32 noise such as
+    # 7 - 2^-22 (a rounding tie) in a threshold unit, which would leave 2^-21 in a 0 / 1 dim
+    gk = tl.maximum((bv * 128.0).to(tl.bfloat16).to(tl.float32), 0.0)
+    up = (av * 0.0078125).to(tl.bfloat16).to(tl.float32)
+    val = tl.load(coef + u, mask=m, other=0.0) * (gk * up).to(tl.bfloat16).to(tl.float32)
     od = tl.load(outd + u, mask=m, other=0)
     tl.atomic_add(y_ptr + bat * D + od, val, mask=m)
 
@@ -123,13 +129,13 @@ def _head_kernel(x_ptr, h_ptr, S_ptr, y_ptr, D, V,
     nr = tl.load(nrows + vh)  # > 0: the head decays, in its first nr rows
     if nr > 0:
         av = _scalar(xb, hb, D, arp, aix, aw, vh)
-        fac = tl.where(av == 0.0, 1.0, tl.where(av == 110.0, 0.5, 0.0))
+        fac = tl.where(av < 55.0, 1.0, tl.where(av < 174.0, 0.5, 0.0))  # (0 / 110 / 238)
         if fac != 1.0:
             for r in range(nr):
                 tl.store(Sb + r * 128 + ch, tl.load(Sb + r * 128 + ch) * fac)
     kmax = tl.max(k, axis=0)
     krow = tl.argmax(k, axis=0)
-    if (kmax > 0.0) & (bv == 1.0):
+    if (kmax > 0.0) & (bv > 0.5):  # (beta is 1, or an integer <= 0)
         tl.store(Sb + krow * 128 + ch, v)
     tl.debug_barrier()
     # the read: the sum of the rows whose query is set (multi-hot queries have equal values)
@@ -166,7 +172,11 @@ def _apply_kernel(x_ptr, y_ptr, h_ptr, D, HIST: tl.constexpr, BLOCK: tl.constexp
         tl.store(hb + D, h0, mask=m)
         tl.store(hb, x, mask=m)
     yo = y_ptr + bat * D + i
-    tl.store(xo, x + tl.load(yo, mask=m, other=0.0), mask=m)
+    # the residual is bf16, as in the HF model: every value the circuit computes is a bf16 value
+    # (ir.evaluate checks it), so this only drops fp32 noise (e.g. 7 - 2^-22, a rounding tie, in
+    # a threshold unit, which would otherwise leave 2^-21 in a 0 / 1 dim)
+    xn = (x + tl.load(yo, mask=m, other=0.0)).to(tl.bfloat16).to(tl.float32)
+    tl.store(xo, xn, mask=m)
     tl.store(yo, tl.zeros([BLOCK], dtype=tl.float32), mask=m)
 
 
@@ -300,6 +310,7 @@ def check(c, toks, device="cuda") -> int:
     for t in range(len(toks)):
         x = emb[t:t + 1].clone()
         got = ex.step(x)[0].double().cpu().numpy()
-        bad = np.nonzero(got != want[t])[0]
+        # (a counter's 2^-n below its head's tiny bound underflows differently: not compared)
+        bad = np.nonzero((got != want[t]) & (np.maximum(np.abs(got), np.abs(want[t])) > 2.0**-60))[0]
         assert not len(bad), (t, [(c.dims[d].name, got[d], want[t, d]) for d in bad[:5]])
     return len(toks)

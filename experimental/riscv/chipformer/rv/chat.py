@@ -38,6 +38,35 @@ CALC_TOOL = {"type": "function", "function": {
         "required": ["expression"]}}}
 
 
+def cache_snapshot(cache) -> list:
+    """What a DynamicCache holds now (attention: its length; linear attention: copies of the
+    states), for cache_restore."""
+    out = []
+    for lay in cache.layers:
+        if getattr(lay, "keys", None) is not None and hasattr(lay, "get_seq_length"):
+            out.append(("kv", lay.get_seq_length()))
+        elif hasattr(lay, "recurrent_states"):
+            out.append(("lin", {i: (lay.conv_states[i].clone(), lay.recurrent_states[i].clone(),
+                                    lay.has_previous_state[i])
+                                for i in lay.recurrent_states if lay.recurrent_states[i] is not None}))
+        else:
+            out.append(("none", None))
+    return out
+
+
+def cache_restore(cache, snap) -> None:
+    """Back to a cache_snapshot (the attention keys cut to their old length)."""
+    for lay, (kind, v) in zip(cache.layers, snap):
+        if kind == "kv":
+            lay.keys = lay.keys[..., :v, :]
+            lay.values = lay.values[..., :v, :]
+        elif kind == "lin":
+            for i, (cs, rs, hp) in v.items():
+                lay.conv_states[i].copy_(cs)
+                lay.recurrent_states[i].copy_(rs)
+                lay.has_previous_state[i] = hp
+
+
 class ExecRow:
     """One conversation's circuit on the Triton executor (batch 1) with its own CUDA graph."""
 
@@ -73,20 +102,30 @@ class ExecRow:
             st["hist"].copy_(h)
 
     @torch.no_grad()
-    def start(self, ids: list[int]) -> None:
+    def start(self, ids: list[int], prefix: dict | None = None, init: bool = True) -> None:
         """As the HF path does it: the prompt through the circuit from zero states, then every
         head's state set to its init (the snapshot now in the circuit; hf.inject), the lag
-        windows kept."""
+        windows kept. ``prefix`` (RvChat.make_prefix): the states after its ids are restored
+        and only the rest of ``ids`` runs."""
         if self.graph is None:
             self._capture()
-        for st in self.heads:
-            st["S"].zero_()
-            st["hist"].zero_()
-        emb = self.chat._exec_emb(ids)
-        for t in range(len(ids)):
-            self.xbuf.copy_(emb[t:t + 1])
-            self.graph.replay()
-        self.ex.load_init()
+        n = 0
+        if prefix is None:
+            for st in self.heads:
+                st["S"].zero_()
+                st["hist"].zero_()
+        else:
+            n = len(prefix["ids"])
+            for st, (S_, h) in zip(self.heads, prefix["exec"]):
+                st["S"].copy_(S_)
+                st["hist"].copy_(h)
+        for a in range(n, len(ids), 4096):
+            emb = self.chat._exec_emb(ids[a:a + 4096])
+            for t in range(emb.shape[0]):
+                self.xbuf.copy_(emb[t:t + 1])
+                self.graph.replay()
+        if init:
+            self.ex.load_init()
 
     @torch.no_grad()
     def step(self, ids: int) -> torch.Tensor:
@@ -109,15 +148,28 @@ class RvChat:
         self.meta = json.loads((self.path / "chipformer.json").read_text())
         self.dev = device or ("cuda" if torch.cuda.is_available() else "cpu")
         self.model = Qwen3_5ForCausalLM.from_pretrained(self.path, dtype=torch.bfloat16)
+        if self.dev == "cuda":  # the chip layers' nonzero blocks only (exact: fast.compact),
+            from chipformer.q35 import fast as F  # before they reach the GPU
+
+            F.compact(self.model, qwen=False, n_chip=self.meta["chip_layers"])
         self.model = self.model.to(self.dev).eval()
         self.lm = self.model.model
         self.tok = AutoTokenizer.from_pretrained(self.path)
         self.T = BR.Text(self.path / "tokenizer.json")
         cfg = self.model.config
+        self.store_cfg = None
+        if self.meta.get("store"):
+            from chipformer.rv.store import Config
+
+            self.store_cfg = Config(**self.meta["store"])
         self.c = core.build(Target(cfg.linear_num_key_heads, cfg.linear_num_value_heads,
-                                   cfg.intermediate_size), self.T)
+                                   cfg.intermediate_size), self.T, self.store_cfg)
         self.n_chip, self.v0 = self.meta["chip_layers"], self.meta["chip_token_offset"]
         self.code_dims = torch.tensor(self.meta["code_dims"], device=self.dev)
+        self.id_dims = (torch.tensor(self.meta["id_code_dims"], device=self.dev)
+                        if self.store_cfg else None)
+        self.store_snap = None  # the store heads' state to start from (load_store)
+        self.last_state = None  # where the last generate's chip state is (save_store)
         self.eos = {248046, 248044}
         self.fast = fast and self.dev == "cuda"
         # executor "verify": both chip paths, the HF view's hc checked against the executor's
@@ -139,6 +191,7 @@ class RvChat:
         code."""
         self.keep_ir = torch.tensor(self.c.keep, device=self.dev)
         cols = self.meta["code_dims"] + [self.meta["tau_dim"], self.meta["mu_dim"]]
+        cols += self.meta.get("id_code_dims", [])
         assert len(cols) == len(self.c.keep)
         self.keep_cols = torch.tensor(cols, device=self.dev)
         self.d0 = self.meta["chip_dims_offset"]
@@ -155,8 +208,8 @@ class RvChat:
                 self.emb_cache[i] = r
         return torch.stack([self.emb_cache[i] for i in ids])
 
-    def _exec_start(self, ids: list[int]) -> None:
-        self.erow.start(ids)
+    def _exec_start(self, ids: list[int], prefix=None) -> None:
+        self.erow.start(ids, prefix)
 
     def _exec_step(self, ids: int) -> torch.Tensor:
         return self.erow.step(ids)
@@ -169,8 +222,18 @@ class RvChat:
         hc[self.keep_cols] = keep.to(torch.bfloat16)
         return hc
 
-    def code_token(self, code) -> int | None:
-        """circuit_token from the output code values."""
+    def keep_token(self, keep) -> int | None:
+        """The circuit's token from the executor's kept values (code, tau, mu, id code)."""
+        n = len(self.code_dims)
+        return self.code_token(keep[:n], keep[n + 2:] if self.id_dims is not None else None)
+
+    def code_token(self, code, idc=None) -> int | None:
+        """circuit_token from the output code values (and the store's id code: an any-print
+        leaves the class code at 0 and the token's id bits there)."""
+        if idc is not None:
+            idc = idc.float()
+            if bool((idc != 0).any()):
+                return sum(1 << i for i, b in enumerate((idc > 0).tolist()) if b)
         code = code.float()
         if not bool((code != 0).any()):
             return None
@@ -309,7 +372,8 @@ class RvChat:
 
     def circuit_token(self, hc) -> int | None:
         """The model id the circuit predicts at a position, None where Qwen predicts."""
-        return self.code_token(hc[self.code_dims])
+        return self.code_token(hc[self.code_dims],
+                               None if self.id_dims is None else hc[self.id_dims])
 
     # --- a conversation --------------------------------------------------------------------
     def prompt_ids(self, messages, tools=(CALC_TOOL,)) -> list[int]:
@@ -321,18 +385,53 @@ class RvChat:
         return [int(x) for x in out]
 
     @torch.no_grad()
+    @torch.no_grad()
+    def _prefill(self, ids: list[int], cache=None, chunk: int = 8192):
+        """The whole model on a prompt (in chunks: long prompts), from ``cache``."""
+        out = None
+        for a in range(0, len(ids), chunk):
+            x = torch.tensor([ids[a:a + chunk]], device=self.dev)
+            out = self.model(input_ids=x, past_key_values=cache, use_cache=True,
+                             logits_to_keep=1)
+            cache = out.past_key_values
+        return out
+
+    @torch.no_grad()
+    def make_prefix(self, ids: list[int]) -> dict:
+        """A prompt prefix shared by several generate calls (``prefix=``): Qwen's cache and the
+        executor's states after it, kept so each call runs only its own suffix."""
+        assert self.executor and not self.fast
+        from transformers import DynamicCache
+
+        # (not HF's offloading=True: with it the answers after a 20k prefix came out wrong, the
+        # linear-attention states are apparently not kept; a 100k prefix needs a 48 GB GPU)
+        cache = DynamicCache(config=self.model.config)
+        # (shorter chunks for long prefixes: the attention mask of a chunk is chunk x prefix)
+        out = self._prefill(ids, cache, chunk=2048 if len(ids) > 50000 else 8192)
+        cache = out.past_key_values
+        self.erow.start(ids, init=False)
+        ex = [(st["S"].clone(), st["hist"].clone()) for st in self.erow.heads]
+        return {"ids": list(ids), "cache": cache, "snap": cache_snapshot(cache), "exec": ex}
+
     def generate(self, ids: list[int], machine: "ref.Machine", max_new: int = 4000,
                  max_chip: int = 60000, check_head: bool = False, verbose: bool = False,
-                 lock: "BR.Session | None" = None) -> dict:
+                 lock: "BR.Session | None" = None, prefix: dict | None = None) -> dict:
         """Greedy decoding after the prompt ``ids`` with the parked ``machine`` loaded.
         ``lock`` (a Session on a copy of the machine): stop at the first token that differs from
         the reference's."""
         x = torch.tensor([ids], device=self.dev)
-        out = self.model(input_ids=x, use_cache=True)
+        if prefix is not None:  # (a long shared prompt prefix, prefilled once: make_prefix)
+            assert self.executor and not self.fast and ids[:len(prefix["ids"])] == prefix["ids"]
+            cache = prefix["cache"]
+            cache_restore(cache, prefix["snap"])
+            out = self._prefill(ids[len(prefix["ids"]):], cache)
+        else:
+            out = self._prefill(ids)
         cache = out.past_key_values  # (fast: Qwen's layers only)
         core.snapshot(self.c, machine)
+        self.load_store(self.store_snap)
         if self.executor:
-            self._exec_start(ids)
+            self._exec_start(ids, prefix)
         if self.fast:
             ccache = self._chip_cache()
             h = self.cm.embed_tokens(x)  # the prompt through the chip layers only
@@ -346,6 +445,8 @@ class RvChat:
         elif not self.executor:
             hf.inject(self.c, cache)
         n_verify_bad = 0
+        self.last_state = ("exec", self.erow) if self.executor else (
+            ("hf", ccache) if self.fast else ("hf", cache))
         logits = out.logits[0, -1]
         pos = len(ids)  # the next text token's RoPE position
         gen, n_text, n_chip_tok = [], 0, 0
@@ -407,8 +508,7 @@ class RvChat:
                 hc, logits = self._layers(nxt, cache, None if chip_in else pos)
             if chip_in:  # a chip token
                 n_chip_tok += 1
-                nxt = (self.code_token(keep[: len(self.code_dims)]) if hc is None
-                       else self.circuit_token(hc))
+                nxt = self.keep_token(keep) if hc is None else self.circuit_token(hc)
                 t_chip += time.time() - ts
                 if nxt is None:
                     raise RuntimeError("the circuit gave up a chip position")
@@ -428,6 +528,50 @@ class RvChat:
                 "seconds": dt, "head_mismatch": mismatch, "lock_error": lock_error,
                 "verify_mismatch": n_verify_bad if self.verify else None,
                 "chip_seconds": round(t_chip, 2), "text_seconds": round(t_text, 2)}
+
+    # --- the store's state ------------------------------------------------------------------
+    def save_store(self, where=None) -> dict | None:
+        """The store heads' states after the last generate (or ``where``: ("exec", ExecRow) /
+        ("hf", cache)): {head name: [{row: state row} per value head]}, the rows that are set.
+        A snapshot of the files and registers only; the firmware's state is not in it."""
+        if self.store_cfg is None:
+            return None
+        kind, obj = where or self.last_state
+        out = {}
+        if kind == "exec":
+            for st in obj.ex.steps:
+                if st["kind"] != "head":
+                    continue
+                j = 0
+                for n in st["heads"]:
+                    nv = len(n.vheads())
+                    if n.name in self.c.store.persistent:
+                        S_ = st["S"][0, j:j + nv].float().cpu().numpy()
+                        out[n.name] = [{int(r): S_[x, r].astype(np.float64)
+                                        for r in np.nonzero(np.abs(S_[x]).sum(1))[0]}
+                                       for x in range(nv)]
+                    j += nv
+        else:
+            r_ = self.c.target.value_heads // self.c.target.key_heads
+            idx = {id(n): i for i, n in enumerate(self.c.nodes)}
+            slots = hf.head_slots(self.c)
+            for name, n in self.c.store.persistent.items():
+                L, j = slots[idx[id(n)]]
+                st = obj.layers[L].recurrent_states[0]
+                vs = []
+                for x in range(len(n.vheads())):
+                    S_ = st[0, j * r_ + x].float().cpu().numpy()
+                    vs.append({int(r): S_[r].astype(np.float64)
+                               for r in np.nonzero(np.abs(S_).sum(1))[0]})
+                out[name] = vs
+        return out
+
+    def load_store(self, snap: dict | None) -> None:
+        """Start the next generate from this store state (None: an empty store)."""
+        if self.store_cfg is None:
+            return
+        for name, n in self.c.store.persistent.items():
+            n.init = None if snap is None else snap.get(name)
 
     def to_stream(self, ids: list[int]) -> list[int]:
         """Model ids -> the circuit's token stream (chip tokens, TEXT_TOKEN | qwen id)."""
@@ -486,6 +630,30 @@ def replay(chat: RvChat, prompt: list[int], gen: list[int], firmware) -> dict:
             "owner_mismatch": bad_own, "runs": len(ses.runs)}
 
 
+def save_store_file(path, snap: dict) -> None:
+    """A store snapshot (RvChat.save_store) as a .npz file."""
+    arrays = {}
+    for name, vs in snap.items():
+        arrays[f"{name}/n"] = np.array(len(vs))
+        for x, rows in enumerate(vs):
+            for r, row in rows.items():
+                arrays[f"{name}/{x}/{r}"] = np.asarray(row, dtype=np.float64)
+    np.savez_compressed(path, **arrays)
+
+
+def load_store_file(path) -> dict:
+    z = np.load(path)
+    snap = {}
+    for k in z.files:
+        if k.endswith("/n"):
+            snap[k[:-2]] = [{} for _ in range(int(z[k]))]
+    for k in z.files:
+        if not k.endswith("/n"):
+            name, x, r = k.rsplit("/", 2)
+            snap[name][int(x)][int(r)] = z[k]
+    return snap
+
+
 def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("model")
@@ -494,16 +662,40 @@ def main() -> None:
     ap.add_argument("--max-new", type=int, default=600)
     ap.add_argument("--check", action="store_true")
     ap.add_argument("--slow", action="store_true", help="every layer through the HF modules")
+    ap.add_argument("--executor", action="store_true", help="the chip layers on the executor")
+    ap.add_argument("--memory", default=None,
+                    help="a store checkpoint: a file that keeps its files between runs (loaded "
+                         "when it exists, saved after the answer)")
     args = ap.parse_args()
-    chat = RvChat(args.model, fast=not args.slow)
+    chat = RvChat(args.model, fast=not args.slow, executor=args.executor)
     m = ref.Machine.from_program(elf.program(args.firmware))
     BR.park(m)
-    ids = chat.prompt_ids([{"role": "user", "content": args.ask}])
+    store = chat.store_cfg is not None
+    msgs = [{"role": "user", "content": args.ask}]
+    tools = (CALC_TOOL,)
+    if store:
+        from chipformer.rv import store as ST
+
+        msgs = [{"role": "system", "content": ST.MEM_SYSTEM}] + msgs
+        tools = (CALC_TOOL, *ST.TOOLS)
+    ids = chat.prompt_ids(msgs, tools)
+    remembered = bool(args.memory) and Path(args.memory).exists()
+    if remembered:
+        chat.store_snap = load_store_file(args.memory)
     m2 = ref.Machine.from_program(elf.program(args.firmware))
     BR.park(m2)
-    lock = BR.Session(chat.T, m2)
-    lock.history(ids)
+    lock = None
+    if not remembered:  # (the reference does not know a store loaded from a file)
+        if store:
+            from chipformer.rv import store as ST
+
+            lock = ST.StoreSession(chat.T, m2, chat.store_cfg)
+        else:
+            lock = BR.Session(chat.T, m2)
+        lock.history(ids)
     r = chat.generate(ids, m, args.max_new, check_head=True, verbose=True, lock=lock)
+    if args.memory:
+        save_store_file(args.memory, chat.save_store())
     print(chat.text_of(r["tokens"]))
     print(f"[{r['text_tokens']} text + {r['chip_tokens']} chip tokens in {r['seconds']:.1f}s, "
           f"head mismatches {r['head_mismatch']}, lock error {r['lock_error']}]")

@@ -32,6 +32,7 @@ from chipformer.rv import core
 from chipformer.rv import spec as S
 
 SRC_TEXT = "model.language_model."
+ID_GAIN = 4.0  # the store's id code: final-norm gain, relative to the class code's
 DST = "model."
 
 
@@ -93,6 +94,23 @@ def text_rows(c, lay, T: BR.Text, base_emb: torch.Tensor, v0: int) -> torch.Tens
     for k in range(S.TEXT_ROW):
         for i in range(8):
             full[:, byte_cols[k][i]] = torch.tensor((by[:, k] >> i) & 1, dtype=torch.bfloat16)
+    if c.store is not None:  # the store's features that read the row's own id
+        from chipformer.rv import store as ST
+        from chipformer.rv.store_rv import CODE_AMP
+
+        q = np.arange(v0)
+        ok = q < ST.SPECIAL
+        st = c.store
+        for i, (b, y) in enumerate(zip(st.xb, st.yc)):
+            bit = (q >> i) & 1
+            full[:, lay.dim(next(iter(b.terms)))] = torch.tensor(np.where(ok, bit, 0),
+                                                                 dtype=torch.bfloat16)
+            full[:, lay.dim(next(iter(y.terms)))] = torch.tensor(
+                np.where(ok, CODE_AMP * (2 * bit - 1), 0), dtype=torch.bfloat16)
+        for e in st.row_features[2 * ST.ID_BITS:]:  # token detectors
+            d = next(iter(e.terms))
+            col = [float(c.feature_value(d, BR.text_token(int(x)))) for x in q]
+            full[:, lay.dim(d)] = torch.tensor(col, dtype=torch.bfloat16)
     rows = embedding_rows(c, lay, [BR.text_token(q) for q in special], h)
     for q, r in zip(special, rows):
         full[q, d0:] = r[d0:].to(torch.bfloat16)
@@ -100,7 +118,8 @@ def text_rows(c, lay, T: BR.Text, base_emb: torch.Tensor, v0: int) -> torch.Tens
 
 
 def build_merged(src, dst, mute_qwen: bool = True, hidden: int | None = None,
-                 m: int | None = None) -> dict:
+                 m: int | None = None, store=None) -> dict:
+    """``store``: a store.Config (the object store, rv/store_rv.py) or None."""
     from safetensors.torch import save_file
 
     from chipformer.q35.emit import Layout, allocate, check_bf16, emit_layers
@@ -113,7 +132,8 @@ def build_merged(src, dst, mute_qwen: bool = True, hidden: int | None = None,
     tc0 = cfg["text_config"]
     d0, v0, inter = tc0["hidden_size"], tc0["vocab_size"], tc0["intermediate_size"]
     T = BR.Text(src / "tokenizer.json")
-    c = core.build(Target(tc0["linear_num_key_heads"], tc0["linear_num_value_heads"], inter), T)
+    c = core.build(Target(tc0["linear_num_key_heads"], tc0["linear_num_value_heads"], inter), T,
+                   store)
     keep = set(c.keep)
     alloc = allocate(c, None, keep, inter)
     if hidden is None:
@@ -193,6 +213,11 @@ def build_merged(src, dst, mute_qwen: bool = True, hidden: int | None = None,
     norm[d0:] = -1.0  # chip dims are invisible to the lm_head ...
     for d in code:  # ... except the output code and tau
         norm[lay.dim(d)] = code_gain(lay)
+    id_dims = []
+    if c.store is not None:  # (an any-print beats its 16-of-18-bit neighbours by 8 code units)
+        id_dims = [lay.dim(next(iter(e.terms))) for e in c.store.yc]
+        for d in id_dims:
+            norm[d] = ID_GAIN * code_gain(lay)
     norm[lay.dim(tau)] = TAU_GAIN
     check_bf16("final norm", norm[d0:])
     sd[DST + "norm.weight"] = norm.to(torch.bfloat16)
@@ -226,6 +251,17 @@ def build_merged(src, dst, mute_qwen: bool = True, hidden: int | None = None,
             "code_dims": [lay.dim(d) for d in code], "tau_dim": lay.dim(tau),
             "mu_dim": lay.dim(next(iter(c.mu.terms))), "nfam": core.NFAM, "npay": core.NPAY,
             "tool_call": [T.TCO, T.TCC], "printable": T.printable}
+    if c.store is not None:
+        import dataclasses
+
+        from chipformer.rv import hf
+
+        slots = hf.head_slots(c)
+        idx = {id(n): i for i, n in enumerate(c.nodes)}
+        meta.update(layout="rv1-store", id_code_dims=id_dims,
+                    store=dataclasses.asdict(store),
+                    store_heads={name: list(slots[idx[id(n)]]) + [len(n.vheads())]
+                                 for name, n in c.store.persistent.items()})
     (dst / "chipformer.json").write_text(json.dumps(meta, indent=1))
     return meta
 
@@ -239,8 +275,14 @@ def main() -> None:
     ap.add_argument("--no-mute", action="store_true")
     ap.add_argument("--hidden", type=int)
     ap.add_argument("--ballast", type=int)
+    ap.add_argument("--store", action="store_true", help="with the object store (v2)")
     args = ap.parse_args()
-    meta = build_merged(args.src, args.out, not args.no_mute, args.hidden, args.ballast)
+    store = None
+    if args.store:
+        from chipformer.rv.store import Config
+
+        store = Config()
+    meta = build_merged(args.src, args.out, not args.no_mute, args.hidden, args.ballast, store)
     print(json.dumps({k: meta[k] for k in ("hidden", "chip_layers", "slots", "circuit")}))
 
 

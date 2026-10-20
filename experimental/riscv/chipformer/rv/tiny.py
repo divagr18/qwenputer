@@ -33,7 +33,7 @@ def embedding_matrix(c, lay, n_vocab: int) -> torch.Tensor:
         return np.array([float(c.feature_value(d, t)) for d in feats])
 
     e = np.zeros((n_vocab, lay.hidden), dtype=np.float32)
-    for name, (base, size) in S.FAMILIES.items():
+    for name, (base, size) in {**S.FAMILIES, **S.STORE_FAMILIES}.items():
         v0 = vec(base)
         nb = (size - 1).bit_length()
         deltas = np.stack([vec(base + (1 << i)) - v0 for i in range(nb)]) if nb else None

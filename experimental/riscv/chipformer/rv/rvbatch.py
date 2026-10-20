@@ -33,7 +33,7 @@ class Job:
     ids: list[int]
     machine: object  # a parked ref.Machine
     lock: object = None  # a BR.Session on a copy (history = the prompt), or None
-    extra: dict = field(default_factory=dict)
+    extra: dict = field(default_factory=dict)  # (store: a snapshot to start from; save_store)
 
 
 class RvBatch:
@@ -89,6 +89,7 @@ class RvBatch:
         ids = job.ids
         nxt = self._prefill(b, ids)
         core.snapshot(chat.c, job.machine)
+        chat.load_store(job.extra.get("store"))  # (the job's store state, or empty)
         erow.start(ids)
         pos = len(ids)
         gen, n_text, n_chip_tok = [], 0, 0
@@ -125,7 +126,7 @@ class RvBatch:
             keep = erow.step(nxt)
             if nxt >= chat.v0:  # a chip token
                 n_chip_tok += 1
-                nxt = chat.code_token(keep[: len(chat.code_dims)])
+                nxt = chat.keep_token(keep)
                 t_chip += time.time() - ts
                 if nxt is None:
                     raise RuntimeError("the circuit gave up a chip position")
@@ -141,7 +142,8 @@ class RvBatch:
                 if ct is not None and check_head and q != ct:
                     mismatch += 1
                 nxt = ct if ct is not None else qv
-        return {"tokens": gen, "text_tokens": n_text, "chip_tokens": n_chip_tok,
+        snap = chat.save_store(("exec", erow)) if job.extra.get("save_store") else None
+        return {"tokens": gen, "text_tokens": n_text, "chip_tokens": n_chip_tok, "store": snap,
                 "seconds": time.time() - t0, "head_mismatch": mismatch,
                 "lock_error": lock_error, "verify_mismatch": None,
                 "chip_seconds": round(t_chip, 2), "text_seconds": None}

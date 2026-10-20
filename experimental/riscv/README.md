@@ -27,6 +27,14 @@ an L4, and in generation it runs at about 3,200 trace tokens a second.
 [`docs/rv32.md`](docs/rv32.md) has the design and every measurement, and
 [`docs/rv32-p3-status.md`](docs/rv32-p3-status.md) has the in-Qwen status.
 
+## Storage
+
+This branch adds an object store to the same layers: five tools, `put`, `append`, `get`, `list` and
+`delete`, that Qwen calls next to `calc` and the weights answer. Files live in Gated DeltaNet
+state behind a hashed directory, and a session's store can be saved and loaded into the next one.
+Model: [divagr1925/Qwen3.5-4B-Qwenputer-Storage](https://huggingface.co/divagr1925/Qwen3.5-4B-Qwenputer-Storage).
+[`docs/rv-store.md`](docs/rv-store.md) has the design, the checks and the benchmarks.
+
 ```bash
 cd experimental/riscv && uv sync && uv run pytest tests -q
 ```
