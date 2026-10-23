@@ -191,7 +191,7 @@ base: KL 6e-4, against a noise floor of 5e-4.
 cd experimental/riscv && uv sync
 hf download divagr1925/Qwen3.5-4B-Qwenputer --local-dir qwenputer-rv
 uv run python -m chipformer.rv.chat qwenputer-rv --firmware tests/data/rv/calc-bridge.elf \
-    --ask "Use the calc tool: what is 123456789 * 987654321?"
+    --ask "Use calc: what is 123456789 * 987654321?"
 ```
 
 The `RvChat` driver boots the CPU by loading its firmware into the DeltaNet state after the

@@ -658,7 +658,7 @@ def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("model")
     ap.add_argument("--firmware", default="tests/data/rv/calc-bridge.elf")
-    ap.add_argument("--ask", default="Use the calc tool: what is 123456789 * 987654321?")
+    ap.add_argument("--ask", default="Use calc: what is 123456789 * 987654321?")
     ap.add_argument("--max-new", type=int, default=600)
     ap.add_argument("--check", action="store_true")
     ap.add_argument("--slow", action="store_true", help="every layer through the HF modules")
