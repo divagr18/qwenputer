@@ -1,6 +1,6 @@
 # A RISC-V computer inside Qwen
 
-Model: [divagr1925/Qwen3.5-4B-Qwenputer](https://huggingface.co/divagr1925/Qwen3.5-4B-Qwenputer).
+Model: [divagr1925/Qwen3.5-4B-Qwenputer](https://huggingface.co/divagr1925/Qwen3.5-4B-Qwenputer) on Hugging Face, or [Spartan1925/Qwen3.5-4B-Qwenputer](https://www.modelscope.ai/models/Spartan1925/Qwen3.5-4B-Qwenputer) on ModelScope.
 
 This folder compiles a 32-bit **RV32IM** CPU into stock Qwen3.5 layers, using the same compiler as
 the main project. The CPU also has Zba and a bignum coprocessor. It is a self-contained snapshot:
@@ -32,7 +32,7 @@ an L4, and in generation it runs at about 3,200 trace tokens a second.
 This branch adds a filesystem to the same layers: five tools, `put`, `append`, `get`, `list` and
 `delete`, that Qwen calls next to `calc` and the weights answer. Files live in Gated DeltaNet
 state behind a hashed directory, and a session's store can be saved and loaded into the next one.
-Model: [divagr1925/Qwen3.5-4B-Qwenputer-Filesystem](https://huggingface.co/divagr1925/Qwen3.5-4B-Qwenputer-Filesystem).
+Model: [divagr1925/Qwen3.5-4B-Qwenputer-Filesystem](https://huggingface.co/divagr1925/Qwen3.5-4B-Qwenputer-Filesystem) on Hugging Face, or [Spartan1925/Qwen3.5-4B-Qwenputer-Filesystem](https://www.modelscope.ai/models/Spartan1925/Qwen3.5-4B-Qwenputer-Filesystem) on ModelScope.
 [`docs/rv-store.md`](docs/rv-store.md) has the design, the checks and the benchmarks.
 
 ```bash

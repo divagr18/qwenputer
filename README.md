@@ -4,7 +4,7 @@
 
 > A computer, compiled into the weights of a language model.
 
-[RISC-V model](https://huggingface.co/divagr1925/Qwen3.5-4B-Qwenputer) · [CHIP-8 model](https://huggingface.co/divagr1925/Qwen3.5-4B-Qwenputer-CHIP8) · [The standalone CHIP-8 transformer it grew from](https://github.com/divagr18/chipformer) · [MIT License](LICENSE)
+RISC-V model: [Hugging Face](https://huggingface.co/divagr1925/Qwen3.5-4B-Qwenputer), [ModelScope](https://www.modelscope.ai/models/Spartan1925/Qwen3.5-4B-Qwenputer) · [CHIP-8 model](https://huggingface.co/divagr1925/Qwen3.5-4B-Qwenputer-CHIP8) · [The standalone CHIP-8 transformer it grew from](https://github.com/divagr18/chipformer) · [MIT License](LICENSE)
 
 Qwenputer is Qwen3.5-4B with a working computer compiled directly into its weights. It isn't a
 plugin, a tool or a sandbox. It's a CPU, a big-number maths library and its memory, written as
