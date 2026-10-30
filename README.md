@@ -3,7 +3,8 @@
 </p>
 
 Qwenputer model: [Hugging Face](https://huggingface.co/divagr1925/Qwen3.5-4B-Qwenputer) · [ModelScope](https://www.modelscope.ai/models/Spartan1925/Qwen3.5-4B-Qwenputer)  
-Filesystem model: [Hugging Face](https://huggingface.co/divagr1925/Qwen3.5-4B-Qwenputer-Filesystem) · [ModelScope](https://www.modelscope.ai/models/Spartan1925/Qwen3.5-4B-Qwenputer-Filesystem)
+Filesystem model: [Hugging Face](https://huggingface.co/divagr1925/Qwen3.5-4B-Qwenputer-Filesystem) · [ModelScope](https://www.modelscope.ai/models/Spartan1925/Qwen3.5-4B-Qwenputer-Filesystem)  
+NPU model: [Hugging Face](https://huggingface.co/divagr1925/Qwenputer-npu) · [ModelScope](https://www.modelscope.ai/models/Spartan1925/Qwenputer-npu)
 
 **Qwenputer is a new kind of experimental model: Qwen3.5-4B with a 32-bit RISC-V CPU compiled and
 inserted directly into its weights.** It isn't a plugin, a tool or a sandbox. The CPU is 11
@@ -62,15 +63,6 @@ The CPU is **RV32IM** with Zba and a bignum coprocessor. Its code lives in
 [`experimental/riscv/docs/rv32.md`](experimental/riscv/docs/rv32.md) has the design and every
 measurement.
 
-## Qwenputer-npu: a language model inside the language model
-
-[divagr1925/Qwenputer-npu](https://huggingface.co/divagr1925/Qwenputer-npu)
-([ModelScope](https://www.modelscope.ai/models/Spartan1925/Qwenputer-npu)) gives the CPU a
-neural-network instruction set (`VDOT`, `WB`, `SMAQA`) and a weight memory. Karpathy's
-stories260K runs on it as a C program, inside Qwen, and writes its stories: 225,000 trace tokens
-per story token, about 41 seconds each on an L4. Its code is on the
-[`npu` branch](https://github.com/divagr18/qwenputer/tree/npu/experimental/riscv).
-
 ## Gated DeltaNet as RAM
 
 <p align="center"><img src="docs/gdn-ram.png" alt="Gated DeltaNet state used as RAM: a one-hot key overwrites one row, a one-hot query reads it back, and the CPU's registers, memory and program counter live in DeltaNet heads." width="100%"></p>
@@ -88,6 +80,32 @@ Writes arrive through the token stream, so the trace is the computer's execution
 token names the row, the `VAL` token after it carries the value, and `STEP` ends the instruction.
 Nothing here needed a new layer type: the computer's memory is the same Gated DeltaNet
 recurrence Qwen3.5 already uses for language.
+
+## In-weights NPU (experimental)
+
+The CPU can run neural networks too. The model is up as
+[`divagr1925/Qwenputer-npu`](https://huggingface.co/divagr1925/Qwenputer-npu)
+(also on [ModelScope](https://www.modelscope.ai/models/Spartan1925/Qwenputer-npu)), and its code
+lives on the [`npu`](https://github.com/divagr18/qwenputer/tree/npu/experimental/riscv) branch.
+
+It's the same RISC-V model with three more instructions and a weight memory:
+- `VDOT` multiplies 8 int8 activations by the next 8 int4 weights and adds the sum to a register.
+  `WB` sets where the weights start.
+- `SMAQA` adds four signed byte products to a register, as in the RISC-V P extension.
+- The weight memory holds 261,120 int4 weights in DeltaNet heads, loaded from the program.
+
+Each is one instruction and one trace token, computed exactly by the compiled layers. With them,
+Karpathy's stories260K, a 260K-parameter Llama, runs as a C program on the CPU inside Qwen and
+writes its stories. Its weights are data in the CPU's memory, not compiled into the checkpoint,
+so any model that fits runs the same way.
+
+| Build of stories260K | Trace tokens per story token |
+|---|---|
+| Plain C, int8 weights | 2,430,000 |
+| **VDOT + SMAQA, int4 weights** | **225,000** |
+
+A new fused executor runs the CPU at about 5,500 trace tokens a second on an L4, so a story token
+takes about 41 seconds. The model card has the quickstart and the checks.
 
 ## In-weight filesystem (experimental)
 
@@ -126,7 +144,9 @@ weights runs the multiplication, and the model writes `478128321` itself, digit 
 It has never printed a wrong answer, from 3-digit sums to 20-digit products, and it still loads
 like any other Qwen checkpoint.
 
-<details><summary>CHIP-8 benchmarks</summary>
+<details><summary>CHIP-8 benchmarks, how it works and quickstart</summary>
+
+### Benchmarks
 
 These are Qwen3.5-4B scores, greedy decoding. Each row compares base Qwen and the CHIP-8 model on
 the same problems. The Python-tool column is base Qwen calling a real
@@ -152,8 +172,6 @@ this.
 These numbers are the best mode per benchmark across our development checkpoints. The
 released checkpoint contains all the features behind them, and its own full sweep will replace
 this table.
-
-</details>
 
 ### How it works
 
@@ -202,7 +220,7 @@ registered, no stopping criteria and no callbacks. The computer's work is visibl
 stream, as a burst of special "trace" tokens. These are the machine's execution log, and Qwen
 then reads the printed answer like ordinary text.
 
-### CHIP-8 quickstart
+### Quickstart
 
 ```bash
 git clone https://github.com/divagr18/qwenputer && cd qwenputer
@@ -247,6 +265,8 @@ details:
 - the generation settings shipped in `generation_config.json`
 - the optional decoder settings our benchmarks used (`fp` and `tc` in `BatchDecoder`), which make
   inline mode stronger
+
+</details>
 
 ## Citing
 
