@@ -62,6 +62,15 @@ The CPU is **RV32IM** with Zba and a bignum coprocessor. Its code lives in
 [`experimental/riscv/docs/rv32.md`](experimental/riscv/docs/rv32.md) has the design and every
 measurement.
 
+## Qwenputer-npu: a language model inside the language model
+
+[divagr1925/Qwenputer-npu](https://huggingface.co/divagr1925/Qwenputer-npu)
+([ModelScope](https://www.modelscope.ai/models/Spartan1925/Qwenputer-npu)) gives the CPU a
+neural-network instruction set (`VDOT`, `WB`, `SMAQA`) and a weight memory. Karpathy's
+stories260K runs on it as a C program, inside Qwen, and writes its stories: 225,000 trace tokens
+per story token, about 41 seconds each on an L4. Its code is on the
+[`npu` branch](https://github.com/divagr18/qwenputer/tree/npu/experimental/riscv).
+
 ## Gated DeltaNet as RAM
 
 <p align="center"><img src="docs/gdn-ram.png" alt="Gated DeltaNet state used as RAM: a one-hot key overwrites one row, a one-hot query reads it back, and the CPU's registers, memory and program counter live in DeltaNet heads." width="100%"></p>
