@@ -27,9 +27,8 @@ circuit computed at t-1 below the writing layer.
   L10  mlp   DIV: the 15 compare signs (the next quotient digit); rd value select and size
   L11  mlp   the output code (the exit)
 
-VDOT (8 int8 x int4 products, see ref.py): WP = D + w (L3-4; D from the WB head, L1); the WROM
-(17 heads, L5-6) gives the 8 cells; L6 mlp the signed nibble products a_lo * w and a_hi * w, L7
-their nibble splits, L8 the column carries, L9-10 a carry-lookahead add (with rd) into the result.
+The vector unit (VX, docs/vx.md and vx.py) replaces VDOT / WB / SMAQA, which this circuit does
+not implement.
 
 DIV / REM (radix 16, one digit per token): at the digit position for digit k (s = 7 - k) with the
 digits so far Q (right-aligned), q_k = #{m in 1..15 : |A| >> 4s >= (16 Q + m) |B|}; each test is
@@ -46,6 +45,7 @@ from chipformer.dsl.graph import Expr
 from chipformer.q35.ir import A_BIT, A_REF, HD, REF_COLS, Chan, K, Target
 from chipformer.q35.prims import Circ, chan, from_bits, sel, thead
 from chipformer.rv import ref as RF
+from chipformer.rv import vxcirc
 from chipformer.rv import spec as S
 
 T4B = Target(key_heads=16, value_heads=32, intermediate=9216)  # Qwen3.5-4B's layers
@@ -61,7 +61,7 @@ CODE_AMP = 128  # a token's code in its (tied) embedding row: CODE_AMP * (2 * bi
 KAPPA = 2.0**-20  # the predicted code after the exit: KAPPA * (2 * bit - 1)
 TAU_TEXT = 2.0**-40  # (P3) tau on text tokens; -1 on chip tokens (see q35.merge)
 PAY_W = {"V": 15, "F0": 15, "F1": 15, "F2": 2, "J": 16, "R": 16, "BYTE": 9, "FLT": 3, "HEX": 4,
-         "QS": 4, "QD": 7, "BD": 8, "WB": 15}
+         "QS": 4, "QD": 7, "BD": 8, "VC": 15, "VE": 16, "VH": 16}
 
 
 def code_bits(fam: str, p: int) -> list[int]:
@@ -125,7 +125,7 @@ class RvCore(Circ):
             return lambda t: (famof(t)[1] >> i & 1) if famof(t)[0] == nm else 0
 
         names = list(S.FAMILIES) + S.CONTROL_NAMES
-        paid = ("V", "F0", "F1", "F2", "J", "R", "QD", "BD", "WB") + (("BYTE",) if text else ())
+        paid = ("V", "F0", "F1", "F2", "J", "R", "QD", "BD", "VC", "VE", "VH") + (("BYTE",) if text else ())
         self.fam = {n: f(f"is{n}", fam_is(n), full=True) for n in names}
         self.pay = {n: [f(f"{n}.b{i}", pay_bit(n, i), full=True) for i in range(w)]
                     for n, w in PAY_W.items() if n in paid}
@@ -198,14 +198,14 @@ class RvCore(Circ):
         """Fresh dims that start at 0 (heads add onto them)."""
         return [self.token_feature(f"{name}[{i}]", lambda t: 0, full=True) for i in range(n)]
 
-    def table(self, name, queries, keys, vheads, levels="bit", tiny=0.0):
+    def table(self, name, queries, keys, vheads, levels="bit", tiny=0.0, min_level=0):
         """A head with explicit per-column values / gates: vheads are dicts with v {col: Chan},
         z {col: Expr}, outs [(col, weight)], into [Expr] (one per out), beta, a."""
         first, rest = vheads[0], vheads[1:]
         outs = self.head(name, {s: sel(self, e) for s, e in queries.items()},
                          {s: sel(self, e) for s, e in keys.items()}, first["v"], first.get("a", 0),
                          first["z"], first["outs"], tiny=tiny, beta=first.get("beta"),
-                         into=first.get("into"),
+                         into=first.get("into"), min_level=min_level,
                          vx=[{"v": x["v"], "a": x.get("a", 0), "z": x["z"], "outs": x["outs"],
                               "beta": x.get("beta"), "into": x.get("into")} for x in rest])
         node = self.nodes[-1]
@@ -336,19 +336,12 @@ def select_bits_w(c, cases, n: int, name: str) -> list:
     return out
 
 
-def wrom_place(wp: int) -> tuple[int, int, int, int]:
-    """(head, value head, row pair, slot) of WROM word wp (see spec.WROM_WORDS)."""
-    s = wp >> 11
-    if s < 15:
-        return wp >> 7 & 15, wp >> 6 & 1, wp & 63, s
-    return 16, wp >> 6 & 1, wp & 63, wp >> 7 & 15
-
-
-def build(target: Target | None = None, text=None) -> RvCore:
+def build(target: Target | None = None, text=None, vx: bool = False) -> RvCore:
     """The circuit; with ``text`` (P3) also the bridge to Qwen's text: a tool call's text goes
     into a buffer the program reads (TEXT_ADDR), ``</tool_call>`` starts a run (GO), putchar
     output is echoed as Qwen tokens, and the circuit owns the positions of a run."""
     c = RvCore(target, text)
+    c.vx_on = vx
     no_text = c.is_text if text else 0  # text tokens do not count as tokens of a record
     one, fam, pay, kk = c.one, c.fam, c.pay, c.kk
     isV, isJR = fam["V"], fam["J"] + fam["R"]
@@ -361,11 +354,6 @@ def build(target: Target | None = None, text=None) -> RvCore:
     (anchor,) = thead(c, "pc", {0: one}, {0: one},
                       [{"data": {2 + i: jr_bits[i] for i in range(16)}, "ref": one, "beta": isJR}])
     c.tables["pc"] = c.nodes[-1]
-    # the weight base D (VDOT), from the WB token's payload
-    (wbd,) = thead(c, "wbase", {0: one}, {0: one},
-                   [{"data": {2 + i: pay["WB"][i] for i in range(S.WP_BITS)}, "ref": one,
-                     "beta": fam["WB"]}])
-    c.tables["wbase"] = c.nodes[-1]
     xn = c.counter("count", isJR, c.final - isJR)
     rec_start = c.final + fam["GO"]
     xj = c.counter("j", rec_start, one - rec_start - no_text)
@@ -425,8 +413,6 @@ def build(target: Target | None = None, text=None) -> RvCore:
 
     w = add_small(anchor, 0, 16, "w")
     w1 = add_small(anchor, 1, 17, "w+1")  # the link: PC + 4 = ROM_BASE + 4 * (w + 1)
-    # VDOT's WROM word WP = D + w mod 2^15 (L3-4)
-    wp = add_nibbles(c, wbd + [Expr()], w[:16], 4, [], "wp")[:S.WP_BITS]
     assert S.ROM_BASE == 1 << 18 and S.ROM_WORDS == 1 << 16
     pc_bits = [Expr(), Expr()] + w + [one] + [Expr()] * 13  # PC = 0x40000 + 4 w
     link = [Expr()] * 2 + w1[:16] + [one - w1[16], w1[16]] + [Expr()] * 12
@@ -439,7 +425,8 @@ def build(target: Target | None = None, text=None) -> RvCore:
     # with p = w[9:4], half w[3] (row p: columns 2..33, row p + 64: 34..65), word w[2:0], 4 byte
     # columns (b0..b3 of the ROM word)
     fdims = c.zeros(4, "rom.b")
-    for h in range(S.ROM_WORDS >> 11):
+    # with the vector unit (vx): a 128 KB ROM pinned to L4, so L3 holds the unit's weights
+    for h in range((S.ROM_WORDS >> 11) // (2 if vx else 1)):
         hl = lits_of(w[11:16], h)
         q = {}
         for p in range(64):
@@ -458,7 +445,7 @@ def build(target: Target | None = None, text=None) -> RvCore:
                         outs.append((col, OUT_W))
                         into.append(fdims[b])
             vhs.append({"v": {}, "z": z, "outs": outs, "into": into})
-        c.table(f"rom{h}", q, {}, vhs, levels="byte")
+        c.table(f"rom{h}", q, {}, vhs, levels="byte", min_level=6 if vx else 0)
     B0, B1, B2, B3 = (256 * d for d in fdims)  # the word's bytes
 
     # ---------------------------------------------------------------- L4: decode
@@ -1022,108 +1009,6 @@ def build(target: Target | None = None, text=None) -> RvCore:
     sltu = c.node(c.t_and([md["SUB"] + md["SUBI"], 1 - c32]), "sltu")
     eq = c.and_([1 - b for b in r], "eq")
 
-    # ---------------------------------------------------------------- VDOT, WB
-    # the WROM (L5-6): head h < 16 answers row pair WP[5:0] when WP[10:7] = h, head 16 any row
-    # pair; value head x = WP[6]; the slot's 8 cells (columns 2 + 8 slot + k of the pair: row p
-    # holds 2..64, row p + 64 holds 65..127) are gated by z: slot WP[14:11] (< 15) in heads 0..15,
-    # slot WP[10:7] when WP[14:11] = 15 in head 16. Created after the other heads so that it takes
-    # the free key heads of L5-6.
-    vd = uops["VDOT"]
-    wdims = c.zeros(S.WROM_CELLS, "wrom.c")
-    for h in range(17):
-        hl = lits_of(wp[7:11], h) if h < 16 else []
-        q = {}
-        for p in range(64):
-            e = andpre(lits_of(wp[0:6], p) + hl)
-            q[p], q[p + 64] = e, e
-        vhs = []
-        for x in range(2):
-            z, outs, into = {}, [], []
-            for slot in range(15):
-                sl = (lits_of(wp[11:15], slot) if h < 16
-                      else lits_of(wp[11:15], 15) + lits_of(wp[7:11], slot))
-                ze = K * andpre(sl + lits_of([wp[6]], x))
-                for k in range(S.WROM_CELLS):
-                    col = 2 + S.WROM_CELLS * slot + k
-                    z[col] = ze
-                    outs.append((col, OUT_W))
-                    into.append(wdims[k])
-            vhs.append({"v": {}, "z": z, "outs": outs, "into": into})
-        c.table(f"wrom{h}", q, {}, vhs, levels="byte")
-    # L6: signed products of each lane's byte nibbles with its weight w = u - 8: a = lo + 16 hi
-    # (lo unsigned, hi signed), q0 = lo * w in [-120, 105], q1 = hi * w in [-56, 64]
-    acts = [A[8 * k:8 * k + 8] for k in range(4)] + [B[8 * k:8 * k + 8] for k in range(4)]
-    wts = [256 * wdims[k] - 8 for k in range(S.WROM_CELLS)]
-
-    def sv(v):
-        return v - 16 if v >= 8 else v
-
-    q0 = [c.node([t for v in range(1, 16) for t in c.t_and(lits_of(acts[k][0:4], v) + [vd], v,
-                                                             a=wts[k])], f"vd.q0.{k}")
-          for k in range(8)]
-    q1 = [c.node([t for v in range(1, 16) for t in c.t_and(lits_of(acts[k][4:8], v) + [vd], sv(v),
-                                                             a=wts[k])], f"vd.q1.{k}")
-          for k in range(8)]
-    # L7: nibble splits q0 + 128 = l0 + 16 h0, q1 + 64 = l1 + 16 h1, so a * w = l0 + 16 (h0 - 8)
-    # + 16 l1 + 256 (h1 - 4)
-    h0 = [c.split(q0[k] + 128, 8, 233, f"vd.h0.{k}") for k in range(8)]
-    h1 = [c.split(q1[k] + 64, 8, 128, f"vd.h1.{k}") for k in range(8)]
-    l0 = [q0[k] + 128 - 16 * h0[k] for k in range(8)]
-    l1 = [q1[k] + 64 - 16 * h1[k] for k in range(8)]
-    # SMAQA (L5-6): rd += 4 signed byte products of rs1 and rs2; with a = lo_a + 16 hs_a (hs signed),
-    # a * b = ll + 16 (lh + hl) + 256 hh: the products in L5, their nibble splits in L6, then the
-    # same columns as VDOT (the two are exclusive, and each part is exactly 0 when idle)
-    sq = uops["SMAQA"]
-    dotop = vd + sq
-    sqc = [Expr(), Expr(), Expr(), Expr()]
-    for k in range(4):
-        a_, b_ = A[8 * k:8 * k + 8], B[8 * k:8 * k + 8]
-        lo_b, hs_b = from_bits(b_[0:4]), from_bits(b_[4:8]) - 16 * b_[7]
-        prods = []
-        for src, sgn in ((a_[0:4], False), (a_[4:8], True)):
-            for bv in (lo_b, hs_b):
-                prods.append(c.node([t for v in range(1, 16) for t in
-                                     c.t_and(lits_of(src, v) + [sq], sv(v) if sgn else v, a=bv)],
-                                    f"sq.p{len(prods)}.{k}"))
-        ll, lh, hl, hh = prods
-        hll, hlh = c.split(ll, 0, 225, f"sq.hll.{k}"), c.split(lh + 128, 8, 233, f"sq.hlh.{k}")
-        hhl, hhh = c.split(hl + 128, 8, 233, f"sq.hhl.{k}"), c.split(hh + 64, 8, 128, f"sq.hhh.{k}")
-        sqc[0] += ll - 16 * hll
-        sqc[1] += hll + (lh + 128 - 16 * hlh) + (hl + 128 - 16 * hhl)
-        sqc[2] += hlh - 8 + hhl - 8 + (hh + 64 - 16 * hhh)
-        sqc[3] += hhh - 4
-    # L8: the columns (with rd's nibbles; each instruction's range, so the union of VDOT's and
-    # SMAQA's) plus offsets 16 g_i - g_(i-1) that sum to 16^8, split into a digit and a carry
-    cols = [sum(l0, Expr()) + sqc[0], sum(h0, Expr()) + sum(l1, Expr()) - 64 + sqc[1],
-            sum(h1, Expr()) - 32 + sqc[2], sqc[3]]
-    cols = [(cols[k] if k < 4 else Expr()) + nib(C, k) for k in range(8)]
-    vd_rng = [(0, 120), (-64, 8 * 29 - 64), (-32, 64 - 32), (0, 0)]
-    sq_rng = [(0, 60), (0, 4 * 44), (-64, 4 * 43 - 64), (-16, 16)]
-    lo_hi = [(min(a[0], b[0]), max(a[1], b[1])) for a, b in zip(vd_rng, sq_rng)] + [(0, 0)] * 4
-    gs, prev = [], 0
-    for k in range(8):  # the least g_k with offset 16 g_k - g_(k-1) >= -lo_k (g_7 >= 1)
-        g_ = max(-(-(prev - lo_hi[k][0]) // 16), 1 if k == 7 else 0)
-        gs.append(g_)
-        prev = g_
-    offs = [16 * gs[k] - (gs[k - 1] if k else 0) for k in range(8)]
-    assert sum(o * 16**k for k, o in enumerate(offs)) % 16**8 == 0
-    vcar, vdig, vmax = [], [], []
-    for k in range(8):
-        lo_, hi_ = lo_hi[k][0] + offs[k], lo_hi[k][1] + offs[k] + 15
-        assert lo_ >= 0 and hi_ - lo_ <= 255, (k, lo_, hi_)
-        e = cols[k] + offs[k]
-        car = c.split(e, lo_, hi_, f"vd.c{k}")
-        vcar.append(car)
-        vdig.append(e - 16 * car)
-        vmax.append(hi_ // 16)
-    # L9-10: the carry-lookahead add of digits and carries
-    vg, vp, vdd = stage1_cols(c, [(vdig[k] + (vcar[k - 1] if k else 0), 15 + (vmax[k - 1] if k else 0))
-                                  for k in range(8)], [dotop], "vd")
-    vres, _ = adder_stage2(c, vg, vp, vdd, 8, "vd")
-    # WB's payload D = x[rs1] + ~w (= x[rs1] - w - 1) mod 2^15
-    wbop = uops["WB"]
-    wbd_out = add_nibbles(c, A[:16], [one - b for b in w[:16]], 4, [wbop], "wb.d")[:S.WP_BITS]
-
     # ---------------------------------------------------------------- faults, ecalls
     loads = any_of(*RF.LOAD_OPS)
     halfs, words = any_of("LH", "LHU"), uops["LW"]
@@ -1268,24 +1153,14 @@ def build(target: Target | None = None, text=None) -> RvCore:
     case(nr + [bget, rdw_any], "F0", ddig)
     case(nr + [bget, 1 - rdw_any], "NT")
     case(nr + [bprd], "BYTE", ddig + [one, one])  # '0' + digit
-    # VDOT / SMAQA: rd's value record, its size from the result bits in the cases themselves (no select
-    # stage: V = all - fits-as-zeros - fits-as-ones)
-    for base, chunk, top, fin in (([*nr, dotop, rdw_any], vres[0:15], 14, "F0"),
-                                  ([j1, ok, dotop, rdw_any], vres[15:30], 29, "F1")):
-        z_, o_ = [one - b for b in vres[top:32]], vres[top:32]
-        case(base + z_, fin, chunk)
-        case(base + o_, fin, chunk)
-        case(base, "V", chunk)
-        case(base + z_, "V", chunk, -1)
-        case(base + o_, "V", chunk, -1)
-    case([j2, ok, dotop, rdw_any], "F2", vres[30:32])
-    case(nr + [dotop, 1 - rdw_any], "NT")
-    case(nr + [wbop], "WB", wbd_out)
     # a fault: FLT(cause), the PC's 8 hex digits (most significant first), HALT
     case([j0, one - at_max, any_fault], "FLT", cause)
     for k in range(8):
         case([jeq(1 + k), any_fault], "HEX", pc_bits[4 * (7 - k):4 * (8 - k)])
     case([jeq(9), any_fault], "HALT")
+    # the vector unit (vxcirc.py): its state, memories and exit cases
+    c.vx = None if not vx else vxcirc.build(c, one, fam, pay, uops, A, B, C, jt, jeq, nr, rec_start, case,
+                         rdw_any, ok)
     owner = None
     if text:
         cases.append(([fam["BYTE"]], "Q", c.pay["BYTE"], 1))
@@ -1336,8 +1211,7 @@ def build(target: Target | None = None, text=None) -> RvCore:
                "taken": taken, "logic": logic, "shift": shift, "merged": merged,
                "mul": mres, "fault": fc, "qal": qal, "qs": qs, "cmp": cmp_ge, "ahi": ahi,
                "k0b": k0b, "dbits": dbits, "btgt": btgt, "zres": zres, "bn_s": sdig,
-               "bn_d": ddig, "bn_prod": bprod, "bn_dig": bd_dig, "bn_car": bd_car, "q2": q2,
-               "wp": wp, "wbd": wbd, "wdims": wdims, "vres": vres, "wb_out": wbd_out}
+               "bn_d": ddig, "bn_prod": bprod, "bn_dig": bd_dig, "bn_car": bd_car, "q2": q2}
     c.n_plain = n_plain
     return c
 
@@ -1383,27 +1257,6 @@ def byte_rows(words: np.ndarray, n_heads: int) -> list:
     return out
 
 
-def wrom_rows(cells: bytes) -> list:
-    """Per WROM head, the two value heads' rows (see wrom_place); every row carries the ballast."""
-    tabs = []
-    for h in range(17):
-        vh = []
-        for x in range(2):
-            rows = np.zeros((128, HD))
-            rows[:, list(REF_COLS)] = A_REF
-            vh.append(rows)
-        tabs.append(vh)
-    n = len(cells) // S.WROM_CELLS + (len(cells) % S.WROM_CELLS > 0)
-    for wpi in range(n):
-        h, x, p, slot = wrom_place(wpi)
-        for k in range(S.WROM_CELLS):
-            i = S.WROM_CELLS * wpi + k
-            u = cells[i] & 15 if i < len(cells) else 0
-            cc = S.WROM_CELLS * slot + k
-            tabs[h][x][p if cc < 63 else p + 64, 2 + cc] = u
-    return [[{i: vh[x][i] for i in range(128)} for x in range(2)] for vh in tabs]
-
-
 _ROM_CACHE: dict = {}
 
 
@@ -1416,11 +1269,6 @@ def snapshot(c: RvCore, m: "RF.Machine") -> None:
         pc[2 + i] = A_BIT * (m.anchor >> i & 1)
     c.tables["pc"].init = [{0: pc}]
     c.tables["count"].init = [counter_rows(m.n)]
-    wb = np.zeros(HD)
-    wb[list(REF_COLS)] = A_REF
-    for i in range(S.WP_BITS):
-        wb[2 + i] = A_BIT * (m.wb >> i & 1)
-    c.tables["wbase"].init = [{0: wb}]
     c.tables["j"].init = [counter_rows(0)]
     c.tables["vcnt"].init = [counter_rows(0)]
     regs = {r: reg_row(c, m.x[r]) for r in range(1, 32)}
@@ -1436,13 +1284,11 @@ def snapshot(c: RvCore, m: "RF.Machine") -> None:
                         for i, wd in enumerate(m.rom)], dtype=np.int64)
         drom = np.frombuffer(m.drom.ljust(4 * S.DROM_WORDS, bytes(1)), dtype="<u4").astype(np.int64)
         _ROM_CACHE.update(key=key, rom=byte_rows(rom, S.ROM_WORDS >> 11),
-                          drom=byte_rows(drom, S.DROM_WORDS >> 11), wrom=wrom_rows(m.wrom))
-    for h, vh in enumerate(_ROM_CACHE["rom"]):
+                          drom=byte_rows(drom, S.DROM_WORDS >> 11))
+    for h, vh in enumerate(_ROM_CACHE["rom"][:sum(n.startswith("rom") for n in c.tables)]):
         c.tables[f"rom{h}"].init = vh
     for h, vh in enumerate(_ROM_CACHE["drom"]):
         c.tables[f"drom{h}"].init = vh
-    for h, vh in enumerate(_ROM_CACHE["wrom"]):
-        c.tables[f"wrom{h}"].init = vh
     for port in (1, 2):
         for h in range(4):
             vh = []
@@ -1467,6 +1313,8 @@ def snapshot(c: RvCore, m: "RF.Machine") -> None:
                 row[2 + i] = A_BIT * (m.ram[wi] >> i & 1)
             (r1 if wi >> 4 & 1 else r0)[wi >> 5 & 127] = row
         c.tables[f"ram{h}"].init = [r0, r1]
+    if getattr(c, "vx", None):
+        vxcirc.snapshot(c, m)
 
 
 def decode_code(fid: int, p: int, text=None) -> int:

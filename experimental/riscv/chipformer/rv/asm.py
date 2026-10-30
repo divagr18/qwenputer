@@ -90,6 +90,9 @@ class Program:
         return self.labels.get("_start", ROM_BASE)
 
 
+VX_ASM = {"vmat": 0, "vmatr": 1, "vq": 2, "vew": 3, "vexp": 4, "vget": 5, "vred": 6, "vput": 7}
+
+
 def assemble(src: str) -> Program:
     lines = []
     for raw in src.splitlines():
@@ -181,12 +184,8 @@ def assemble(src: str) -> Program:
                 emit(enc_r(0, reg(a[2]), reg(a[1]), f3, reg(a[0]), 0x0B))
             elif op == "bscan":  # rd, rs1
                 emit(enc_r(0, 0, reg(a[1]), 4, reg(a[0]), 0x0B))
-            elif op == "vdot":  # rd, rs1, rs2
-                emit(enc_r(0, reg(a[2]), reg(a[1]), 5, reg(a[0]), 0x0B))
-            elif op == "smaqa":  # rd, rs1, rs2
-                emit(enc_r(0, reg(a[2]), reg(a[1]), 7, reg(a[0]), 0x0B))
-            elif op == "wb":  # rs1
-                emit(enc_r(0, 0, reg(a[0]), 6, 0, 0x0B))
+            elif op in VX_ASM:  # the vector unit (vx.py): rd, rs1, rs2
+                emit(enc_r(0, reg(a[2]), reg(a[1]), VX_ASM[op], reg(a[0]), 0x5B))
             elif op == "bprd":  # dD, k
                 emit(enc_i(val(a[1]), 0, 0, val(a[0]), 0x2B))
             elif op in I_OPS:

@@ -6,3 +6,5 @@ wrom_data2.c
 vd2.S
 __pycache__/
 !stories260k.elf
+weights_vx.h
+wrom_vx.c

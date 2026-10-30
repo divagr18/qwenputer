@@ -44,13 +44,7 @@ BPRD:
   BSCAN f3 4   rd = the number n (<= 63) of ASCII digits at mem8[(rs1 + i) & 0x7FFF], i = 0..
   BPRD  0x2B   putchar('0' + dD[k]), k = imm[6:0], dD = rd & 7 (I-type)
 
-  VDOT  f3 5   rd += sum_k a_k * w_k (mod 2^32) for k < 8: a_k = the signed bytes of rs1 (k < 4) and
-               rs2 (k >= 4), w_k = cell k of WROM word WP = (D + w) mod 2^15 (w: the VDOT's PC word
-               index), each cell u (0..15, 0 past the data) meaning w = u - 8. A run of VDOTs right
-               after `WB rs1` walks the words x[rs1], x[rs1] + 1, ...
-  WB    f3 6   D = (x[rs1] - w - 1) mod 2^15 (w: the WB's PC word index); record WB(D)
-  SMAQA f3 7   rd += sum_k a_k * b_k (mod 2^32) for k < 4: the signed bytes of rs1 and rs2 (the
-               P extension's smaqa, encoded in custom-0 here)
+The vector unit (custom-2, vx.py) replaces VDOT / WB / SMAQA.
 Rows past 127 read as 0 and are not written. A row op's record is a BD token per digit (the
 digit and the carry / borrow out), then rd's value record.
 """
@@ -58,6 +52,8 @@ digit and the carry / borrow out), then rd's value record.
 from dataclasses import dataclass, field
 
 from chipformer.rv import spec as S
+from chipformer.rv import vx as VXM
+from chipformer.rv.vx import OPS as VX_OPS
 
 UOPS = ["ILLEGAL", "LUI", "AUIPC", "MISA",
         "ADDI", "SLTI", "SLTIU", "XORI", "ORI", "ANDI", "SLLI", "SRLI", "SRAI",
@@ -68,7 +64,9 @@ UOPS = ["ILLEGAL", "LUI", "AUIPC", "MISA",
         "MUL", "MULH", "MULHSU", "MULHU", "DIV", "DIVU", "REM", "REMU",
         "SH1ADD", "SH2ADD", "SH3ADD"]
 CUSTOM = {"BMAC": 64, "BMSB": 65, "BLD": 66, "BGET": 67, "BPRD": 68,
-          "BSCAN": 69, "VDOT": 70, "WB": 71, "SMAQA": 72}  # uops 64..127: custom
+          "BSCAN": 69,
+          "VMAT": 73, "VMATR": 74, "VQ": 75, "VEW": 76, "VEXP": 77, "VGET": 78, "VRED": 79,
+          "VPUT": 80}  # uops 64..127: custom
 CSR_STUBS = {0xC00: 0, 0xC01: 0, 0xC02: 0, 0xC80: 0, 0xC81: 0, 0xC82: 0, 0xF14: 0,
              0x301: S.MISA}  # cycle, time, instret (+h), mhartid, misa
 U = {n: i for i, n in enumerate(UOPS)} | CUSTOM
@@ -145,12 +143,8 @@ def decode(w: int) -> Inst:
             return Inst({2: "SH1ADD", 4: "SH2ADD", 6: "SH3ADD"}[f3], rd, rs1, rs2)
     if opc == 0x0B and f3 < 5 and f7 == 0:
         return Inst(["BMAC", "BMSB", "BLD", "BGET", "BSCAN"][f3], rd, rs1, rs2)
-    if opc == 0x0B and f3 == 5 and f7 == 0:
-        return Inst("VDOT", rd, rs1, rs2)
-    if opc == 0x0B and f3 == 6 and f7 == 0 and rd == 0 and rs2 == 0:
-        return Inst("WB", 0, rs1)
-    if opc == 0x0B and f3 == 7 and f7 == 0:
-        return Inst("SMAQA", rd, rs1, rs2)
+    if opc == 0x5B and f7 == 0:
+        return Inst(VX_OPS[f3], rd, rs1, rs2)
     if opc == 0x2B and f3 == 0:
         return Inst("BPRD", imm=w >> 20 & 0x7F, dd=rd & 7)
     if w == 0x00000073:
@@ -335,12 +329,6 @@ class Rv32:
 # --- the circuit's ROM ------------------------------------------------------------------------
 
 
-def vdot(a: int, b: int, cells: list[int]) -> int:
-    """sum_k a_k * (cells[k] - 8): a_k the signed bytes of a (k < 4) and b (k >= 4)."""
-    acts = [sx(a >> 8 * k, 8) for k in range(4)] + [sx(b >> 8 * k, 8) for k in range(4)]
-    return sum(x * (u - 8) for x, u in zip(acts, cells))
-
-
 def csr_read(ins: Inst) -> int | None:
     """The value of a supported pure CSR read (csrr), else None (an illegal-instruction fault)."""
     pure = ins.op in ("CSRRS", "CSRRC", "CSRRSI", "CSRRCI") and ins.rs1 == 0
@@ -416,7 +404,7 @@ class Machine:
     drom: bytes = b""  # read-only data from DROM_BASE
     bn: list = field(default_factory=lambda: [[0] * 128 for _ in range(8)])  # the digit file
     wrom: bytes = b""  # the weight memory, one cell (u = w + 8, low nibble) per byte
-    wb: int = 0  # the weight base D
+    vx: VXM.VX = field(default_factory=VXM.VX)  # the vector unit (vx.py)
 
     @classmethod
     def from_program(cls, prog, entry: int | None = None) -> "Machine":
@@ -433,7 +421,8 @@ class Machine:
         rodata = getattr(prog, "rodata", b"")
         assert len(rodata) <= 4 * S.DROM_WORDS, "rodata does not fit the DROM"
         wrom = getattr(prog, "wrom", b"")
-        assert len(wrom) <= S.WROM_CELLS * S.WROM_WORDS, "the weights do not fit the WROM"
+        assert len(wrom) <= max(S.WROM_CELLS * S.WROM_WORDS, 72 * S.VX_CHUNKS), \
+            "the weights do not fit the WROM"
         return cls(rom, ram, x, (e - S.ROM_BASE) >> 2, drom=bytes(rodata), wrom=bytes(wrom))
 
     out: bytearray = field(default_factory=bytearray)  # putchar output
@@ -558,14 +547,8 @@ class Machine:
             return [S.tok("NT")]
         if op == "ILLEGAL":
             return fault("illegal")
-        if op == "VDOT":
-            return commit_rd(x[ins.rd] + vdot(a, b, self.wrom_cells(self.wb + self.anchor + self.n)))
-        if op == "SMAQA":
-            return commit_rd(x[ins.rd] + sum(sx(a >> 8 * k, 8) * sx(b >> 8 * k, 8) for k in range(4)))
-        if op == "WB":
-            self.wb = (a - (self.anchor + self.n) - 1) & ((1 << S.WP_BITS) - 1)
-            self.n += 1
-            return [S.tok("WB", self.wb)]
+        if op in VX_OPS:
+            return VXM.execute(self, ins)
         if op in CUSTOM:
             return self.digit_op(ins, a, b)
         if op in DIV_OPS:
@@ -577,11 +560,6 @@ class Machine:
         if op in IMM_OPS:
             return commit_rd(alu(op, a, ins.imm & M32))
         return commit_rd(alu(op, a, b))
-
-    def wrom_cells(self, wp: int) -> list[int]:
-        """The 8 cells (0..15) of WROM word wp mod 2^15 (0 past the data)."""
-        o = S.WROM_CELLS * (wp & ((1 << S.WP_BITS) - 1))
-        return [self.wrom[o + k] & 15 if o + k < len(self.wrom) else 0 for k in range(S.WROM_CELLS)]
 
     def ram_byte(self, ea: int) -> int:
         """A byte of RAM at ea mod 32 KB (the digit-file ops' addressing)."""

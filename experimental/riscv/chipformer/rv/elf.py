@@ -27,7 +27,7 @@ def program(path) -> Program:
     entry, segs = segments(path)
     regions = {"rom": (S.ROM_BASE, 4 * S.ROM_WORDS), "drom": (S.DROM_BASE, 4 * S.DROM_WORDS),
                "ram": (S.RAM_BASE, 4 * S.RAM_WORDS),
-               "wrom": (S.WROM_BASE, S.WROM_CELLS * S.WROM_WORDS)}
+               "wrom": (S.WROM_BASE, max(S.WROM_CELLS * S.WROM_WORDS, 72 * S.VX_CHUNKS))}
     bufs = {k: bytearray() for k in regions}
     for vaddr, blob in segs:
         for k, (base, size) in regions.items():
