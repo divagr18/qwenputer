@@ -266,6 +266,8 @@ class FreeRun:
         ids = np.zeros(nf, dtype=np.int64)
         small, row0, table = np.zeros(nf, dtype=bool), np.zeros(nf, dtype=np.int64), []
         for f, nm in enumerate(C.OUT_NAMES):
+            if nm not in S.CONTROLS and nm not in S.FAMILIES:
+                continue  # Q (a P3 echo): never predicted by the standalone machine
             t0 = S.tok(nm) if nm in S.CONTROLS else S.tok(nm, 0)
             size = 1 if nm in S.CONTROLS else S.FAMILIES[nm][1]
             ids[f] = t0

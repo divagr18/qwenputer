@@ -2,7 +2,7 @@
 
     label:                      define a label
     .text / .data / .rodata     switch section (text at ROM_BASE, data at DATA_BASE, rodata at
-                                DROM_BASE)
+    .wrom                       DROM_BASE, the weight memory's cells (one per byte) at WROM_BASE)
     .word 1, 2, label           32-bit words      .byte / .half    likewise
     .space N                    N zero bytes      .align N         to 2^N bytes
     ; or #                      comment
@@ -16,7 +16,7 @@ bgtz, bgt, ble, bgtu, bleu.
 
 import re
 
-from chipformer.rv.spec import DATA_BASE, DROM_BASE, ROM_BASE
+from chipformer.rv.spec import DATA_BASE, DROM_BASE, ROM_BASE, WROM_BASE
 
 ABI = ["zero", "ra", "sp", "gp", "tp", "t0", "t1", "t2", "s0", "s1"] + [f"a{i}" for i in range(8)] \
     + [f"s{i}" for i in range(2, 12)] + ["t3", "t4", "t5", "t6"]
@@ -80,9 +80,10 @@ def hi_lo(v):
 
 class Program:
     def __init__(self, text: list[int], data: bytes, labels: dict[str, int],
-                 data_base: int = DATA_BASE, rodata: bytes = b""):
+                 data_base: int = DATA_BASE, rodata: bytes = b"", wrom: bytes = b""):
         self.text, self.data, self.labels, self.data_base = text, data, labels, data_base
         self.rodata = rodata  # read-only data from DROM_BASE
+        self.wrom = wrom  # the weight memory's cells (VDOT), one per byte
 
     @property
     def entry(self) -> int:
@@ -105,16 +106,18 @@ def assemble(src: str) -> Program:
             lines.append((op.lower(), args))
     labels: dict[str, int] = {}
     for pass_ in range(2):
-        text, data, rodata = [], bytearray(), bytearray()
+        text, data, rodata, wrom = [], bytearray(), bytearray(), bytearray()
         sec = "text"
 
         def here():
             if sec == "text":
                 return ROM_BASE + 4 * len(text)
+            if sec == "wrom":
+                return WROM_BASE + len(wrom)
             return DATA_BASE + len(data) if sec == "data" else DROM_BASE + len(rodata)
 
         def buf():
-            return data if sec == "data" else rodata
+            return {"data": data, "rodata": rodata, "wrom": wrom}[sec]
 
         def val(s):
             s = s.strip()
@@ -145,7 +148,7 @@ def assemble(src: str) -> Program:
             if op == "label":
                 labels[args] = here()
                 continue
-            if op in (".text", ".data", ".rodata"):
+            if op in (".text", ".data", ".rodata", ".wrom"):
                 sec = op[1:]
                 continue
             if op in (".word", ".half", ".byte"):
@@ -178,6 +181,12 @@ def assemble(src: str) -> Program:
                 emit(enc_r(0, reg(a[2]), reg(a[1]), f3, reg(a[0]), 0x0B))
             elif op == "bscan":  # rd, rs1
                 emit(enc_r(0, 0, reg(a[1]), 4, reg(a[0]), 0x0B))
+            elif op == "vdot":  # rd, rs1, rs2
+                emit(enc_r(0, reg(a[2]), reg(a[1]), 5, reg(a[0]), 0x0B))
+            elif op == "smaqa":  # rd, rs1, rs2
+                emit(enc_r(0, reg(a[2]), reg(a[1]), 7, reg(a[0]), 0x0B))
+            elif op == "wb":  # rs1
+                emit(enc_r(0, 0, reg(a[0]), 6, 0, 0x0B))
             elif op == "bprd":  # dD, k
                 emit(enc_i(val(a[1]), 0, 0, val(a[0]), 0x2B))
             elif op in I_OPS:
@@ -266,4 +275,4 @@ def assemble(src: str) -> Program:
                 emit(csr << 20 | reg(a[1]) << 15 | 1 << 12 | 0x73)
             else:
                 raise ValueError(f"unknown instruction {op} {args}")
-    return Program(text, bytes(data), labels, rodata=bytes(rodata))
+    return Program(text, bytes(data), labels, rodata=bytes(rodata), wrom=bytes(wrom))

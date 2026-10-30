@@ -23,10 +23,11 @@ def segments(path) -> tuple[int, list[tuple[int, bytes]]]:
 
 def program(path) -> Program:
     """A ROM-map ELF as a Program: code words from ROM_BASE, read-only data from DROM_BASE,
-    data bytes from RAM_BASE."""
+    data bytes from RAM_BASE, the weight memory's cells from WROM_BASE."""
     entry, segs = segments(path)
     regions = {"rom": (S.ROM_BASE, 4 * S.ROM_WORDS), "drom": (S.DROM_BASE, 4 * S.DROM_WORDS),
-               "ram": (S.RAM_BASE, 4 * S.RAM_WORDS)}
+               "ram": (S.RAM_BASE, 4 * S.RAM_WORDS),
+               "wrom": (S.WROM_BASE, S.WROM_CELLS * S.WROM_WORDS)}
     bufs = {k: bytearray() for k in regions}
     for vaddr, blob in segs:
         for k, (base, size) in regions.items():
@@ -41,7 +42,7 @@ def program(path) -> Program:
     text = bufs["rom"] + bytes(-len(bufs["rom"]) % 4)
     words = [int.from_bytes(text[i:i + 4], "little") for i in range(0, len(text), 4)]
     return Program(words, bytes(bufs["ram"]), {"_start": entry}, data_base=S.RAM_BASE,
-                   rodata=bytes(bufs["drom"]))
+                   rodata=bytes(bufs["drom"]), wrom=bytes(bufs["wrom"]))
 
 
 def load_into(cpu, path) -> None:

@@ -1,11 +1,28 @@
 # A RISC-V computer inside Qwen
 
 Model: [divagr1925/Qwen3.5-4B-Qwenputer](https://huggingface.co/divagr1925/Qwen3.5-4B-Qwenputer) on Hugging Face, or [Spartan1925/Qwen3.5-4B-Qwenputer](https://www.modelscope.ai/models/Spartan1925/Qwen3.5-4B-Qwenputer) on ModelScope.
+This branch (`npu`) is the code for [divagr1925/Qwenputer-npu](https://huggingface.co/divagr1925/Qwenputer-npu)
+([ModelScope](https://www.modelscope.ai/models/Spartan1925/Qwenputer-npu)); the published Qwenputer
+runs from `main`.
 
 This folder compiles a 32-bit **RV32IM** CPU into stock Qwen3.5 layers, using the same compiler as
 the main project. The CPU also has Zba and a bignum coprocessor. It is a self-contained snapshot:
 it carries its own copy of the `chipformer` package, because its compiler changes haven't been
 merged with the main tree yet.
+
+## The NPU instructions (this branch)
+
+The CPU gets a neural-network instruction set, enough to run a second language model inside Qwen:
+
+- `VDOT rd, rs1, rs2`: 8 int8 activations (two registers) times the next 8 int4 weights of a
+  weight memory, added to `rd`; `WB rs1` sets where the weights start.
+- `SMAQA rd, rs1, rs2`: four signed byte products added to `rd` (the P extension's semantics).
+- The weight memory: 32,640 words of 8 int4 weights in DeltaNet heads, from the ELF's `.wrom`.
+
+[`guests/stories260k/`](guests/stories260k) runs Karpathy's stories260K as a C program on it, at
+225,000 trace tokens per story token (2.43M in plain C). `chipformer/rv/fusedexec.py` is a faster
+executor: about 41 s per story token on an L4. `tests/test_rv_vdot.py` checks the circuit against
+the reference, and `python -m chipformer.rv.npucheck MODEL` checks a merged checkpoint's layers.
 
 ## What works
 

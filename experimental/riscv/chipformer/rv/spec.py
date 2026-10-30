@@ -20,6 +20,7 @@ Token families (chip vocabulary ids from 0):
   QD    not final; a quotient digit: payload k << 4 | q (digit k of 8, most significant first)
   BD    not final; a digit-file row step (custom ops): payload digit | carry << 4
   NT, ST0, ST1, SS0, SS1, HALT   final controls (ST/SS: the RAM value head, address bit 6)
+  WB    final; WB rs1: the weight base D = (x[rs1] - w - 1) mod 2^15 (w: the WB's PC word index)
   GO    not final: the start of a run (after a state snapshot)
   SC    not final: BSCAN found one more ASCII digit
 
@@ -31,6 +32,8 @@ Records:
   BGET                                                            F0(digit) | NT
   BSCAN (n digit chars)                                           SC x n, then F0(n) | NT
   BPRD                                                            BYTE('0' + digit)
+  VDOT (rd += 8 int8 x int4 products, see ref.py)                 the value record | NT
+  WB                                                              WB(D)
   the same with rd = x0, not-taken branch, FENCE                NT
   taken branch, JAL, JALR                                        J  (the link is in-circuit)
   SW                                                             ST0 / ST1
@@ -47,6 +50,9 @@ Memory (P2):
   DROM  0x0002_0000 + 128 KB  read-only data (.rodata), bytes; loads only
   ROM   0x0004_0000 + 256 KB  code only, pre-decoded (ref.rom_word), filled from a snapshot
 
+  WROM  32,640 words of 8 int4 weights, VDOT only (not in the address space; the ELF's
+        .wrom section at WROM_BASE, one byte per weight: w + 8 in its low nibble)
+
 The digit file (custom-0 / custom-1 ops, see ref.py): 8 registers of 128 decimal digits (least
 significant first), outside the address space, saved in the snapshot like RAM.
 
@@ -57,7 +63,7 @@ be 0 from the operands' sizes (see ref.div_start), so small quotients take few t
 
 FAMILY_SIZES = [("V", 1 << 15), ("F0", 1 << 15), ("F1", 1 << 15), ("F2", 4), ("J", 1 << 16),
                 ("R", 1 << 16), ("BYTE", 512), ("FLT", 8), ("HEX", 16), ("QS", 16), ("QD", 128),
-                ("BD", 256)]
+                ("BD", 256), ("WB", 1 << 15)]
 FAMILIES = {}
 _base = 0
 for _n, _s in FAMILY_SIZES:
@@ -67,7 +73,7 @@ CTRL = _base
 CONTROL_NAMES = ["NT", "ST0", "ST1", "SS0", "SS1", "HALT", "GO", "SC"]
 CONTROLS = {n: CTRL + i for i, n in enumerate(CONTROL_NAMES)}
 VOCAB = CTRL + len(CONTROL_NAMES)
-FINAL = {"F0", "F1", "F2", "J", "R", "BYTE", "NT", "ST0", "ST1", "SS0", "SS1", "HALT"}
+FINAL = {"F0", "F1", "F2", "J", "R", "BYTE", "NT", "ST0", "ST1", "SS0", "SS1", "HALT", "WB"}
 PAYLOAD_BITS = {n: (s - 1).bit_length() for n, s in FAMILY_SIZES}
 
 FAULTS = ["illegal", "ebreak", "misaligned load", "misaligned store", "load out of range",
@@ -76,6 +82,11 @@ FAULTS = ["illegal", "ebreak", "misaligned load", "misaligned store", "load out 
 ROM_BASE, ROM_WORDS = 0x40000, 1 << 16  # 256 KB of code (two sublayers)
 DROM_BASE, DROM_WORDS = 0x20000, 1 << 15  # 128 KB of read-only data (one sublayer)
 RAM_BASE, RAM_WORDS = 0x0, 1 << 13  # 32 KB (two sublayers)
+# the weight memory (VDOT): 17 heads of 2 x 64 row pairs x 15 words (8 int4 cells); word p = WP
+# (15 bits): slot WP[14:11] < 15 -> head WP[10:7], value head WP[6], row pair WP[5:0]; slot 15 ->
+# head 16 with slot WP[10:7] (< 15)
+WROM_BASE, WROM_WORDS, WROM_CELLS = 0x100000, 15 * 2048 + 15 * 128, 8
+WP_BITS = 15
 DATA_BASE = 0x100  # .data starts here (address 0 stays a null pointer)
 SP_INIT = RAM_BASE + 4 * RAM_WORDS
 N_MAX = 63  # the R refresh comes before the instruction when n == N_MAX
