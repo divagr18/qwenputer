@@ -137,3 +137,18 @@ The model's weights, scales and caches stay data.
   multiply reads acc from the previous tokens through an L1 "lag" head (written every token from
   the lagged payloads, read at once). Expect about 44k trace tokens per story token (4.7-5x
   fewer than today) at about +0 layers.
+
+### Found building VMAT
+
+- **Byte tables need 2-hot reads.** A byte-valued snapshot table read one-hot isn't exact
+  through the HF kernel: it scales by 2^-3.5, and only power-of-two data survives the bf16 cast.
+  The ROM and DROM read row pairs (p, p + 64), which scales by 2^-4 and is exact. Counts of 2, 8
+  and 32 rows scale by powers of 2. Bit tables are exact at any count, because the data and the
+  ballast round alike.
+- **So a key head holds 126 byte columns × 64 row pairs × 2 value heads = 16 KB.** The WROM (4,152
+  chunks × 34 bytes) needs about 12 heads with 3 chunks a row pair.
+- **New WROM addressing.** The WROM goes in L3, where queries may use L2's MLP outputs, so the row
+  pair = base + (k = 1: r // 3, k = 3: r) by a one-stage threshold adder, and the slot = r % 3 (k
+  = 1) or the chunk c (k = 3). The CPU passes the row-pair base; each op starts at slot 0.
+- **Layer count.** The first VMAT build (one-hot WROM, 4 comparison adders) placed at 13 layers:
+  L5, L6, L8 and L9's MLPs hit the 9,216-unit cap, so the dot product spilled upward.

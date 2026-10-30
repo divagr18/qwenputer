@@ -27,7 +27,7 @@ below are the instruction's (register bits, in order); SLOTS gives their VC pack
 
   f3 0  VMAT   rd: dst 4, n 7, k 2, mode 1, keep 1, chunk 2; rs1: base 13, doff 6
                rows r < n: acc = sum over c < k of VA[64 (chunk + c):][:64] . row-chunk
-               base + r k + c; out = acc * S (the last chunk's) mod 2^32. Mode 0: VM[dst][doff + r]
+               base + 64 c + r (chunk-major; base aligned to n, and to 256 for k = 3); out = acc * S (the last chunk's) mod 2^32. Mode 0: VM[dst][doff + r]
                = out (n, doff even), max |out| tracked; mode 1: argmax of out, the best row's
                (last) row-chunk index. A row's tokens: the running sum after each chunk (VE VE,
                32 bits), then out (a word): 2 k + 2.
@@ -105,15 +105,15 @@ def reg3(f, name, bank):
 # each op's VC tokens, in order: (slot, [(value, width)] packed from bit 0). Every op sends slot 0
 # = (dst register 4, element offset / 2 5, write target 3: 0 none, 1 vsum, 2 VA, 4 VM (max |v|
 # tracked), 5 VM (max v tracked), 6 KC, 7 VCC; the VM codes share bits 1-2, the caches bits 1-2);
-# 1 = (bank A register 3, bank B register 3, more 6), 2 = (VA byte offset 9, more 3), 3 = (cache
-# row 10, more 2) are the other memory addresses; 4-7 are the op's own
+# 1 = (bank A register 3, bank B register 3, more 6), 2 = (VA byte offset 9, chunk step 1: VMAT
+# k = 3 reads chunk + c, more 2), 3 = (cache row 10, more 2) are the other memory addresses; 4-7
+# are the op's own
 W_SUM, W_VA, W_VM, W_VMS, W_KC, W_VC = 1, 2, 4, 5, 6, 7
 SLOTS = {
     "VMAT": lambda f: [(0, [(f["dst"], 4), (f["doff"] >> 1, 5), ((f["mode"] == 0) * W_VM, 3)]),
-                       (2, [(64 * f["chunk"], 9)]),
+                       (2, [(64 * f["chunk"], 9), (f["k"] == 3, 1)]),
                        (4, [(f["base"], 12)]),
-                       (5, [(f["base"] >> 12, 1), (f["n"], 7), (f["mode"], 1), (f["keep"], 1),
-                            (f["k"] == 3, 1)])],
+                       (5, [(f["base"] >> 12, 1), (f["n"], 7), (f["mode"], 1), (f["keep"], 1)])],
     "VMATR": lambda f: [(0, [(f["dst"], 4), (f["eoff"] >> 1, 5), (W_VM + (f["mode"] == 0), 3)]),
                         (2, [(64 * f["off"], 9)]),
                         (3, [(f["base"], 10), (f["mode"], 1), (f["keep"], 1)]),
@@ -121,8 +121,8 @@ SLOTS = {
                         (5, [(f["s"] >> 6, 11)])],
     "VQ": lambda f: [(0, [(0, 4), (f["eoff"] >> 1, 5), ((W_VA, W_KC, W_VC)[f["dst"]], 3)]),
                      (1, [(reg3(f, "src", 0), 3), (reg3(f, "src", 1), 3)]),
-                     (2, [(f["off"], 9), (f["n"] >> 5, 2), (f["src"] >> 3, 1)]),
-                     (3, [(f["off"], 10)]),
+                     (2, [(f["off"], 9), (0, 1), (f["n"] >> 5, 2)]),
+                     (3, [(f["off"], 10), (f["src"] >> 3, 1)]),
                      (4, [(f["r"], 12)]),
                      (5, [(f["r"] >> 12, 3), (f["sh"], 5), (f["n"] >> 1, 4)])],
     "VEW": lambda f: [(0, [(f["a"], 4), (f["eoff"] >> 1, 5), (W_VM, 3)]),
@@ -133,15 +133,15 @@ SLOTS = {
                       (6, [(f["p"] >> 6, 9), (f["op"], 2)])],
     "VEXP": lambda f: [(0, [(0, 4), (0, 5), (W_VA, 3)]),
                        (1, [(reg3(f, "src", 0), 3), (reg3(f, "src", 1), 3), (f["src"] >> 3, 1)]),
-                       (2, [(f["off"], 9), (f["n"], 3)]),
-                       (4, [(f["n"] >> 3, 4), (f["ksh"], 5), (f["c"], 3)]),
-                       (5, [(f["c"] >> 3, 12)]),
-                       (6, [(f["c"] >> 15, 1), (f["m"], 11)]),
-                       (7, [(f["m"] >> 11, 12)]),
-                       (3, [(0, 2), (f["m"] >> 23, 8)])],
+                       (2, [(f["off"], 9), (0, 1), (f["n"], 2)]),
+                       (4, [(f["n"] >> 2, 5), (f["ksh"], 5), (f["c"], 2)]),
+                       (5, [(f["c"] >> 2, 12)]),
+                       (6, [(f["c"] >> 14, 2), (f["m"], 10)]),
+                       (7, [(f["m"] >> 10, 12)]),
+                       (3, [(f["m"] >> 22, 9)])],
     "VRED": lambda f: [(0, [(0, 4), (0, 5), (W_SUM, 3)]),
-                       (2, [(64 * f["off"], 9), (f["mode"], 1), (f["n"], 2)]),
-                       (4, [(f["n"] >> 2, 5)])],
+                       (2, [(64 * f["off"], 9), (0, 1), (f["mode"], 1), (f["n"], 1)]),
+                       (4, [(f["n"] >> 1, 6)])],
     "VPUT": lambda f: [(0, [(f["target"] >> 5 & 15, 4), (f["target"] & 31, 5),
                             ((f["target"] < 512) * W_VM, 3)])],
 }
@@ -256,14 +256,17 @@ def execute(m, ins) -> list[int]:
     if op == "VMAT":
         dst, n, k, mode, keep, chunk, base, doff = (
             f[x] for x in ("dst", "n", "k", "mode", "keep", "chunk", "base", "doff"))
+        check(k == 1 or chunk == 0 and mode == 0, f"VMAT k {k} chunk {chunk} mode {mode}")
         check(k in (1, 3) and (mode or n % 2 == doff % 2 == 0) and 0 < n <= 64,
               f"VMAT n {n} k {k} doff {doff}")
         if mode == 0:
             aligned(doff, n)
+        aligned(base, n)
+        check(k == 1 or base & 192 == 0, f"VMAT k 3 base {base}")
         for r in range(n):
             acc, sc, part = 0, 0, []
             for c in range(k):
-                w, sc = wrom_chunk(m, base + r * k + c)
+                w, sc = wrom_chunk(m, base + 64 * c + r)
                 acc += sum(v.va[64 * (chunk + c) + i] * w[i] for i in range(64))
                 part += [ve(acc), ve(acc >> 16)]  # the running sum, then the row's scaling
             o = s32(acc * sc)
@@ -274,7 +277,7 @@ def execute(m, ins) -> list[int]:
             else:
                 best = r == 0 and not keep or o > v.vbest
                 if best:
-                    v.vbest, v.varg = o, base + r * k + k - 1
+                    v.vbest, v.varg = o, base + 64 * (k - 1) + r
                 check(-(1 << 30) <= o < 1 << 30, f"VMAT argmax out {o}")
                 toks += part + word(o, best)
     elif op == "VMATR":

@@ -207,7 +207,7 @@ static int forward(int tok, int pos) {
         int shq = bl > 11 ? bl - 11 : 0;
         int32_t rq = (127 << 15) / (vmax >> shq);
         for (int i = 0; i < HID; i += 64) vq(RH + i / 64, 0, HID - i < 64 ? HID - i : 64, 0, shq, i, rq);
-        for (int r2 = 0; r2 < DIM; r2 += 8) vmat(RO, r2, 8, 3, 0, r2 > 0, 0, WB_w2[l] + 3 * r2);
+        for (int r2 = 0; r2 < DIM; r2 += 8) vmat(RO, r2, 8, 3, 0, r2 > 0, 0, WB_w2[l] + r2);
         int a2 = vwin();
         uint32_t fp = mulhu((uint32_t)plain_f(vmax), (uint32_t)f);  // * F / 2^(36 - shb)
         fp = shb >= 4 ? fp << (shb - 4) : fp >> (4 - shb);

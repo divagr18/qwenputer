@@ -1172,7 +1172,7 @@ def build(target: Target | None = None, text=None, vx: bool = False) -> RvCore:
                        + c.t_and([c.isTCC, one - running]), "owner")
     c.owner = owner
     own = [owner] if text else []
-    fam_cases = [(l_, FAM_ID[fn], wt) for l_, fn, _, wt in cases]
+    fam_cases = [(l_, FAM_ID[fn], wt) for l_, fn, _, wt in cases if fn is not None]  # (None: payload only)
     pay_cases = [(l_, pl, wt) for l_, _, pl, wt in cases if not isinstance(pl, int)]
     if text:
         # merged: no separate select dims (they would outlive the exit and reach Qwen's norms);

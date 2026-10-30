@@ -14,10 +14,11 @@ element = offset | vel, bit by bit.
 """
 
 from chipformer.dsl.graph import Expr
-from chipformer.q35.ir import Chan
+from chipformer.q35.ir import Chan, K
 from chipformer.q35.prims import thead
 
 ZERO = Expr()
+OUT_W = 2.0**7  # a one-hot read's output weight (as core.OUT_W)
 
 
 def bits_of(th, n_bits, top):
@@ -156,6 +157,10 @@ def build(c, one, fam, pay, uops, A, B, C, jt, jeq, nr, rec_start, case, rdw_any
     # so a row writes only its own). VA byte offsets of a write are multiples of 8.
     s2 = cfg[2]
     voff, vchunk = s2[0:9], s2[6:9]
+    k3 = s2[9]
+    cstep = [count_fn(c, xsub, (lambda k, b=b: (k >> (b + 1)) & 1 if k < 6 else 0), 8,
+                      f"vx.cstep{b}", a=k3) for b in range(2)]
+    ech = [vchunk[0] + cstep[0], vchunk[1] + cstep[1], vchunk[2]]  # (k = 3 reads from chunk 0)
     pay8 = pay["VH"][0:8]
     gated = [[count_fn(c, xel, (lambda k, j=j: int(k >= 1 and (k - 1) >> 1 & 3 == j)), 64,
                        f"vx.vag{j}.{b}", a=pay8[b]) for b in range(8)] for j in range(4)]
@@ -168,7 +173,7 @@ def build(c, one, fam, pay, uops, A, B, C, jt, jeq, nr, rec_start, case, rdw_any
         q, keys = {}, {}
         for ch in range(6):
             for j in range(4):
-                q[4 * ch + j] = andpre(lits(vchunk, ch))
+                q[4 * ch + j] = andpre(lits(ech, ch))
                 keys[4 * ch + j] = Chan(andpre(lits(vchunk, ch) + lits(bj, j)), (1, 0, 0, 0))
         vhs = []
         for x in range(2):
@@ -192,7 +197,7 @@ def build(c, one, fam, pay, uops, A, B, C, jt, jeq, nr, rec_start, case, rdw_any
     # rounding folded in (+2^14, -1 when negative), then the clamp to +-127
     s4, s5 = cfg[4], cfg[5]
     sh = s5[3:8]
-    srcb = s2[11]
+    srcb = cfg[3][10]
     rbits = s4[0:12] + s5[0:3]
     rn = [from_bits(rbits[4 * j:4 * j + 4]) for j in range(4)]
     srcs = {(bk, x): vm_read[bk][x] for bk in ("A", "B") for x in range(2)}
@@ -240,8 +245,8 @@ def build(c, one, fam, pay, uops, A, B, C, jt, jeq, nr, rec_start, case, rdw_any
     # ---------------------------------------------------------------- VRED
     # vsum = sum over i < n of VA chunk byte i, squared (mode 0) or as is (mode 1): per lane the
     # nibble products lo^2, 2 lo hs, hs^2 (q = lo + 16 hs, hs signed), summed by sum_columns
-    n_red = from_bits(s2[10:12]) + 4 * from_bits(s4c[0:5])
-    mode1 = s2[9]
+    n_red = s2[11] + 2 * from_bits(s4c[0:6])
+    mode1 = s2[10]
     lane = [c.node(c.t_ge(n_red, i + 1, 0, 127), f"vx.red.g{i}") for i in range(64)]
     cols = [[], [], []]
     for i, q in enumerate(u.va):
@@ -291,6 +296,101 @@ def build(c, one, fam, pay, uops, A, B, C, jt, jeq, nr, rec_start, case, rdw_any
     k1 = c.node(c.t_and(gv[29:32]) + c.t_and([1 - b for b in gv[29:32]]), "vx.get.fits30")
     u.get = gv
 
+
+    # ---------------------------------------------------------------- VMAT
+    # A row's tokens: the running sum after each chunk (VE lo, VE hi), then out = acc * S (VE lo,
+    # VH hi | the tracker flag). The dot product reads the row-chunk from the WROM (L2-3) and VA;
+    # the running sum and the scaling read the earlier sums back through the lag head.
+    (lagd,) = thead(c, "vx.lag", {0: one}, {0: one},
+                    [{"data": {**{2 + i: Chan(pay["VE"][i], (0, 1, 0, 0)) for i in range(16)},
+                               **{18 + i: Chan(pay["VE"][i], (0, 0, 1, 0)) for i in range(16)}},
+                      "ref": one}])
+    lag0, lag1, lag2 = list(pay["VE"][0:16]), lagd[0:16], lagd[16:32]
+    s5v = cfg[5]
+    wb13 = cfg[4][0:12] + s5v[0:1]
+    n_vm = from_bits(s5v[1:8])
+    mode_am, keep = s5v[8], s5v[9]
+    # the WROM address base | c << 6 | row (rows and chunk steps are aligned by the reference)
+    addr = ([count_bit(c, xel, b, 64, f"vx.wa{b}", base=wb13[b]) for b in range(6)]
+            + [wb13[6] + cstep[0], wb13[7] + cstep[1]] + wb13[8:13])
+    wdims = c.zeros(34, "vx.wrom")
+    for kh in range(9):
+        q = {row: andpre(lits(addr[1:8], row) + lits(addr[9:13], kh)) for row in range(128)}
+        vhs = []
+        for x in range(2):
+            z, outs, into = {}, [], []
+            for slot in range(2):
+                ze = K * andpre(lits([addr[8]], x) + lits([addr[0]], slot))
+                for i in range(34):
+                    col = 2 + 34 * slot + i
+                    z[col] = ze
+                    outs.append((col, OUT_W))
+                    into.append(wdims[i])
+            vhs.append({"v": {}, "z": z, "outs": outs, "into": into})
+        c.table(f"vx.wrom{kh}", q, {}, vhs, levels="byte")
+    wbyte = [256 * d for d in wdims]
+    whi = [c.split(wbyte[i], 0, 255, f"vx.wu{i}") for i in range(34)]
+    wlo = [wbyte[i] - 16 * whi[i] for i in range(34)]
+    wts = [x_ for i in range(32) for x_ in (wlo[i] - 8, whi[i] - 8)]
+    sn = [wlo[32], whi[32], wlo[33], whi[33]]  # the row scale's nibbles
+
+    def sv(v):
+        return v - 16 if v >= 8 else v
+
+    # the earlier 32-bit sum: lags (1, 0) at an even vsub, (2, 1) at an odd one
+    odd = count_fn(c, xsub, lambda k: k & 1, 8, "vx.subodd")
+    dprev = count_fn(c, xsub, lambda k: int(2 <= k < 6), 8, "vx.dprev", a=k3)
+    l01, l12 = lag1 + lag0, lag2 + lag1
+    pdot = [c.node(c.t_and([1 - odd, dprev, l01[b]]) + c.t_and([odd, dprev, l12[b]]),
+                   f"vx.mat.pd{b}") for b in range(32)]
+    pacc = [c.node(c.t_and([1 - odd, l01[b]]) + c.t_and([odd, l12[b]]), f"vx.mat.pa{b}")
+            for b in range(32)]
+    cols = [[] for _ in range(8)]
+    for i, a in enumerate(u.va):
+        q0 = c.node([t for v in range(1, 16) for t in c.t_and(lits(a[0:4], v), v, a=wts[i])],
+                    f"vx.mat.q0.{i}")
+        q1 = c.node([t for v in range(1, 16) for t in c.t_and(lits(a[4:8], v), sv(v), a=wts[i])],
+                    f"vx.mat.q1.{i}")
+        cols[0].append((q0, -120, 105))
+        cols[1].append((q1, -56, 64))
+    for k_ in range(8):
+        cols[k_].append((from_bits(pdot[4 * k_:4 * k_ + 4]), 0, 15))
+    acc = sum_columns(c, cols, 8, "vx.mat.dot")
+    # out = acc * S: acc as 20 bits signed (5 nibbles), S as 4 nibbles
+    pcols = [[] for _ in range(8)]
+    for i in range(5):
+        nib = pacc[4 * i:4 * i + 4]
+        for j in range(4):
+            sg = i == 4
+            pt = c.node([t for v in range(1, 16)
+                         for t in c.t_and(lits(nib, v), sv(v) if sg else v, a=sn[j])],
+                        f"vx.mat.m{i}{j}")
+            pcols[i + j].append((pt, -120 if sg else 0, 105 if sg else 225))
+    o = sum_columns(c, pcols, 8, "vx.mat.o")
+    # the tracker flag: |o| > |s| (VM, mode 0) or o > s (argmax), by the signs of o + ~s, o - s,
+    # o + s and o + s - 1 (s: the tracker, sign-extended)
+    trk_s = [c.node(c.t_and([1 - mode_am, trk["vmx"][b]]) + c.t_and([mode_am, trk["vbest"][b]]),
+                    f"vx.mat.s{b}") for b in range(31)]
+    s32 = trk_s + [trk_s[30]]
+    sn_pos = [(from_bits(s32[4 * k_:4 * k_ + 4]), 0, 15) for k_ in range(8)]
+    sn_neg = [(15 - from_bits(s32[4 * k_:4 * k_ + 4]), 0, 15) for k_ in range(8)]
+
+    def with_s(extra, const):
+        cl = [list(pcols[k_]) + [extra[k_]] for k_ in range(8)]
+        for k_, v in const.items():
+            cl[k_].append((v * one, v, v))
+        return cl
+
+    a1p = sum_columns(c, with_s(sn_neg, {}), 8, "vx.mat.a1p")[31]
+    a1 = sum_columns(c, with_s(sn_neg, {0: 1}), 8, "vx.mat.a1")[31]
+    a2 = sum_columns(c, with_s(sn_pos, {}), 8, "vx.mat.a2")[31]
+    a2p = sum_columns(c, with_s(sn_pos, {k_: 15 for k_ in range(8)}), 8, "vx.mat.a2p")[31]
+    o30, s30 = o[30], trk_s[30]
+    better = [[1 - mode_am, 1 - o30, 1 - s30, 1 - a1p], [1 - mode_am, 1 - o30, s30, 1 - a2p],
+              [1 - mode_am, o30, 1 - s30, a2], [1 - mode_am, o30, s30, a1], [mode_am, 1 - a1p]]
+    done_m = c.node(c.t_eq(sum(velt, Expr()) - n_vm, 0, -127, 64), "vx.mat.done")
+    u.mat = (acc, o)
+
     # ---------------------------------------------------------------- the exit
     def vc_case(op, k, slot, parts):
         """VC token k of op: slot, then the 12 data bits packed from (bit list, width) parts."""
@@ -320,19 +420,19 @@ def build(c, one, fam, pay, uops, A, B, C, jt, jeq, nr, rec_start, case, rdw_any
     vc_case("VQ", 0, 0, [([ZERO] * 4, 4), (C[5:10], 5), ([C[18], one, dst_any], 3)])
     vc_case("VQ", 1, 1, [(and_bits(c, C[0:3], 1 - C[3], "vx.vq.ra"), 3),
                          (and_bits(c, C[0:3], C[3], "vx.vq.rb"), 3)])
-    vc_case("VQ", 2, 2, [(A[0:9], 9), (C[15:17], 2), ([C[3]], 1)])
-    vc_case("VQ", 3, 3, [(A[0:10], 10)])
+    vc_case("VQ", 2, 2, [(A[0:9], 9), ([ZERO], 1), (C[15:17], 2)])
+    vc_case("VQ", 3, 3, [(A[0:10], 10), ([C[3]], 1)])
     vc_case("VQ", 4, 4, [(B[0:12], 12)])
     vc_case("VQ", 5, 5, [(B[12:15], 3), (C[19:24], 5), (C[11:15], 4)])
-    n_vq = 2 * (from_bits(s5[8:12]) + 16 * from_bits(s2[9:11]))
+    n_vq = 2 * (from_bits(s5[8:12]) + 16 * from_bits(s2[10:12]))
     done = c.node(c.t_eq(sum(velt, Expr()) - n_vq, 0, -126, 64), "vx.vq.done")
     stream("VQ", 6, [1 - done], "VH", q8 + [ZERO] * 8)
     stream("VQ", 6, [done], "NT")
 
     # VRED: VC slots 0, 2, 4, then the sum as a word, NT
     vc_case("VRED", 0, 0, [([ZERO] * 9, 9), ([one, ZERO, ZERO], 3)])
-    vc_case("VRED", 1, 2, [([ZERO] * 6 + C[8:11], 9), ([C[7]], 1), (C[0:2], 2)])
-    vc_case("VRED", 2, 4, [(C[2:7], 5)])
+    vc_case("VRED", 1, 2, [([ZERO] * 6 + C[8:11], 9), ([ZERO], 1), ([C[7]], 1), (C[0:1], 1)])
+    vc_case("VRED", 2, 4, [(C[1:7], 6)])
     stream("VRED", 3, [el_eq(0), sub_eq(0)], "VE", red[0:16])
     stream("VRED", 3, [el_eq(0), sub_eq(1)], "VH", red[16:31] + [ZERO])
     stream("VRED", 3, [el_eq(1)], "NT")
@@ -344,6 +444,27 @@ def build(c, one, fam, pay, uops, A, B, C, jt, jeq, nr, rec_start, case, rdw_any
     case([jeq(1), ok, vg, rdw_any, 1 - k1], "V", gv[15:30])
     case([jeq(2), ok, vg, rdw_any], "F2", gv[30:32])
     case(nr + [vg, 1 - rdw_any], "NT")
+
+    # VMAT: VC slots 0, 2, 4, 5; per row the running sums (VE lo, VE hi) then out (VE, VH | flag)
+    vc_case("VMAT", 0, 0, [(C[0:4], 4), (A[14:19], 5), ([ZERO, ZERO, 1 - C[13]], 3)])
+    vc_case("VMAT", 1, 2, [([ZERO] * 6 + C[15:17] + [ZERO], 9), ([c.and_([C[11], C[12]], "vx.mat.k3")], 1)])
+    vc_case("VMAT", 2, 4, [(A[0:12], 12)])
+    vc_case("VMAT", 3, 5, [(A[12:13], 1), (C[4:11], 7), ([C[13]], 1), ([C[14]], 1)])
+    go = [1 - done_m]
+    for lit in ([sub_eq(0)], [k3, sub_eq(2)], [k3, sub_eq(4)]):
+        stream("VMAT", 4, go + lit, "VE", acc[0:16])
+    for lit in ([sub_eq(1)], [k3, sub_eq(3)], [k3, sub_eq(5)]):
+        stream("VMAT", 4, go + lit, "VE", acc[16:32])
+    for lit in ([1 - k3, sub_eq(2)], [k3, sub_eq(6)]):
+        stream("VMAT", 4, go + lit, "VE", o[0:16])
+    for lit in ([1 - k3, sub_eq(3)], [k3, sub_eq(7)]):
+        stream("VMAT", 4, go + lit, "VH", o[16:31] + [ZERO])
+        flag = [ZERO] * 15 + [one]
+        stream("VMAT", 4, go + lit + [el_eq(0), 1 - keep], None, flag)  # an op's first row
+        for cond in better:
+            stream("VMAT", 4, go + lit + [velt[0]] + cond, None, flag)
+            stream("VMAT", 4, go + lit + [el_eq(0), keep] + cond, None, flag)
+    stream("VMAT", 4, [done_m], "NT")
     return u
 
 
@@ -445,6 +566,9 @@ def and_bits(c, bits, lit, name):
     return [c.and_([b, lit], f"{name}.b{i}") for i, b in enumerate(bits)]
 
 
+_WROM: dict = {}
+
+
 def snapshot(c, m):
     """The unit's memories as initial head states (every VA row carries the ballast, so a chunk
     read always sums four)."""
@@ -458,6 +582,25 @@ def snapshot(c, m):
         return r
 
     v = m.vx
+    key = hash(m.wrom)
+    if _WROM.get("key") != key:
+        tabs = [[{} for _ in range(2)] for _ in range(9)]
+        n = -(-len(m.wrom) // 72)
+        for a in range(n):
+            cell = [m.wrom[72 * a + i] & 15 if 72 * a + i < len(m.wrom) else 0 for i in range(68)]
+            kh, x, rw, slot = a >> 9, a >> 8 & 1, a >> 1 & 127, a & 1
+            rows = tabs[kh][x]
+            if rw not in rows:
+                rows[rw] = row()
+            for i in range(34):
+                rows[rw][2 + 34 * slot + i] = cell[2 * i] + 16 * cell[2 * i + 1]
+        for kh in range(9):
+            for x in range(2):
+                for rw in range(128):
+                    tabs[kh][x].setdefault(rw, row())
+        _WROM.update(key=key, tabs=tabs)
+    for kh in range(9):
+        c.tables[f"vx.wrom{kh}"].init = _WROM["tabs"][kh]
     for kh in range(4):
         vh = []
         for x in range(2):

@@ -82,3 +82,43 @@ def test_vred_vget(circ, seed):
                           "li t1, 1", "vget s1, t1, zero", "xor s2, s2, s1"]
     toks = run_check(circ, assemble("\n".join(lines) + EXIT))
     assert sum(S.family(t)[0] == "VC" for t in toks) > 0
+
+
+def wrom_cells(rng, n_chunks, smax):
+    """Random row-chunks: 64 int4 cells, a scale < smax in 4 nibble cells, 4 unused."""
+    out = bytearray()
+    for _ in range(n_chunks):
+        out += bytes(rng.randrange(16) for _ in range(64))
+        sc = rng.randrange(smax)
+        out += bytes(sc >> 4 * i & 15 for i in range(4)) + bytes(4)
+    return bytes(out)
+
+
+def vmat(dst, doff, n, k, mode, keep, chunk, base):
+    cfg = dst | n << 4 | k << 11 | mode << 13 | keep << 14 | chunk << 15
+    return [f"li t0, {cfg}", f"li t1, {base | doff << 13}", f"vmat t0, t1, zero"]
+
+
+@pytest.mark.parametrize("seed", range(2))
+def test_vmat(circ, seed):
+    rng = random.Random(seed)
+    lines = []
+    reg = rng.randrange(16)
+    lines += fill(rng, reg, [rng.randint(-30000, 30000) for _ in range(64)])
+    for ch in range(3):
+        lines += vq(reg, 0, 64, 0, rng.randrange(6, 10), 64 * ch, rng.randrange(1 << 15))
+    for _ in range(5):
+        k = rng.choice([1, 1, 3])
+        mode = 0 if k == 3 else rng.choice([0, 0, 1])
+        n = rng.choice([2, 4, 8] if k == 3 else [2, 8, 16])
+        base = rng.randrange(0, 1024, 256) + rng.randrange(0, 64, n) if k == 3 else rng.randrange(0, 1024, n)
+        dst, doff = rng.randrange(16), rng.randrange(0, 64, n)
+        lines += vmat(dst, doff, n, k, mode, rng.random() < 0.3, 0 if k == 3 else rng.randrange(3), base)
+        lines += ["li t1, 0", "vget s1, t1, zero", "li t1, 2", "vget s2, t1, zero",
+                  "li t1, 3", "vget s3, t1, zero"]
+        if mode == 0:
+            lines += vq(dst, doff, n, 0, rng.randrange(8, 14), 64 * 5, rng.randrange(1 << 15))
+    cells = wrom_cells(rng, 1024, 1 << 12)
+    src = "\n".join(lines) + EXIT + "\n.wrom\n" + "\n".join(
+        f".byte {', '.join(str(b) for b in cells[i:i + 72])}" for i in range(0, len(cells), 72))
+    run_check(circ, assemble(src))

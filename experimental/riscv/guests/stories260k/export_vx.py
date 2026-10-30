@@ -53,28 +53,40 @@ cells, bases, h = bytearray(), {}, []
 CHUNK = 72  # VX row-chunks: 64 int4 cells, the row scale in 4 nibble cells, 4 unused
 
 
-def add_matrix(name, q, scale):
-    """Rows of k = ceil(n / 64) row-chunks, each with the row's scale; returns the first chunk."""
+chunks = {}  # address -> 72 cells
+
+
+def add_matrix(name, q, scale, base):
+    """Row r's chunk c (64 inputs each) at address base + 64 c + r (chunk-major, so an op's
+    address is base | c << 6 | r), each with the row's scale; returns base."""
     rows, n = q.shape
     k = -(-n // 64)
-    first = len(cells) // CHUNK
+    assert k == 1 or rows <= 64, name
     s = np.round(np.asarray(scale, np.float64) * 2**15).astype(np.int64)
     assert s.max() < 2**16, (name, s.max())
     for r in range(rows):
         row = np.zeros(64 * k, np.int64)
         row[:n] = q[r]
         for c in range(k):
-            cells.extend((row[64 * c:64 * c + 64] + 8).astype(np.uint8).tobytes())
-            cells.extend(bytes((int(s[r]) >> 4 * i & 15) for i in range(4)) + bytes(4))
-    return first
+            a = base + 64 * c + r
+            assert a not in chunks, (name, a)
+            chunks[a] = ((row[64 * c:64 * c + 64] + 8).astype(np.uint8).tobytes()
+                         + bytes((int(s[r]) >> 4 * i & 15) for i in range(4)) + bytes(4))
+    return base
 
 
-wb = {}
-wb["cls"] = add_matrix("cls", Q["cls"], SC["cls"])
+# the layout: cls at 0; layer l at 512 + 768 l: wq 0, wo 64, w1 128, w3 320, w2 512 (its three
+# chunk planes at 512, 576, 640), wk 704, wv 736 (every op's base is aligned to its rows)
+wb = {"cls": add_matrix("cls", Q["cls"], SC["cls"], 0)}
 for l in range(nl):
-    for k in MATS[1:]:
-        wb[k, l] = add_matrix(k, Q[k][l], SC[k][l])
-assert len(cells) // CHUNK <= 17 * 256, len(cells) // CHUNK
+    L = 512 + 768 * l
+    for k, off in (("wq", 0), ("wo", 64), ("w1", 128), ("w3", 320), ("w2", 512), ("wk", 704),
+                   ("wv", 736)):
+        wb[k, l] = add_matrix(k, Q[k][l], SC[k][l], L + off)
+top = max(chunks) + 1
+assert top <= 17 * 256, top
+for a in range(top):
+    cells.extend(chunks.get(a, bytes(CHUNK)))
 
 
 def carr(name, ctype, a):
@@ -126,4 +138,4 @@ open(f"{HERE}/weights_vx.h", "w").write("#include <stdint.h>\n" + "".join(h))
 open(f"{HERE}/wrom_vx.c", "w").write(
     "#include <stdint.h>\n__attribute__((section(\".wrom\"), used)) const uint8_t WROM_DATA["
     f"{len(cells)}] = {{{','.join(map(str, cells))}}};\n")
-print(f"{len(cells) // CHUNK} WROM row-chunks of {17 * 256}")
+print(f"{len(chunks)} WROM row-chunks, top address {top} of {17 * 256}")
