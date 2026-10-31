@@ -261,11 +261,13 @@ class FreeRun:
         # from a table
         from chipformer.rv import spec as S
 
-        nf, nb = len(C.OUT_NAMES), C.NPAY
+        # Q is a text-bridge output code, not a standalone machine token.
+        output_names = list(S.FAMILIES) + S.CONTROL_NAMES
+        nf, nb = len(output_names), C.NPAY
         base, bits = np.zeros((nf, self.ex.D)), np.zeros((nf, nb, self.ex.D))
         ids = np.zeros(nf, dtype=np.int64)
         small, row0, table = np.zeros(nf, dtype=bool), np.zeros(nf, dtype=np.int64), []
-        for f, nm in enumerate(C.OUT_NAMES):
+        for f, nm in enumerate(output_names):
             t0 = S.tok(nm) if nm in S.CONTROLS else S.tok(nm, 0)
             size = 1 if nm in S.CONTROLS else S.FAMILIES[nm][1]
             ids[f] = t0
