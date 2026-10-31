@@ -4,7 +4,8 @@
 
 Qwenputer model: [Hugging Face](https://huggingface.co/divagr1925/Qwen3.5-4B-Qwenputer) · [ModelScope](https://www.modelscope.ai/models/Spartan1925/Qwen3.5-4B-Qwenputer)  
 Filesystem model: [Hugging Face](https://huggingface.co/divagr1925/Qwen3.5-4B-Qwenputer-Filesystem) · [ModelScope](https://www.modelscope.ai/models/Spartan1925/Qwen3.5-4B-Qwenputer-Filesystem)  
-NPU model: [Hugging Face](https://huggingface.co/divagr1925/Qwenputer-npu) · [ModelScope](https://www.modelscope.ai/models/Spartan1925/Qwenputer-npu)
+NPU model: [Hugging Face](https://huggingface.co/divagr1925/Qwenputer-npu) · [ModelScope](https://www.modelscope.ai/models/Spartan1925/Qwenputer-npu)  
+QwenPU, the vector unit: [GitHub](https://github.com/divagr18/QwenPU) · [Hugging Face](https://huggingface.co/divagr1925/QwenPU)
 
 **Qwenputer is a new kind of experimental model: Qwen3.5-4B with a 32-bit RISC-V CPU compiled and
 inserted directly into its weights.** It isn't a plugin, a tool or a sandbox. The CPU is 11
@@ -106,6 +107,11 @@ so any model that fits runs the same way.
 
 A new fused executor runs the CPU at about 5,500 trace tokens a second on an L4, so a story token
 takes about 41 seconds. The model card has the quickstart and the checks.
+
+**Next: [QwenPU](https://github.com/divagr18/QwenPU).** It gives the CPU a vector unit of its own,
+with its own memories in DeltaNet heads. The same stories260K story takes 53,000 trace tokens per
+story token instead of 225,000, about 16 seconds each on an L4. It's a work in progress: exact,
+but its checkpoint is 26.7 GB until the hidden size is trimmed.
 
 ## In-weight filesystem (experimental)
 
