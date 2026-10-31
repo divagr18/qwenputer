@@ -54,11 +54,13 @@ def main() -> None:
     ap.add_argument("model")
     ap.add_argument("elfs", nargs="*")
     ap.add_argument("--steps", type=int, default=30000)
+    ap.add_argument("--chip-only", action="store_true",
+                    help="load only the embedding and chip layers on the GPU (a GPU under 40 GB)")
     args = ap.parse_args()
     sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "tests"))
     import test_rv_vx as T
 
-    chat = RvChat(args.model)
+    chat = RvChat(args.model, chip_only=args.chip_only)
     assert chat.meta.get("vx"), "not a VX (QwenPU) checkpoint"
     progs = []
     for name in ("vput", "vq", "vred_vget", "vmat", "vew", "attention"):

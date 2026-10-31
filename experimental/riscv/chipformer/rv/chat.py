@@ -98,7 +98,9 @@ class ExecRow:
 
 class RvChat:
     def __init__(self, path, device: str | None = None, fast: bool = True,
-                 executor: bool = False) -> None:
+                 executor: bool = False, chip_only: bool = False) -> None:
+        """chip_only: only the embedding and the chip layers on the device (Qwen's layers stay
+        in CPU memory): enough for the chip path, when the whole model doesn't fit."""
         from transformers import AutoTokenizer, Qwen3_5ForCausalLM
 
         from chipformer.q35.fast import exact_matmuls
@@ -108,8 +110,14 @@ class RvChat:
         self.path = Path(path)
         self.meta = json.loads((self.path / "chipformer.json").read_text())
         self.dev = device or ("cuda" if torch.cuda.is_available() else "cpu")
-        self.model = Qwen3_5ForCausalLM.from_pretrained(self.path, dtype=torch.bfloat16)
-        self.model = self.model.to(self.dev).eval()
+        if chip_only:
+            self.model = Qwen3_5ForCausalLM.from_pretrained(self.path, dtype=torch.bfloat16).eval()
+            lm = self.model.model
+            for mod in (lm.embed_tokens, lm.rotary_emb, *lm.layers[: self.meta["chip_layers"]]):
+                mod.to(self.dev)
+        else:
+            self.model = Qwen3_5ForCausalLM.from_pretrained(self.path, dtype=torch.bfloat16)
+            self.model = self.model.to(self.dev).eval()
         self.lm = self.model.model
         self.tok = AutoTokenizer.from_pretrained(self.path)
         self.T = BR.Text(self.path / "tokenizer.json")
