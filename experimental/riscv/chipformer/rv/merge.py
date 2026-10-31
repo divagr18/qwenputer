@@ -100,7 +100,7 @@ def text_rows(c, lay, T: BR.Text, base_emb: torch.Tensor, v0: int) -> torch.Tens
 
 
 def build_merged(src, dst, mute_qwen: bool = True, hidden: int | None = None,
-                 m: int | None = None) -> dict:
+                 m: int | None = None, vx: bool = False) -> dict:
     from safetensors.torch import save_file
 
     from chipformer.q35.emit import Layout, allocate, check_bf16, emit_layers
@@ -113,7 +113,7 @@ def build_merged(src, dst, mute_qwen: bool = True, hidden: int | None = None,
     tc0 = cfg["text_config"]
     d0, v0, inter = tc0["hidden_size"], tc0["vocab_size"], tc0["intermediate_size"]
     T = BR.Text(src / "tokenizer.json")
-    c = core.build(Target(tc0["linear_num_key_heads"], tc0["linear_num_value_heads"], inter), T)
+    c = core.build(Target(tc0["linear_num_key_heads"], tc0["linear_num_value_heads"], inter), T, vx=vx)
     keep = set(c.keep)
     alloc = allocate(c, None, keep, inter)
     if hidden is None:
@@ -225,7 +225,7 @@ def build_merged(src, dst, mute_qwen: bool = True, hidden: int | None = None,
             "slots": alloc.n_slots, "muted": mute_qwen,
             "code_dims": [lay.dim(d) for d in code], "tau_dim": lay.dim(tau),
             "mu_dim": lay.dim(next(iter(c.mu.terms))), "nfam": core.NFAM, "npay": core.NPAY,
-            "tool_call": [T.TCO, T.TCC], "printable": T.printable}
+            "tool_call": [T.TCO, T.TCC], "printable": T.printable, "vx": vx}
     (dst / "chipformer.json").write_text(json.dumps(meta, indent=1))
     return meta
 
@@ -239,8 +239,9 @@ def main() -> None:
     ap.add_argument("--no-mute", action="store_true")
     ap.add_argument("--hidden", type=int)
     ap.add_argument("--ballast", type=int)
+    ap.add_argument("--vx", action="store_true", help="with the VX vector unit (QwenPU)")
     args = ap.parse_args()
-    meta = build_merged(args.src, args.out, not args.no_mute, args.hidden, args.ballast)
+    meta = build_merged(args.src, args.out, not args.no_mute, args.hidden, args.ballast, args.vx)
     print(json.dumps({k: meta[k] for k in ("hidden", "chip_layers", "slots", "circuit")}))
 
 

@@ -39,16 +39,20 @@ sign) through the multiplier.
 
 from contextlib import contextmanager
 
+import dataclasses
+
 import numpy as np
 
 from chipformer.dsl.graph import Expr
 from chipformer.q35.ir import A_BIT, A_REF, HD, REF_COLS, Chan, K, Target
 from chipformer.q35.prims import Circ, chan, from_bits, sel, thead
 from chipformer.rv import ref as RF
+from chipformer.q35 import sched
 from chipformer.rv import vxcirc
 from chipformer.rv import spec as S
 
 T4B = Target(key_heads=16, value_heads=32, intermediate=9216)  # Qwen3.5-4B's layers
+VX_RESERVE = 600  # MLP units a sublayer the vector unit leaves for slot handovers
 # output family ids: the chip families and controls, then Q (P3: a printable Qwen token, the echo
 # of a putchar; its payload indexes the bridge's printable tokens)
 OUT_NAMES = list(S.FAMILIES) + S.CONTROL_NAMES + ["Q"]
@@ -1159,8 +1163,13 @@ def build(target: Target | None = None, text=None, vx: bool = False) -> RvCore:
         case([jeq(1 + k), any_fault], "HEX", pc_bits[4 * (7 - k):4 * (8 - k)])
     case([jeq(9), any_fault], "HALT")
     # the vector unit (vxcirc.py): its state, memories and exit cases
-    c.vx = None if not vx else vxcirc.build(c, one, fam, pay, uops, A, B, C, jt, jeq, nr, rec_start, case,
-                         rdw_any, ok)
+    # (its MLP nodes leave VX_RESERVE units a sublayer free, so dims can still hand over slots)
+    c.vx = None
+    if vx:
+        full, c.target = c.target, dataclasses.replace(c.target,
+                                                       intermediate=c.target.intermediate - VX_RESERVE)
+        c.vx = vxcirc.build(c, one, fam, pay, uops, A, B, C, jt, jeq, nr, rec_start, case, rdw_any, ok)
+        c.target = full
     owner = None
     if text:
         cases.append(([fam["BYTE"]], "Q", c.pay["BYTE"], 1))
@@ -1213,6 +1222,8 @@ def build(target: Target | None = None, text=None, vx: bool = False) -> RvCore:
                "k0b": k0b, "dbits": dbits, "btgt": btgt, "zres": zres, "bn_s": sdig,
                "bn_d": ddig, "bn_prod": bprod, "bn_dig": bd_dig, "bn_car": bd_car, "q2": q2}
     c.n_plain = n_plain
+    if vx:  # re-place by criticality (q35.sched), leaving VX_RESERVE units for slot handovers
+        sched.reschedule(c, c.target.intermediate - VX_RESERVE, c.target.key_heads)
     return c
 
 

@@ -72,7 +72,7 @@ def main() -> None:
     T = BR.Text(Path(args.model) / "tokenizer.json")
     cfg = json.loads((Path(args.model) / "config.json").read_text())
     c = core.build(Target(cfg["linear_num_key_heads"], cfg["linear_num_value_heads"],
-                          cfg["intermediate_size"]), T)
+                          cfg["intermediate_size"]), T, vx=meta.get("vx", False))
     tot = {"records": 0, "ok": 0, "positions": 0, "owned": 0}
     for line in Path(args.records).read_text().splitlines()[: args.limit]:
         r = json.loads(line)

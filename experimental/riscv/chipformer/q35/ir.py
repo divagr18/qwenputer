@@ -172,6 +172,7 @@ class Graph:
         else:
             d = self._dim(name, "ffn", sub)
         self.nodes.append(FFN(name, terms, d, sub, into is not None))
+        self.nodes[-1].min_level = min_level
         return Expr({d: 1})
 
     def head(self, name: str, q: dict, k: dict, v: dict, a: "Expr | Num", z: dict,
@@ -227,6 +228,7 @@ class Graph:
         self.nodes.append(Head(name, q, k, v, a, z,
                                [(col, d, w) for (col, w), d in zip(outs, dims)], sub,
                                self.target.cols, tiny, beta, into is not None, extra))
+        self.nodes[-1].min_level = min_level
         return ret
 
     def n_layers(self) -> int:

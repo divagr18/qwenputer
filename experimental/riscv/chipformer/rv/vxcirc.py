@@ -14,8 +14,9 @@ element = offset | vel, bit by bit.
 """
 
 from chipformer.dsl.graph import Expr
-from chipformer.q35.ir import Chan, K
-from chipformer.q35.prims import thead
+from chipformer.q35.ir import A_BIT, A_REF, REF_COLS, Chan, K
+from chipformer.q35.prims import chan, thead
+from chipformer.rv import spec as S
 
 ZERO = Expr()
 OUT_W = 2.0**7  # a one-hot read's output weight (as core.OUT_W)
@@ -47,17 +48,20 @@ class VX:
     pass
 
 
-def count_fn(c, x, f, top, name, a=None):
+def count_fn(c, x, f, top, name, a=None, lits_=()):
     """An L1 MLP node: a * f(k) for the count k = 0..top of the 2^-k counter x (thresholds on x,
-    as RvCore.thermo), f 0/1-valued; a: a linear 0/1 form (default ONE)."""
+    as RvCore.thermo), f 0/1-valued; a: a linear 0/1 form (default ONE), lits_: 0/1 literals
+    ANDed in (held in the gates, so any mix of them is exact). At the counter's reset tokens
+    (c.vx_resets) x is not 2^0, so the thresholds are held off there: k = 0."""
     one = c.one
     a = one if a is None else a
-    terms = [(1, a, one)] if f(0) else []
+    rs = 16 * c.vx_resets[id(x)] + 16 * (len(lits_) - sum(lits_, Expr()))
+    terms = (c.t_and(list(lits_)) if lits_ else [(1, a, one)]) if f(0) else []
     for v in range(1, top + 1):
         d = f(v) - f(v - 1)
         if d:
             m = v - 1  # [k > m] = [k >= v]
-            terms += [(d, a, 7 * one - 8 * 2**m * x), (-d, a, 6 * one - 8 * 2**m * x)]
+            terms += [(d, a, 7 * one - 8 * 2**m * x - rs), (-d, a, 6 * one - 8 * 2**m * x - rs)]
     return c.node(terms, name)
 
 
@@ -93,6 +97,7 @@ def build(c, one, fam, pay, uops, A, B, C, jt, jeq, nr, rec_start, case, rdw_any
     xsub = c.counter("vx.sub", rsub, isVE)
     velt = c.thermo(xel, rel, 64, "vx.el")
     vsubt = c.thermo(xsub, rsub, 8, "vx.sub")
+    c.vx_resets = {id(xel): rel, id(xsub): rsub}
     vel = bits_of(velt, 6, 64)  # the next token's element
     u.velt, u.vsubt, u.vel = velt, vsubt, vel
 
@@ -186,37 +191,13 @@ def build(c, one, fam, pay, uops, A, B, C, jt, jeq, nr, rec_start, case, rdw_any
             vhs.append({"data": data, "ref": one, "beta": andpre(gate)})
         outs = thead(c, f"vx.va{kh}", keys, q, vhs)
         c.tables[f"vx.va{kh}"] = c.nodes[-1]
+        c.nodes[-1].qhot = 4  # (a chunk read: 4 rows in every key head; the executors read top-k)
         for x in range(2):
             va_read += [outs[x][16 * j:16 * j + 16] for j in range(4)]  # 4 pairs of 16 bits
     # a 4-hot read returns each row at 1/4
     u.va = [[4 * d for d in bits] for pr in va_read for bits in (pr[0:8], pr[8:16])]  # 64 bytes
 
-    # ---------------------------------------------------------------- VQ
-    # q = clamp(round(clamp16(VM[src][e] >> sh) * r / 2^15), +-127): the element (bank and
-    # parity), an arithmetic shift by 4 (sh >> 2) then by sh & 3, clamp16, the multiply with the
-    # rounding folded in (+2^14, -1 when negative), then the clamp to +-127
     s4, s5 = cfg[4], cfg[5]
-    sh = s5[3:8]
-    srcb = cfg[3][10]
-    rbits = s4[0:12] + s5[0:3]
-    rn = [from_bits(rbits[4 * j:4 * j + 4]) for j in range(4)]
-    srcs = {(bk, x): vm_read[bk][x] for bk in ("A", "B") for x in range(2)}
-    y = []
-    for i in range(31):
-        terms = []
-        for (bk, x), v in srcs.items():
-            bl = lits([srcb], int(bk == "B")) + lits([parity], x)
-            for k in range(8):
-                j = i + 4 * k
-                terms += c.t_and(bl + lits(sh[2:5], k) + [v[min(j, 30)]])
-        y.append(c.node(terms, f"vx.vq.y{i}"))
-    z = [c.node([t for k in range(4) for t in c.t_and(lits(sh[0:2], k) + [y[min(i + k, 30)]])],
-                f"vx.vq.z{i}") for i in range(31)]
-    t16 = clamp16_bits(c, z, "vx.vq.t")
-    p = mul_su(c, t16, rn, "vx.vq.m", const={3: 4, 0: t16[15]})
-    q8 = sat127_bits(c, p[15:31], "vx.vq.q")
-    u.vq = q8
-
 
     # ---------------------------------------------------------------- L2: trackers
     # stored from the payloads of a result's two tokens (VE bits 0-15 at lag 1, VH bits 0-14 at
@@ -228,12 +209,13 @@ def build(c, one, fam, pay, uops, A, B, C, jt, jeq, nr, rec_start, case, rdw_any
     flag = pay["VH"][15]
     s4c, s5c = cfg[4], cfg[5]
     wbase = s4c[0:12] + s5c[0:1]
-    varg = [count_bit(c, xel, b, 64, f"vx.varg{b}", base=wbase[b], shift=1) for b in range(13)]
+    varg = ([count_bit(c, xel, b, 64, f"vx.varg{b}", shift=1) for b in range(6)]
+            + list(wbase))  # VMAT's argmax row: base << 6 | r
     trk = {}
     for name, extra, gate in (
             ("vsum", {}, [isVH, wt[0], 1 - wt[1], 1 - wt[2]]),
             ("vmx", {33: wt[0]}, [isVH, flag, wt[2], 1 - wt[1]]),
-            ("vbest", {33 + b: varg[b] for b in range(13)}, [isVH, flag] + lits(wt, 0))):
+            ("vbest", {33 + b: varg[b] for b in range(19)}, [isVH, flag] + lits(wt, 0))):
         data = dict(word_v)
         data.update(extra)
         (outs,) = thead(c, f"vx.{name}", {0: one}, {0: one},
@@ -243,29 +225,23 @@ def build(c, one, fam, pay, uops, A, B, C, jt, jeq, nr, rec_start, case, rdw_any
     u.trk = trk
 
     # ---------------------------------------------------------------- VRED
-    # vsum = sum over i < n of VA chunk byte i, squared (mode 0) or as is (mode 1): per lane the
-    # nibble products lo^2, 2 lo hs, hs^2 (q = lo + 16 hs, hs signed), summed by sum_columns
+    # vsum = sum over i < n of VA chunk byte i, squared (mode 0) or as is (mode 1), by bit counts
+    # over the lanes: with q = sum_b c_b q_b (c_b = 2^b, c_7 = -2^7), q^2 = sum_b c_b^2 q_b +
+    # sum_{b < b'} 2 c_b c_b' q_b q_b'
     n_red = s2[11] + 2 * from_bits(s4c[0:6])
     mode1 = s2[10]
     lane = [c.node(c.t_ge(n_red, i + 1, 0, 127), f"vx.red.g{i}") for i in range(64)]
-    cols = [[], [], []]
-    for i, q in enumerate(u.va):
-        lo_b, hs_b = q[0:4], q[4:8]
-        lo_v = from_bits(lo_b)
-        hs_v = from_bits(hs_b[0:3]) - 8 * hs_b[3]
-        g0, g1 = [lane[i], 1 - mode1], [lane[i], mode1]
-
-        def sv(v):
-            return v - 16 if v >= 8 else v
-
-        c0 = (sum((c.t_and(lits(lo_b, v) + g0, v, a=lo_v) for v in range(1, 16)), [])
-              + sum((c.t_and([lo_b[b]] + g1, 1 << b) for b in range(4)), []))
-        c1 = (sum((c.t_and(lits(lo_b, v) + g0, 2 * v, a=hs_v) for v in range(1, 16)), [])
-              + sum((c.t_and([hs_b[b]] + g1, -8 if b == 3 else 1 << b) for b in range(4)), []))
-        c2 = sum((c.t_and(lits(hs_b, v) + g0, sv(v), a=hs_v) for v in range(1, 16)), [])
-        cols[0].append((c.node(c0, f"vx.red.c0.{i}"), 0, 225))
-        cols[1].append((c.node(c1, f"vx.red.c1.{i}"), -240, 210))
-        cols[2].append((c.node(c2, f"vx.red.c2.{i}"), 0, 64))
+    cw = [1 << b for b in range(7)] + [-128]
+    cols = [[] for _ in range(8)]
+    for b in range(8):
+        for b2 in range(b, 8):
+            for md in ((0, 1) if b == b2 else (0,)):
+                gate = [mode1] if md else [1 - mode1]
+                cnt = c.node([t for i, q in enumerate(u.va)
+                              for t in c.t_and([q[b], q[b2], lane[i]] + gate if b2 != b else
+                                               [q[b], lane[i]] + gate)], f"vx.red.n{b}{b2}{md}")
+                w = cw[b] if md else cw[b] * cw[b2] * (1 if b == b2 else 2)
+                place_count(c, cols, cnt, 64, w, f"vx.red.s{b}{b2}{md}")
     red = sum_columns(c, cols, 8, "vx.red")
     u.red = red
 
@@ -273,7 +249,7 @@ def build(c, one, fam, pay, uops, A, B, C, jt, jeq, nr, rec_start, case, rdw_any
     # rd = vmx (|s|, or s when it was tracked signed) / vsum / varg / bit length of vmx, by rs1
     sv_bits = trk["vmx"][0:31]
     signed_t = trk["vmx"][31]
-    neg = [1 - b for b in sv_bits] + [one]  # -s = ~s + 1 (32 bits, s sign-extended)
+    neg = [1 - b for b in sv_bits] + [1 - sv_bits[30]]  # -s = ~s + 1 (32 bits, s sign-extended)
     from chipformer.rv import core as CORE
     negs = CORE.add_nibbles(c, neg, [one] + [ZERO] * 31, 8, [], "vx.get.neg")
     sgn = sv_bits[30]
@@ -283,7 +259,7 @@ def build(c, one, fam, pay, uops, A, B, C, jt, jeq, nr, rec_start, case, rdw_any
     th = [c.node(c.t_const(1) + c.t_and([1 - b for b in absv[m:31]], -1), f"vx.get.ge{m}")
           for m in range(31)]
     blen = c.int_bits(sum(th, Expr()), 31, "vx.get.bl", 5)
-    srcs = [absv, list(trk["vsum"][0:31]) + [trk["vsum"][30]], list(trk["vbest"][31:44]),
+    srcs = [absv, list(trk["vsum"][0:31]) + [trk["vsum"][30]], list(trk["vbest"][31:50]),
             blen]
     gv = []
     for i in range(32):
@@ -299,30 +275,42 @@ def build(c, one, fam, pay, uops, A, B, C, jt, jeq, nr, rec_start, case, rdw_any
 
     # ---------------------------------------------------------------- VMAT
     # A row's tokens: the running sum after each chunk (VE lo, VE hi), then out = acc * S (VE lo,
-    # VH hi | the tracker flag). The dot product reads the row-chunk from the WROM (L2-3) and VA;
-    # the running sum and the scaling read the earlier sums back through the lag head.
+    # VH hi | the tracker flag). The WROM (L3) holds 3 row-chunks a row pair p; the op's row r
+    # reads pair base + d (d = r // 3 or r, by an adder in L2's MLP: the pairs stay in one block
+    # of 64), slot r % 3 (k = 1) or the chunk step (k = 3). The running sum and the scaling read
+    # the earlier sums back through the lag head.
     (lagd,) = thead(c, "vx.lag", {0: one}, {0: one},
                     [{"data": {**{2 + i: Chan(pay["VE"][i], (0, 1, 0, 0)) for i in range(16)},
                                **{18 + i: Chan(pay["VE"][i], (0, 0, 1, 0)) for i in range(16)}},
                       "ref": one}])
     lag0, lag1, lag2 = list(pay["VE"][0:16]), lagd[0:16], lagd[16:32]
     s5v = cfg[5]
-    wb13 = cfg[4][0:12] + s5v[0:1]
     n_vm = from_bits(s5v[1:8])
     mode_am, keep = s5v[8], s5v[9]
-    # the WROM address base | c << 6 | row (rows and chunk steps are aligned by the reference)
-    addr = ([count_bit(c, xel, b, 64, f"vx.wa{b}", base=wb13[b]) for b in range(6)]
-            + [wb13[6] + cstep[0], wb13[7] + cstep[1]] + wb13[8:13])
+    # k = 1: chunk 3 base + start + r; the start slot by literals (slot 2 bits 10, 11: other ops
+    # may set both, which then matches none)
+    st = [[1 - k3, 1 - s2[10], 1 - s2[11]], [1 - k3, s2[10], 1 - s2[11]], [1 - k3, 1 - s2[10], s2[11]]]
+    dsel = [sum((count_fn(c, xel, (lambda k, b=b, x=x: ((x + k) // 3) >> b & 1), 64,
+                          f"vx.wd{x}.{b}", lits_=st[x]) for x in range(3)), Expr())
+            + count_fn(c, xel, (lambda k, b=b: k >> b & 1), 64, f"vx.wd3{b}", a=k3)
+            for b in range(6)]
+    wp = c.int_bits(from_bits(wbase[0:6]) + from_bits(dsel), 63, "vx.wp", 6)
+    slot = [sum((count_fn(c, xel, (lambda k, x=x, y=y: int((y + k) % 3 == x)), 64,
+                          f"vx.wsl{y}.{x}", lits_=st[y]) for y in range(3)), Expr())
+            + count_fn(c, xsub, (lambda k, x=x: int(min(k >> 1, 2) == x)), 8, f"vx.wsl3{x}", a=k3)
+            for x in range(3)]
     wdims = c.zeros(34, "vx.wrom")
-    for kh in range(9):
-        q = {row: andpre(lits(addr[1:8], row) + lits(addr[9:13], kh)) for row in range(128)}
+    for kh in range(S.VX_CHUNKS // 384):
+        q = {}
+        for p in range(64):
+            q[p] = q[p + 64] = andpre(lits(wp, p) + lits(wbase[7:11], kh))
         vhs = []
         for x in range(2):
             z, outs, into = {}, [], []
-            for slot in range(2):
-                ze = K * andpre(lits([addr[8]], x) + lits([addr[0]], slot))
+            for sl in range(3):  # slots 0, 1 in row p, 2 in row p + 64
+                ze = K * andpre(lits([wbase[6]], x) + [slot[sl]])
                 for i in range(34):
-                    col = 2 + 34 * slot + i
+                    col = 2 + 34 * sl + i
                     z[col] = ze
                     outs.append((col, OUT_W))
                     into.append(wdims[i])
@@ -334,9 +322,6 @@ def build(c, one, fam, pay, uops, A, B, C, jt, jeq, nr, rec_start, case, rdw_any
     wts = [x_ for i in range(32) for x_ in (wlo[i] - 8, whi[i] - 8)]
     sn = [wlo[32], whi[32], wlo[33], whi[33]]  # the row scale's nibbles
 
-    def sv(v):
-        return v - 16 if v >= 8 else v
-
     # the earlier 32-bit sum: lags (1, 0) at an even vsub, (2, 1) at an odd one
     odd = count_fn(c, xsub, lambda k: k & 1, 8, "vx.subodd")
     dprev = count_fn(c, xsub, lambda k: int(2 <= k < 6), 8, "vx.dprev", a=k3)
@@ -345,51 +330,344 @@ def build(c, one, fam, pay, uops, A, B, C, jt, jeq, nr, rec_start, case, rdw_any
                    f"vx.mat.pd{b}") for b in range(32)]
     pacc = [c.node(c.t_and([1 - odd, l01[b]]) + c.t_and([odd, l12[b]]), f"vx.mat.pa{b}")
             for b in range(32)]
-    cols = [[] for _ in range(8)]
-    for i, a in enumerate(u.va):
-        q0 = c.node([t for v in range(1, 16) for t in c.t_and(lits(a[0:4], v), v, a=wts[i])],
-                    f"vx.mat.q0.{i}")
-        q1 = c.node([t for v in range(1, 16) for t in c.t_and(lits(a[4:8], v), sv(v), a=wts[i])],
-                    f"vx.mat.q1.{i}")
-        cols[0].append((q0, -120, 105))
-        cols[1].append((q1, -56, 64))
+    # the dot product, by bit planes (bitplane_cols), plus the earlier running sum
+    cols = bitplane_cols(c, u.va, wts, "vx.mat.bp")
     for k_ in range(8):
         cols[k_].append((from_bits(pdot[4 * k_:4 * k_ + 4]), 0, 15))
     acc = sum_columns(c, cols, 8, "vx.mat.dot")
     # out = acc * S: acc as 20 bits signed (5 nibbles), S as 4 nibbles
     pcols = [[] for _ in range(8)]
     for i in range(5):
-        nib = pacc[4 * i:4 * i + 4]
         for j in range(4):
             sg = i == 4
-            pt = c.node([t for v in range(1, 16)
-                         for t in c.t_and(lits(nib, v), sv(v) if sg else v, a=sn[j])],
-                        f"vx.mat.m{i}{j}")
+            pt = c.node([t for b in range(4) for t in c.t_and(
+                [pacc[4 * i + b]], -8 if sg and b == 3 else 1 << b, a=sn[j])], f"vx.mat.m{i}{j}")
             pcols[i + j].append((pt, -120 if sg else 0, 105 if sg else 225))
     o = sum_columns(c, pcols, 8, "vx.mat.o")
-    # the tracker flag: |o| > |s| (VM, mode 0) or o > s (argmax), by the signs of o + ~s, o - s,
-    # o + s and o + s - 1 (s: the tracker, sign-extended)
-    trk_s = [c.node(c.t_and([1 - mode_am, trk["vmx"][b]]) + c.t_and([mode_am, trk["vbest"][b]]),
-                    f"vx.mat.s{b}") for b in range(31)]
-    s32 = trk_s + [trk_s[30]]
-    sn_pos = [(from_bits(s32[4 * k_:4 * k_ + 4]), 0, 15) for k_ in range(8)]
-    sn_neg = [(15 - from_bits(s32[4 * k_:4 * k_ + 4]), 0, 15) for k_ in range(8)]
-
-    def with_s(extra, const):
-        cl = [list(pcols[k_]) + [extra[k_]] for k_ in range(8)]
-        for k_, v in const.items():
-            cl[k_].append((v * one, v, v))
-        return cl
-
-    a1p = sum_columns(c, with_s(sn_neg, {}), 8, "vx.mat.a1p")[31]
-    a1 = sum_columns(c, with_s(sn_neg, {0: 1}), 8, "vx.mat.a1")[31]
-    a2 = sum_columns(c, with_s(sn_pos, {}), 8, "vx.mat.a2")[31]
-    a2p = sum_columns(c, with_s(sn_pos, {k_: 15 for k_ in range(8)}), 8, "vx.mat.a2p")[31]
-    o30, s30 = o[30], trk_s[30]
-    better = [[1 - mode_am, 1 - o30, 1 - s30, 1 - a1p], [1 - mode_am, 1 - o30, s30, 1 - a2p],
-              [1 - mode_am, o30, 1 - s30, a2], [1 - mode_am, o30, s30, a1], [mode_am, 1 - a1p]]
+    # the tracker flag: |o| > s (mode 0: o > s or ~o >= s, s the tracker's |value|, or its value
+    # when tracked signed) or o > s (argmax, s = vbest); signed compares nibble by nibble
+    scmp = [c.node(c.t_and([1 - mode_am, absv[b]]) + c.t_and([mode_am, trk["vbest"][min(b, 30)]]),
+                   f"vx.mat.s{b}") for b in range(32)]
+    cmp = compare(c, list(o[0:31]) + [o[30]], scmp, "vx.mat")
+    better = [[cmp["o"]], [1 - cmp["o"], cmp["n"], 1 - mode_am]]
     done_m = c.node(c.t_eq(sum(velt, Expr()) - n_vm, 0, -127, 64), "vx.mat.done")
     u.mat = (acc, o)
+    u.wrom = (wp, slot, wdims, cmp, scmp)
+
+
+    # ---------------------------------------------------------------- RoPE pairs, SiLU table
+    # RoPE (cos, sin) pairs: VPUT 512 + k (write target 3) at its second VH, cos from lag 3 and
+    # sin from lag 1; read by the element's pair (i mod 8) / 2
+    (rope,) = thead(c, "vx.rope",
+                    {r: Chan(andpre(lits(hoff[0:2], r)), (0, 1, 0, 0)) for r in range(4)},
+                    {r: andpre(lits(u.vel[1:3], r)) for r in range(4)},
+                    [{"data": {**{2 + i: Chan(pay["VE"][i], (0, 0, 0, 1)) for i in range(16)},
+                               **{18 + i: Chan(pay["VE"][i], (0, 1, 0, 0)) for i in range(16)}},
+                      "ref": one, "beta": andpre([isVH, wt[0], wt[1], 1 - wt[2], el_eq(2)])}])
+    c.tables["vx.rope"] = c.nodes[-1]
+
+    def nib16(bits):
+        """Nibble values of a 16-bit signed bit list (the top one signed)."""
+        return [from_bits(bits[0:4]), from_bits(bits[4:8]), from_bits(bits[8:12]),
+                from_bits(bits[12:15]) - 8 * bits[15]]
+
+    cn, sn_ = nib16(rope[0:16]), nib16(rope[16:32])
+    # SiLU(y), y from the lags (the GLU's y tokens): a table of SILU_T + 2048 (2 bytes an entry,
+    # 4 entries a row pair) by idx = (y >> 11) + 256, one head per lag phase (vsub even / odd)
+    ys = {0: l01, 1: l12}
+    sdims = c.zeros(2, "vx.silu")
+    for ph in range(2):
+        yb = ys[ph]
+        idx = yb[11:19] + [1 - yb[19]]
+        gate = odd if ph else 1 - odd
+        q = {}
+        for p_ in range(64):
+            q[p_] = q[p_ + 64] = andpre(lits(idx[2:8], p_) + [gate])
+        vhs = []
+        for x in range(2):
+            z, outs, into = {}, [], []
+            for sl in range(4):
+                ze = K * andpre(lits([idx[8]], x) + lits(idx[0:2], sl))
+                for byte in range(2):
+                    z[2 + 2 * sl + byte] = ze
+                    outs.append((2 + 2 * sl + byte, OUT_W))
+                    into.append(sdims[byte])
+            vhs.append({"v": {}, "z": z, "outs": outs, "into": into})
+        c.table(f"vx.silu{ph}", q, {}, vhs, levels="byte")
+    tb = [256 * d for d in sdims]
+    tbh = [c.split(tb[i], 0, 255, f"vx.silu.u{i}") for i in range(2)]
+    tn = [tb[0] - 16 * tbh[0], tbh[0], tb[1] - 16 * tbh[1] - 8, tbh[1]]  # SILU_T: -2048 in nibble 2
+    # y's range: >= 2^19 (big: y >> 4, saturating at 2^23), < -2^19 (small: 0)
+    yr = {}
+    for nm, sg, lo_, hi_ in (("big", 0, 19, 31), ("sat", 0, 27, 31)):
+        yr[nm] = c.node([t for ph in range(2) for t in
+                         c.t_and([odd if ph else 1 - odd, 1 - ys[ph][31]])
+                         + c.t_and([odd if ph else 1 - odd, 1 - ys[ph][31]]
+                                   + [1 - b for b in ys[ph][lo_:hi_]], -1)], f"vx.silu.{nm}")
+    yr["small"] = c.node([t for ph in range(2) for t in
+                          c.t_and([odd if ph else 1 - odd, ys[ph][31]])
+                          + c.t_and([odd if ph else 1 - odd] + ys[ph][19:32], -1)], "vx.silu.small")
+    yn = [from_bits(pacc[4 + 4 * j:8 + 4 * j]) for j in range(6)]  # y >> 4, 24 bits
+
+    # ---------------------------------------------------------------- the MAC: VQ, VEW
+    # t = shift(W1 F1 + W2 F2 (+ VQ's rounding), sft), W = clamp16(VM element >> shamt):
+    #   VQ        W1 = src, F1 = r, sft = -15 (+2^14, -1 when negative; then the clamp to +-127)
+    #   ADD       W1 = b, F1 = p, sft = so                 GLU y   W1 = a, F1 = p, sft = so
+    #   GLU t     W1 = b >> shb, F1 = SILU(y), sft = -8    ROPE    W1, W2 = the pair of a, F =
+    #             (cos, -sin) / (sin, cos), sft = sh - 14
+    s1, s6 = cfg[1], cfg[6]
+    srcb = cfg[3][10]  # VQ's source bank
+    pb = s4[0:12] + s5[0:3]
+    shv, abank, opb, keepw = s5[3:8], s5[8], s5[9:11], s5[11]
+    shb, sob = s1[6:11], s6[6:12]
+    lt2 = 1 - vsubt[1]
+    vewl = [wt[2], 1 - wt[1], 1 - wt[0]]
+    cs = {"vq": [wt[1]], "add": vewl + lits(opb, 0), "gy": vewl + lits(opb, 1) + [lt2],
+          "gt": vewl + lits(opb, 1) + [1 - lt2], "rope": vewl + lits(opb, 2)}
+    bank = {"A": 0, "B": 1}
+    # W1's source: (case, literal that is 1 for bank B, parity choice)
+    src1 = [("vq", srcb, None), ("add", 1 - abank, None), ("gy", abank, None),
+            ("gt", 1 - abank, None), ("rope", abank, 0)]
+
+    def pick(i, cases):
+        terms = []
+        for cn_, bb, par in cases:
+            for bk in ("A", "B"):
+                for x in (range(2) if par is None else [par]):
+                    pl = lits([parity], x) if par is None else []
+                    terms += c.t_and(cs[cn_] + lits([bb], bank[bk]) + pl + [vm_read[bk][x][i]])
+        return terms
+
+    w1src = [c.node(pick(i, src1), f"vx.mac.s1.{i}") for i in range(31)]
+    w2src = [c.node(pick(i, [("rope", abank, 1)]), f"vx.mac.s2.{i}") for i in range(31)]
+    sham = [c.node(c.t_and([shv[b_]]) + c.t_and(cs["gt"] + [shv[b_]], -1) + c.t_and(cs["gt"] + [shb[b_]]),
+                   f"vx.mac.sh{b_}") for b_ in range(5)]
+
+    def shifted(src, amt, name):
+        return [c.node([t for s_ in range(32) for t in c.t_and(lits(amt, s_) + [src[min(i + s_, 30)]])],
+                       f"{name}{i}") for i in range(31)]
+
+    z1 = shifted(w1src, sham, "vx.mac.z1.")
+    z2 = shifted(w2src, shv, "vx.mac.z2.")
+    # the factors, nibble by nibble (ranges in fr)
+    pn = [from_bits(pb[4 * j:4 * j + 4]) for j in range(4)]
+    f1, f2 = [], []
+    for j in range(6):
+        terms = []
+        if j < 4:
+            for cn_ in ("vq", "add", "gy"):
+                terms += c.t_and(cs[cn_], a=pn[j])
+            terms += c.t_and(cs["gt"] + [1 - yr["big"], 1 - yr["small"]], a=tn[j])
+            terms += c.t_and(cs["rope"] + [1 - parity], a=cn[j])
+            terms += c.t_and(cs["rope"] + [parity], a=sn_[j])
+        terms += c.t_and(cs["gt"] + [yr["big"], 1 - yr["sat"]], a=yn[j])
+        if j == 5:
+            terms += c.t_and(cs["gt"] + [yr["sat"]], 8)
+        f1.append(c.node(terms, f"vx.mac.f1.{j}"))
+    for j in range(4):
+        f2.append(c.node(c.t_and(cs["rope"] + [1 - parity], a=-1 * sn_[j])
+                         + c.t_and(cs["rope"] + [parity], a=cn[j]), f"vx.mac.f2.{j}"))
+    fr1, fr2 = (-8, 15), (-15, 15)
+    # products: W bits (clamp16 folded in) times factor nibbles, grouped by weight 2^(4k + o)
+    cl1, cl2 = clamp_terms(z1), clamp_terms(z2)
+    cols = [[] for _ in range(10)]
+    const = 0
+    for k_ in range(10):
+        for o_ in range(4):
+            terms, lo_, hi_ = [], 0, 0
+            for wl, fl, fr in ((cl1, f1, fr1), (cl2, f2, fr2)):
+                for j, fj in enumerate(fl):
+                    b_ = 4 * (k_ - j) + o_
+                    if not 0 <= b_ < 16:
+                        continue
+                    sg = -1 if b_ == 15 else 1
+                    for coef, ls in wl[b_]:
+                        terms += c.t_and(ls, sg * coef, a=fj)
+                    lo_ += min(0, sg * fr[0], sg * fr[1])
+                    hi_ += max(0, sg * fr[0], sg * fr[1])
+            if terms:
+                g_ = c.node(terms, f"vx.mac.g{k_}.{o_}")
+                const += place_signed(c, cols, g_, lo_, hi_, 4 * k_ + o_, f"vx.mac.c{k_}.{o_}")
+    neg = c.node(c.t_and(cs["vq"] + [z1[30]]), "vx.mac.vqneg")
+    cols[3].append((4 * wt[1], 0, 4))  # VQ: + 2^14
+    cols[0].append((-1 * neg, -1, 0))  # VQ: -1 when negative
+    const %= 1 << 40
+    for k_ in range(10):
+        v_ = const >> 4 * k_ & 15
+        if v_:
+            cols[k_].append((v_ * one, v_, v_))
+    rr = sum_columns(c, cols, 10, "vx.mac.r")
+    # the shift by sft (6 bits signed): by 8 q (q = sft >> 3), then by sft & 7
+    sm14 = c.fn_bits(from_bits(shv) + 50, 50, 81, lambda v_: v_ % 64, 6, "vx.mac.sm14")
+    sm14 = [c.node(t, f"vx.mac.sm14.{b_}") for b_, t in enumerate(sm14)]
+    sft = []
+    for b_ in range(6):
+        terms = c.t_and(cs["add"] + [sob[b_]]) + c.t_and(cs["gy"] + [sob[b_]])
+        terms += c.t_and(cs["rope"] + [sm14[b_]])
+        if 49 >> b_ & 1:
+            terms += c.t_and(cs["vq"])
+        if 56 >> b_ & 1:
+            terms += c.t_and(cs["gt"])
+        sft.append(c.node(terms, f"vx.mac.sft{b_}"))
+    ta = {}
+    for m_ in range(-7, 32):
+        terms = []
+        for q_ in range(-4, 4):
+            n_ = m_ - 8 * q_
+            if n_ >= 0:
+                terms += c.t_and(lits(sft[3:6], q_ % 8) + [rr[min(n_, 39)]])
+        ta[m_] = c.node(terms, f"vx.mac.ta{m_}")
+    tsh = [c.node([t for r_ in range(8) for t in c.t_and(lits(sft[0:3], r_) + [ta[i - r_]])],
+                  f"vx.mac.t{i}") for i in range(32)]
+    q8 = sat127_bits(c, tsh[0:16], "vx.vq.q")
+    u.vq = q8
+    # VEW's word: o = t (from the lags) + a (ADD), tracked |o|
+    ad = [c.node(pick(i, [("add", abank, None)]), f"vx.ew.a{i}") for i in range(31)]
+    ad32 = ad + [ad[30]]
+    ocols = [[(from_bits(pacc[4 * k_:4 * k_ + 4]), 0, 15), (from_bits(ad32[4 * k_:4 * k_ + 4]), 0, 15)]
+             for k_ in range(8)]
+    vo = sum_columns(c, ocols, 8, "vx.ew.o")
+    ecmp = compare(c, list(vo[0:31]) + [vo[30]], absv, "vx.ew")
+    ebetter = [[ecmp["o"]], [1 - ecmp["o"], ecmp["n"]]]
+    done_w = c.node(c.t_eq(sum(velt, Expr()) - 2 * from_bits(s6[0:6]), 0, -128, 64), "vx.ew.done")
+    u.mac = (rr, tsh, vo)
+
+
+    # ---------------------------------------------------------------- K / V caches
+    # VQ with write target 6 (KC) / 7 (VCC) writes 4 bytes at once, at the VH of a byte i with
+    # i % 4 == 3 (the bytes at lags 3..0). KC: key head l = off >> 7, row 32 g + slot (g = i >> 3),
+    # half (i >> 2) & 1 in value head 0 / 1. VCC: one value head per slot (16 key heads), rows
+    # (l, g, half), so p.V reads byte j of every slot at once.
+    s3 = cfg[3]
+    coff = s3[0:10]
+    w4 = count_fn(c, xel, lambda k: int(k >= 1 and (k - 1) % 4 == 3), 64, "vx.c.w4")
+    halfw = count_bit(c, xel, 2, 64, "vx.c.half", shift=1)
+    gk = [count_bit(c, xel, b_, 64, f"vx.c.g{b_}") for b_ in (2, 3, 4)]  # i's bits at t - 1
+    cdata = {2 + 8 * q_ + b_: Chan(pay["VH"][b_], tuple(int(lg == 3 - q_) for lg in range(4)))
+             for q_ in range(4) for b_ in range(8)}
+    s2b = cfg[2]
+    mbase = s3[0:10]  # VMATR's base (slot 3)
+    kdims = c.zeros(64, "vx.kc")
+    for kh in range(5):
+        keys = {32 * g_ + sl: Chan(andpre(lits(coff[7:10], kh) + lits(gk[1:3], g_) + lits(coff[0:5], sl)),
+                                   (0, 1, 0, 0)) for g_ in range(4) for sl in range(32)}
+        q = {32 * g_ + t_: andpre(lits(mbase[7:10], kh) + lits(mbase[5:7], g_) + lits(u.vel[0:5], t_))
+             for g_ in range(4) for t_ in range(32)}
+        vhs = []
+        for x in range(2):
+            beta = andpre([isVH, wt[1], wt[2], 1 - wt[0], w4] + lits([halfw], x))
+            vhs.append({"data": dict(cdata), "ref": one, "beta": beta,
+                        "into": kdims[32 * x:32 * x + 32]})
+        thead(c, f"vx.kc{kh}", keys, q, vhs)
+        c.tables[f"vx.kc{kh}"] = c.nodes[-1]
+    pdims = [c.zeros(8, f"vx.vc.p{t_}") for t_ in range(32)]
+    for kh in range(16):
+        keys = {2 * lg + h: Chan(andpre(lits(coff[7:10], lg >> 2) + lits(gk[1:3], lg & 3) + lits(gk[0:1], h)),
+                                 (0, 1, 0, 0)) for lg in range(20) for h in range(2)}
+        q = {2 * lg + h: andpre(lits(mbase[5:10], lg) + lits(u.vel[2:3], h)) for lg in range(20)
+             for h in range(2)}
+        vhs = []
+        for x in range(2):
+            t_ = 2 * kh + x
+            beta = andpre([isVH, wt[0], wt[1], wt[2], w4] + lits(coff[0:5], t_))
+            z, outs, into = {}, [], []
+            for q_ in range(4):
+                ze = K * andpre(lits(u.vel[0:2], q_))
+                for b_ in range(8):
+                    z[2 + 8 * q_ + b_] = ze
+                    outs.append((2 + 8 * q_ + b_, OUT_W))
+                    into.append(pdims[t_][b_])
+            v = {col: chan(e_, A_BIT) for col, e_ in cdata.items()}
+            for col in REF_COLS:
+                v[col] = chan(one, A_REF)
+            vhs.append({"v": v, "z": z, "outs": outs, "into": into, "beta": beta})
+        c.table(f"vx.vc{kh}", q, keys, vhs)
+    pv = pdims
+    kv = [kdims[8 * i:8 * i + 8] for i in range(8)]
+
+    # ---------------------------------------------------------------- VMATR
+    # scores: VA chunk [:8] . K row (bit-pair counts); p.V: VA chunk [:n] . V column j (bit-pair
+    # counts over the n lanes), then out = raw * s >> 12 from the lags
+    s4m, s5m = cfg[4], cfg[5]
+    mode_r = s3[10]
+    n_r = from_bits(s4m[0:6])
+    sfac = s4m[6:12] + s5m[0:11]  # s: 17 bits
+    cw8 = [1 << b_ for b_ in range(7)] + [-128]
+
+    def dot8(qs, ws, lane_lits, name):
+        cols_ = [[] for _ in range(8)]
+        for b_ in range(8):
+            for b2 in range(8):
+                cnt = c.node([t for i, (qa, wa) in enumerate(zip(qs, ws))
+                              for t in c.t_and([qa[b_], wa[b2]] + lane_lits(i))], f"{name}.n{b_}{b2}")
+                place_count(c, cols_, cnt, len(qs), cw8[b_] * cw8[b2], f"{name}.s{b_}{b2}")
+        return cols_
+
+    sc = sum_columns(c, dot8(u.va[0:8], kv, lambda i: [], "vx.mr.sc"), 8, "vx.mr.sc")
+    rlane = [c.node(c.t_ge(n_r, t_ + 1, 0, 63), f"vx.mr.g{t_}") for t_ in range(32)]
+    raw = sum_columns(c, dot8(u.va[0:32], pv, lambda i: [rlane[i]], "vx.mr.pv"), 8, "vx.mr.pv")
+    mcols = [[] for _ in range(11)]
+    sn5 = [from_bits(sfac[4 * j:4 * j + 4]) for j in range(5)]
+    for i in range(5):
+        for j in range(5):
+            sg = i == 4
+            pt = c.node([t for b_ in range(4) for t in c.t_and(
+                [pacc[4 * i + b_]], -8 if sg and b_ == 3 else 1 << b_, a=sn5[j])], f"vx.mr.m{i}{j}")
+            mcols[i + j].append((pt, -120 if sg else 0, 105 if sg else 225))
+    ro = sum_columns(c, mcols, 11, "vx.mr.o")[12:44]
+    rcmp0 = compare(c, list(sc[0:31]) + [sc[30]], absv, "vx.mr.c0")
+    rcmp1 = compare(c, list(ro[0:31]) + [ro[30]], absv, "vx.mr.c1")
+    done_r0 = c.node(c.t_eq(sum(velt, Expr()) - n_r - (n_r - 2 * from_bits(s4m[1:6])), 0, -128, 64),
+                     "vx.mr.done0")
+    pad_r = c.node(c.t_eq(sum(velt, Expr()) - n_r, 0, -64, 64, lits=[s4m[0]]), "vx.mr.pad")
+    done_r1 = c.node(c.t_eq(sum(velt, Expr()), 8, 0, 64), "vx.mr.done1")
+
+    # ---------------------------------------------------------------- VEXP
+    # a pair's tokens: e, e' (VE: min(m - x, 65535)), then p, p' (VH: EXP(e c >> ksh), e from
+    # lag 1)
+    s6x, s7x = cfg[6], cfg[7]
+    mb = s6x[2:12] + s7x[0:12] + s3[0:9]
+    n_x = s2b[10] + 2 * s2b[11] + 4 * from_bits(s4m[0:5])
+    kshb = s4m[5:10]
+    cb = s4m[10:12] + s5m[0:12] + s6x[0:2]
+    xb = cfg[1][6]
+    xel_ = [c.node([t for bk in ("A", "B") for x in range(2)
+                    for t in c.t_and(lits([xb], bank[bk]) + [sub_eq(x)] + [vm_read[bk][x][i]])],
+                   f"vx.ex.x{i}") for i in range(31)]
+    x32 = xel_ + [xel_[30]]
+    m32 = list(mb) + [mb[30]]
+    ecols = [[(from_bits(m32[4 * k_:4 * k_ + 4]), 0, 15), (15 - from_bits(x32[4 * k_:4 * k_ + 4]), 0, 15)]
+             for k_ in range(8)]
+    ecols[0].append((one, 1, 1))
+    eb = sum_columns(c, ecols, 8, "vx.ex.e")
+    esat = [c.node(c.t_const(1) + c.t_and([1 - eb[b_]] + [1 - x_ for x_ in eb[16:32]], -1),
+                   f"vx.ex.es{b_}") for b_ in range(16)]
+    cn4 = [from_bits(cb[4 * j:4 * j + 4]) for j in range(4)]
+    pcols, const = [[] for _ in range(8)], 0
+    for k_ in range(8):
+        for o_ in range(4):
+            terms, hi_ = [], 0
+            for j in range(4):
+                b_ = 4 * (k_ - j) + o_
+                if 0 <= b_ < 16:
+                    terms += c.t_and([lag1[b_]], a=cn4[j])
+                    hi_ += 15
+            if terms:
+                g_ = c.node(terms, f"vx.ex.g{k_}.{o_}")
+                const += place_signed(c, pcols, g_, 0, hi_, 4 * k_ + o_, f"vx.ex.c{k_}.{o_}")
+    pp = sum_columns(c, pcols, 8, "vx.ex.p")
+    hior = {p_: c.node(c.t_const(1) + c.t_and([1 - b_ for b_ in pp[p_:32]], -1), f"vx.ex.h{p_}")
+            for p_ in range(8, 32)}
+    dd = [c.node([t for s_ in range(32) if i + s_ < 32 for t in c.t_and(lits(kshb, s_) + [pp[i + s_]])],
+                 f"vx.ex.d{i}") for i in range(8)]
+    big = c.node([t for s_ in range(24) for t in c.t_and(lits(kshb, s_) + [hior[s_ + 8]])], "vx.ex.big")
+    from chipformer.rv.vx import EXP_T
+    pexp = [c.node([t for v_ in range(256) if EXP_T[v_] >> b_ & 1
+                    for t in c.t_and(lits(dd, v_) + [1 - big])], f"vx.ex.q{b_}") for b_ in range(7)]
+    pad_e = c.node(c.t_eq(sum(velt, Expr()) + 1 - n_x, 0, -64, 64), "vx.ex.pade")
+    pad_p = c.node(c.t_eq(sum(velt, Expr()) - n_x, 0, -128, 64), "vx.ex.padp")
+    done_x = c.node(c.t_eq(sum(velt, Expr()) - n_x - s2b[10], 0, -128, 64), "vx.ex.done")
+    u.attn = (sc, raw, ro, eb, pp, pexp)
 
     # ---------------------------------------------------------------- the exit
     def vc_case(op, k, slot, parts):
@@ -409,7 +687,7 @@ def build(c, one, fam, pay, uops, A, B, C, jt, jeq, nr, rec_start, case, rdw_any
 
     # VPUT: one VC (slot 0: target >> 5, target & 31, write target VM when target < 512), then
     # rs1 and rs2 as words
-    vc_case("VPUT", 0, 0, [(C[5:9], 4), (C[0:5], 5), ([ZERO, ZERO, one - C[9]], 3)])
+    vc_case("VPUT", 0, 0, [(C[5:9], 4), (C[0:5], 5), ([C[9], C[9], one - C[9]], 3)])
     for e, src in enumerate((A, B)):
         stream("VPUT", 1, [el_eq(e), sub_eq(0)], "VE", src[0:16])
         stream("VPUT", 1, [el_eq(e), sub_eq(1)], "VH", src[16:31] + [ZERO])
@@ -447,7 +725,9 @@ def build(c, one, fam, pay, uops, A, B, C, jt, jeq, nr, rec_start, case, rdw_any
 
     # VMAT: VC slots 0, 2, 4, 5; per row the running sums (VE lo, VE hi) then out (VE, VH | flag)
     vc_case("VMAT", 0, 0, [(C[0:4], 4), (A[14:19], 5), ([ZERO, ZERO, 1 - C[13]], 3)])
-    vc_case("VMAT", 1, 2, [([ZERO] * 6 + C[15:17] + [ZERO], 9), ([c.and_([C[11], C[12]], "vx.mat.k3")], 1)])
+    vc_case("VMAT", 1, 2, [([ZERO] * 6 + C[15:17] + [ZERO], 9), ([c.and_([C[11], C[12]], "vx.mat.k3")], 1),
+                           ([c.and_([A[19], 1 - A[20]], "vx.mat.st1")], 1),
+                           ([c.and_([A[20], 1 - A[19]], "vx.mat.st2")], 1)])
     vc_case("VMAT", 2, 4, [(A[0:12], 12)])
     vc_case("VMAT", 3, 5, [(A[12:13], 1), (C[4:11], 7), ([C[13]], 1), ([C[14]], 1)])
     go = [1 - done_m]
@@ -465,6 +745,84 @@ def build(c, one, fam, pay, uops, A, B, C, jt, jeq, nr, rec_start, case, rdw_any
             stream("VMAT", 4, go + lit + [velt[0]] + cond, None, flag)
             stream("VMAT", 4, go + lit + [el_eq(0), keep] + cond, None, flag)
     stream("VMAT", 4, [done_m], "NT")
+    # VEW: VC slots 0, 1, 4, 5, 6; per element (GLU: y lo, y hi), t lo, t hi, then o (VE, VH | flag)
+    op2 = C[16]  # ROPE writes register b
+    vc_case("VEW", 0, 0, [([c.node(c.t_and([op2, C[4 + i]]) + c.t_and([1 - op2, C[i]]), f"vx.ew.dst{i}")
+                            for i in range(4)], 4), (C[19:24], 5), ([ZERO, ZERO, one], 3)])
+    ra = [c.node(c.t_and([1 - C[3], C[i]]) + c.t_and([C[3], 1 - op2, 1 - C[7], C[4 + i]]), f"vx.ew.ra{i}")
+          for i in range(3)]
+    rb = [c.node(c.t_and([C[3], C[i]]) + c.t_and([1 - C[3], 1 - op2, C[7], C[4 + i]]), f"vx.ew.rb{i}")
+          for i in range(3)]
+    vc_case("VEW", 1, 1, [(ra, 3), (rb, 3), (A[11:16], 5)])
+    vc_case("VEW", 2, 4, [(B[0:12], 12)])
+    vc_case("VEW", 3, 5, [(B[12:15], 3), (A[0:5], 5), ([C[3]], 1), (C[15:17], 2), ([C[17]], 1)])
+    vc_case("VEW", 4, 6, [(C[9:15], 6), (A[5:11], 6)])
+    gw = [1 - done_w]
+    glu = opb[0]
+    for lit in ([1 - glu, sub_eq(0)], [glu, sub_eq(0)], [glu, sub_eq(2)]):
+        stream("VEW", 5, gw + lit, "VE", tsh[0:16])
+    for lit in ([1 - glu, sub_eq(1)], [glu, sub_eq(1)], [glu, sub_eq(3)]):
+        stream("VEW", 5, gw + lit, "VE", tsh[16:32])
+    for lit in ([1 - glu, sub_eq(2)], [glu, sub_eq(4)]):
+        stream("VEW", 5, gw + lit, "VE", vo[0:16])
+    for lit in ([1 - glu, sub_eq(3)], [glu, sub_eq(5)]):
+        stream("VEW", 5, gw + lit, "VH", vo[16:31] + [ZERO])
+        flag = [ZERO] * 15 + [one]
+        stream("VEW", 5, gw + lit + [el_eq(0), 1 - keepw], None, flag)
+        for cond in ebetter:
+            stream("VEW", 5, gw + lit + [velt[0]] + cond, None, flag)
+            stream("VEW", 5, gw + lit + [el_eq(0), keepw] + cond, None, flag)
+    stream("VEW", 5, [done_w], "NT")
+    # VMATR: VC slots 0, 2, 3, 4, 5. Scores: a word an output (signed max); p.V: raw (VE VE), then
+    # out = raw s >> 12 (a word)
+    vc_case("VMATR", 0, 0, [(C[0:4], 4), (A[11:16], 5), ([1 - C[10], ZERO, one], 3)])
+    vc_case("VMATR", 1, 2, [([ZERO] * 6 + C[12:15], 9)])
+    vc_case("VMATR", 2, 3, [(A[0:10], 10), ([C[10]], 1), ([C[11]], 1)])
+    vc_case("VMATR", 3, 4, [(C[4:10], 6), (B[0:6], 6)])
+    vc_case("VMATR", 4, 5, [(B[6:17], 11)])
+    flag = [ZERO] * 15 + [one]
+    m0 = [1 - mode_r]
+    g0 = [1 - done_r0, 1 - pad_r]
+    stream("VMATR", 5, m0 + g0 + [sub_eq(0)], "VE", sc[0:16])
+    stream("VMATR", 5, m0 + g0 + [sub_eq(1)], "VH", sc[16:31] + [ZERO])
+    for cond in ([rcmp0["o"]],):
+        stream("VMATR", 5, m0 + g0 + [sub_eq(1), velt[0]] + cond, None, flag)
+        stream("VMATR", 5, m0 + g0 + [sub_eq(1), el_eq(0), s3[11]] + cond, None, flag)
+    stream("VMATR", 5, m0 + g0 + [sub_eq(1), el_eq(0), 1 - s3[11]], None, flag)
+    stream("VMATR", 5, m0 + [pad_r, sub_eq(0)], "VE", 0)
+    stream("VMATR", 5, m0 + [pad_r, sub_eq(1)], "VH", 0)
+    stream("VMATR", 5, m0 + [done_r0], "NT")
+    m1 = [mode_r, 1 - done_r1]
+    stream("VMATR", 5, m1 + [sub_eq(0)], "VE", raw[0:16])
+    stream("VMATR", 5, m1 + [sub_eq(1)], "VE", raw[16:32])
+    stream("VMATR", 5, m1 + [sub_eq(2)], "VE", ro[0:16])
+    stream("VMATR", 5, m1 + [sub_eq(3)], "VH", ro[16:31] + [ZERO])
+    for cond in ([rcmp1["o"]], [1 - rcmp1["o"], rcmp1["n"]]):
+        stream("VMATR", 5, m1 + [sub_eq(3), velt[0]] + cond, None, flag)
+        stream("VMATR", 5, m1 + [sub_eq(3), el_eq(0), s3[11]] + cond, None, flag)
+    stream("VMATR", 5, m1 + [sub_eq(3), el_eq(0), 1 - s3[11]], None, flag)
+    stream("VMATR", 5, [mode_r, done_r1], "NT")
+
+    # VEXP: VC slots 0, 1, 2, 4, 5, 6, 7, 3; per pair e, e' (VE), p, p' (VH); NT
+    vc_case("VEXP", 0, 0, [([ZERO] * 9, 9), ([ZERO, one, ZERO], 3)])
+    vc_case("VEXP", 1, 1, [(and_bits(c, C[0:3], 1 - C[3], "vx.ex.ra"), 3),
+                           (and_bits(c, C[0:3], C[3], "vx.ex.rb"), 3), ([C[3]], 1)])
+    vc_case("VEXP", 2, 2, [(C[11:20], 9), ([ZERO], 1), (C[4:6], 2)])
+    vc_case("VEXP", 3, 4, [(C[6:11], 5), (C[20:25], 5), (B[0:2], 2)])
+    vc_case("VEXP", 4, 5, [(B[2:14], 12)])
+    vc_case("VEXP", 5, 6, [(B[14:16], 2), (A[0:10], 10)])
+    vc_case("VEXP", 6, 7, [(A[10:22], 12)])
+    vc_case("VEXP", 7, 3, [(A[22:31], 9)])
+    gx = [1 - done_x]
+    stream("VEXP", 8, gx + [sub_eq(0), 1 - parity], "VE", esat)
+    stream("VEXP", 8, gx + [sub_eq(1), 1 - pad_e], "VE", esat)
+    stream("VEXP", 8, gx + [sub_eq(1), pad_e], "VE", 0)
+    stream("VEXP", 8, gx + [sub_eq(2)], "VH", pexp + [ZERO] * 9)
+    stream("VEXP", 8, gx + [sub_eq(0), parity, 1 - pad_p], "VH", pexp + [ZERO] * 9)
+    stream("VEXP", 8, gx + [sub_eq(0), parity, pad_p], "VH", 0)
+    stream("VEXP", 8, [done_x], "NT")
+
+
     return u
 
 
@@ -473,6 +831,83 @@ def build(c, one, fam, pay, uops, A, B, C, jt, jeq, nr, rec_start, case, rdw_any
 
 def from_bits(bits):
     return sum((b * (1 << i) for i, b in enumerate(bits)), Expr())
+
+
+def compare(c, o32, s32, name):
+    """o > s and ~o >= s for 32-bit signed bit lists, nibble by nibble (the sign bit flipped:
+    unsigned order): {"o": node, "n": node}."""
+    def nibs(bits):
+        return [from_bits(bits[4 * k:4 * k + 4]) if k < 7
+                else from_bits(bits[28:31]) + 8 * (1 - bits[31]) for k in range(8)]
+
+    sN = nibs(s32)
+    out = {}
+    for nm, bits in (("o", o32), ("n", [1 - b for b in o32])):
+        oN = nibs(bits)
+        gt = [c.node(c.t_ge(oN[k] - sN[k], 1, -15, 15), f"{name}.{nm}gt{k}") for k in range(8)]
+        eq = [c.node(c.t_eq(oN[k] - sN[k], 0, -15, 15), f"{name}.{nm}eq{k}") for k in range(8)]
+        terms = [t for k in range(8) for t in c.t_and([gt[k]] + eq[k + 1:])]
+        if nm == "n":
+            terms += c.t_and(eq)  # ~o >= s
+        out[nm] = c.node(terms, f"{name}.{nm}cmp")
+    return out
+
+
+def clamp_terms(z):
+    """clamp16 of a 31-bit signed bit list z, each bit as (coef, literals) AND terms: in range,
+    z_i; above, 0x7FFF; below, 0x8000."""
+    zeros = [1 - b for b in z[15:31]]
+    ones = list(z[15:31])
+    out = [[(1, [z[i]] + zeros), (1, [z[i]] + ones), (1, [1 - z[30]]), (-1, zeros)]
+           for i in range(15)]
+    return out + [[(1, [z[30]])]]
+
+
+def place_signed(c, cols, n_, lo, hi, e, name):
+    """Adds n_ (an integer in [lo, hi]) * 2^e to nibble columns as the digit and carry of
+    n_ - lo; returns the constant lo * 2^e for the caller to add."""
+    car = c.split(n_ - lo, 0, hi - lo, name)
+    for x, xt, xe in ((n_ - lo - 16 * car, 15, e), (car, (hi - lo) // 16, e + 4)):
+        if xe // 4 < len(cols):
+            cols[xe // 4].append(((1 << xe % 4) * x, 0, (1 << xe % 4) * xt))
+    return lo << e if lo >= 0 else -((-lo) << e)
+
+
+def place_count(c, cols, n_, top, w, name):
+    """Adds w * n_ (n_ in 0..top, w = +-2^e) to nibble columns: n_'s digit and carry by 16."""
+    car = c.split(n_, 0, top, name)
+    e = abs(w).bit_length() - 1
+    sg = 1 if w > 0 else -1
+    for x, xt, xe in ((n_ - 16 * car, 15, e), (car, top // 16, e + 4)):
+        if xe // 4 < len(cols):
+            f = sg * (1 << xe % 4)
+            cols[xe // 4].append((f * x, min(0, f * xt), max(0, f * xt)))
+
+
+def bitplane_cols(c, qs, ws, name, gsz=16):
+    """sum_i q_i w_i as nibble-column terms for sum_columns (8 columns): q_i 8-bit signed bit
+    lists, w_i linear in [-8, 7]. Per bit plane b and group of gsz lanes, a node N = sum q_ib w_i
+    (|N| <= 8 gsz), split into a digit and a carry, at weight 2^b (-2^7 for the sign plane)."""
+    cols = [[] for _ in range(8)]
+    lo, hi = -8 * gsz, 7 * gsz
+    const = 0
+    for b in range(8):
+        sg = -1 if b == 7 else 1
+        for g in range(0, len(qs), gsz):
+            n_ = c.node([t for i in range(g, min(g + gsz, len(qs))) for t in c.t_and([qs[i][b]], a=ws[i])],
+                        f"{name}.n{b}.{g}")
+            car = c.split(n_ - lo, 0, hi - lo, f"{name}.c{b}.{g}")
+            dig = n_ - lo - 16 * car  # n = 16 car + dig + lo
+            for e, top, w in ((dig, 15, b), (car, (hi - lo) // 16, b + 4)):
+                f = sg * (1 << w % 4)
+                cols[w // 4].append((f * e, min(0, f * top), max(0, f * top)))
+            const += sg * lo << b
+    const %= 1 << 32
+    for k in range(8):
+        v = const >> 4 * k & 15
+        if v:
+            cols[k].append((v * c.one, v, v))
+    return cols
 
 
 def mul_su(c, t, rn, name, const=None, lits_=()):
@@ -583,24 +1018,69 @@ def snapshot(c, m):
 
     v = m.vx
     key = hash(m.wrom)
+    nwh = S.VX_CHUNKS // 384
     if _WROM.get("key") != key:
-        tabs = [[{} for _ in range(2)] for _ in range(9)]
-        n = -(-len(m.wrom) // 72)
-        for a in range(n):
+        tabs = [[{rw: row() for rw in range(128)} for _ in range(2)] for _ in range(nwh)]
+        for a in range(-(-len(m.wrom) // 72)):
             cell = [m.wrom[72 * a + i] & 15 if 72 * a + i < len(m.wrom) else 0 for i in range(68)]
-            kh, x, rw, slot = a >> 9, a >> 8 & 1, a >> 1 & 127, a & 1
-            rows = tabs[kh][x]
-            if rw not in rows:
-                rows[rw] = row()
+            rp, sl = divmod(a, 3)
+            r = tabs[rp >> 7][rp >> 6 & 1][(rp & 63) + 64 * (sl == 2)]
             for i in range(34):
-                rows[rw][2 + 34 * slot + i] = cell[2 * i] + 16 * cell[2 * i + 1]
-        for kh in range(9):
-            for x in range(2):
-                for rw in range(128):
-                    tabs[kh][x].setdefault(rw, row())
+                r[2 + 34 * sl + i] = cell[2 * i] + 16 * cell[2 * i + 1]
         _WROM.update(key=key, tabs=tabs)
-    for kh in range(9):
+    for kh in range(nwh):
         c.tables[f"vx.wrom{kh}"].init = _WROM["tabs"][kh]
+    if "silu" not in _WROM:
+        from chipformer.rv.vx import SILU_T
+        tab = []
+        for x in range(2):
+            rows = {rw: row() for rw in range(128)}
+            for p in range(64):
+                for sl in range(4):
+                    tb = SILU_T[sl + 4 * p + 256 * x] + 2048
+                    rows[p][2 + 2 * sl], rows[p][3 + 2 * sl] = tb & 255, tb >> 8
+            tab.append(rows)
+        _WROM["silu"] = tab
+    for ph in range(2):
+        c.tables[f"vx.silu{ph}"].init = _WROM["silu"]
+    rr = {}
+    for k, (cs_, sn_) in enumerate(v.rope):
+        r = row()
+        for b in range(16):
+            r[2 + b] = A_BIT * (cs_ >> b & 1)
+            r[18 + b] = A_BIT * (sn_ >> b & 1)
+        rr[k] = r
+    c.tables["vx.rope"].init = [rr]
+    for kh in range(5):  # K cache: rows 32 g + slot, half x in value head x
+        vh = []
+        for x in range(2):
+            rows = {}
+            for rw in range(128):
+                by = v.kc[128 * kh + rw][4 * x:4 * x + 4]
+                if any(by):
+                    r = row()
+                    for q in range(4):
+                        for b in range(8):
+                            r[2 + 8 * q + b] = A_BIT * ((by[q] & 255) >> b & 1)
+                    rows[rw] = r
+            vh.append(rows)
+        c.tables[f"vx.kc{kh}"].init = vh
+    for kh in range(16):  # V cache: value head = slot, rows (l g, half)
+        vh = []
+        for x in range(2):
+            t = 2 * kh + x
+            rows = {}
+            for lg in range(20):
+                for h in range(2):
+                    by = v.vc[32 * lg + t][4 * h:4 * h + 4]
+                    if any(by):
+                        r = row()
+                        for q in range(4):
+                            for b in range(8):
+                                r[2 + 8 * q + b] = A_BIT * ((by[q] & 255) >> b & 1)
+                        rows[2 * lg + h] = r
+            vh.append(rows)
+        c.tables[f"vx.vc{kh}"].init = vh
     for kh in range(4):
         vh = []
         for x in range(2):

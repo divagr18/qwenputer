@@ -85,7 +85,7 @@ DROM_BASE, DROM_WORDS = 0x20000, 1 << 15  # 128 KB of read-only data (one sublay
 RAM_BASE, RAM_WORDS = 0x0, 1 << 13  # 32 KB (two sublayers)
 WROM_BASE, WROM_WORDS, WROM_CELLS = 0x100000, 15 * 2048 + 15 * 128, 8  # (the old VDOT bound)
 WP_BITS = 15
-VX_CHUNKS = 17 * 256  # the VX weight memory: row-chunks of 72 cells (vx.py)
+VX_CHUNKS = 3 * 128 * 12  # the VX weight memory: row-chunks of 72 cells (vx.py), 3 a row pair, 12 key heads
 DATA_BASE = 0x100  # .data starts here (address 0 stays a null pointer)
 SP_INIT = RAM_BASE + 4 * RAM_WORDS
 N_MAX = 63  # the R refresh comes before the instruction when n == N_MAX

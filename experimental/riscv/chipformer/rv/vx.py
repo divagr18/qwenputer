@@ -25,36 +25,42 @@ exp as fixed-point function units. `check` raises on operands outside those widt
 shift(x, s) is x << s for s >= 0, x >> -s below; clamp16 clamps to [-32768, 32767]. The fields
 below are the instruction's (register bits, in order); SLOTS gives their VC packing.
 
-  f3 0  VMAT   rd: dst 4, n 7, k 2, mode 1, keep 1, chunk 2; rs1: base 13, doff 6
+  f3 0  VMAT   rd: dst 4, n 7, k 2, mode 1, keep 1, chunk 2; rs1: base 13, doff 6, start 2
                rows r < n: acc = sum over c < k of VA[64 (chunk + c):][:64] . row-chunk
-               base + 64 c + r (chunk-major; base aligned to n, and to 256 for k = 3); out = acc * S (the last chunk's) mod 2^32. Mode 0: VM[dst][doff + r]
-               = out (n, doff even), max |out| tracked; mode 1: argmax of out, the best row's
-               (last) row-chunk index. A row's tokens: the running sum after each chunk (VE VE,
-               32 bits), then out (a word): 2 k + 2.
+               3 p + slot, p = base + (start + r) // 3 and slot = (start + r) % 3 (k = 1), p =
+               base + r and slot = c (k = 3, start 0): the WROM holds 3 row-chunks a row pair p,
+               and an op's row pairs stay in one block of 64; out = acc * S (the last chunk's) mod 2^32. Mode 0: VM[dst][doff +
+               r] = out (n, doff even), max |out| tracked; mode 1: argmax of out, the best row as
+               base << 6 | r. A row's tokens: the running sum after each chunk (VE VE, 32 bits),
+               then out (a word): 2 k + 2.
   f3 1  VMATR  rd: dst 4, n 6, mode 1, keep 1, off 8; rs1: base 10, eoff 6; rs2 (mode 1): s 17
                (unsigned)
-               mode 0 (scores): out[t] = VA chunk off [:8] . KC[base + t], t < n, signed max tracked
-               mode 1 (p.V): out[j] = (VA chunk off [:n] . VCC[base + t][j] over t) * s >> 12, j < 8,
-               max |out| tracked. out goes to VM[dst][eoff + i], 2 tokens each; an odd n's last
-               pair gets a 0 (not tracked).
+               (base a multiple of 32)
+               mode 0 (scores): out[t] = VA chunk off [:8] . KC[base + t], t < n, signed max
+               tracked: a word each; an odd n's last pair gets a 0 (not tracked)
+               mode 1 (p.V): raw[j] = VA chunk off [:n] . VCC[base + t][j] over t, out[j] = raw[j] *
+               s >> 12, j < 8, max |out| tracked: raw (VE VE), then out (a word)
+               out goes to VM[dst][eoff + i].
   f3 2  VQ     rd: src 4, eoff 6, n 7, dst 2, sh 5; rs1: off 10; rs2: r 15
                q_i = clamp(round(clamp16(VM[src][eoff + i] >> sh) * r / 2^15), +-127), i < n
                (n even); dst 0: VA[off + i]; 1 / 2: KC / VCC row off + 32 (i / 8), byte i mod 8.
                A token per element.
   f3 3  VEW    rd: a 4, b 4, n 7, op 2, keep 1, eoff 6; rs1: sh 5, so 6 (signed), shb 5;
                rs2: p 15
-               i < n (n even) of VM[a][eoff + i], in place, max |result| tracked:
-               op 0 ADD  a += shift(clamp16(b >> sh) * p, so)                       2 tokens each
-               op 1 GLU  y = shift(clamp16(a >> sh) * p, so), a = SILU(y) * clamp16(b >> shb) >> 8
-                                                                                    4 tokens each
-               (b = VM[b][eoff + i])
-               op 2 ROPE pairs (a, a'): u = clamp16(a >> sh), w = clamp16(a' >> sh), by RoPE pair
-                         (i mod 8) / 2: (shift(u c - w s, sh - 14), shift(u s + w c, sh - 14))
-                                                                                    2 tokens each
+               i < n (n even) of VM[a][eoff + i] (b = VM[b][eoff + i]), max |result| tracked:
+               op 0 ADD  t = shift(clamp16(b >> sh) * p, so), a += t
+               op 1 GLU  y = shift(clamp16(a >> sh) * p, so) (int32), a = t = SILU(y) *
+                         clamp16(b >> shb) >> 8
+               op 2 ROPE into VM[b]: pairs (a, a'), u = clamp16(a >> sh), w = clamp16(a' >> sh), by
+                         RoPE pair (i mod 8) / 2: t = shift(u c - w s, sh - 14), shift(u s + w c,
+                         sh - 14)
+               An element's tokens: (GLU: y as VE VE), t as VE VE (32 bits), then the result (a
+               word): 4 tokens (GLU 6).
   f3 4  VEXP   rd: src 4, n 7, off 9, ksh 5; rs1: m 31 (the scores' max: VGET 0 after them);
                rs2: c 16
                i < n: e = min(m - VM[src][i], 65535), d = e * c >> ksh; VA[off + i] = EXP(d)
-               (an odd n's last pair gets a 0). A token per element.
+               (an odd n's last pair gets e = 0, p = 0). A pair's tokens: e, e' (VE), then p, p'
+               (VH).
   f3 5  VGET   rs1 = sel: rd = vmx / vsum / varg / bit length of vmx: a value record
   f3 6  VRED   rd: n 7, mode 1, off 8: vsum = sum q^2 (mode 0) or q over q in VA chunk off [:n]:
                a word's two tokens.
@@ -73,7 +79,7 @@ import math
 from chipformer.rv import spec as S
 
 OPS = ["VMAT", "VMATR", "VQ", "VEW", "VEXP", "VGET", "VRED", "VPUT"]
-MAX_STREAM = 64
+MAX_STREAM = 96
 M32 = 0xFFFFFFFF
 CHUNK_CELLS = 72
 SILU_T = [round((x := (i - 256) / 32) / (1 + math.exp(-x)) * 4096) for i in range(512)]
@@ -81,7 +87,7 @@ EXP_T = [round(127 * math.exp(-i / 32)) for i in range(256)]
 FIELDS = {  # op -> [(name, register, lo bit, width)]: the instruction's operands
     "VMAT": [("dst", "rd", 0, 4), ("n", "rd", 4, 7), ("k", "rd", 11, 2), ("mode", "rd", 13, 1),
              ("keep", "rd", 14, 1), ("chunk", "rd", 15, 2), ("base", "rs1", 0, 13),
-             ("doff", "rs1", 13, 6)],
+             ("doff", "rs1", 13, 6), ("start", "rs1", 19, 2)],
     "VMATR": [("dst", "rd", 0, 4), ("n", "rd", 4, 6), ("mode", "rd", 10, 1), ("keep", "rd", 11, 1),
               ("off", "rd", 12, 8), ("base", "rs1", 0, 10), ("eoff", "rs1", 10, 6),
               ("s", "rs2", 0, 17)],
@@ -103,15 +109,16 @@ def reg3(f, name, bank):
 
 
 # each op's VC tokens, in order: (slot, [(value, width)] packed from bit 0). Every op sends slot 0
-# = (dst register 4, element offset / 2 5, write target 3: 0 none, 1 vsum, 2 VA, 4 VM (max |v|
+# = (dst register 4, element offset / 2 5, write target 3: 0 none, 1 vsum, 2 VA, 3 RoPE, 4 VM (max |v|
 # tracked), 5 VM (max v tracked), 6 KC, 7 VCC; the VM codes share bits 1-2, the caches bits 1-2);
 # 1 = (bank A register 3, bank B register 3, more 6), 2 = (VA byte offset 9, chunk step 1: VMAT
 # k = 3 reads chunk + c, more 2), 3 = (cache row 10, more 2) are the other memory addresses; 4-7
 # are the op's own
-W_SUM, W_VA, W_VM, W_VMS, W_KC, W_VC = 1, 2, 4, 5, 6, 7
+W_SUM, W_VA, W_ROPE, W_VM, W_VMS, W_KC, W_VC = 1, 2, 3, 4, 5, 6, 7
 SLOTS = {
     "VMAT": lambda f: [(0, [(f["dst"], 4), (f["doff"] >> 1, 5), ((f["mode"] == 0) * W_VM, 3)]),
-                       (2, [(64 * f["chunk"], 9), (f["k"] == 3, 1)]),
+                       (2, [(64 * f["chunk"], 9), (f["k"] == 3, 1), (f["start"] == 1, 1),
+                            (f["start"] == 2, 1)]),
                        (4, [(f["base"], 12)]),
                        (5, [(f["base"] >> 12, 1), (f["n"], 7), (f["mode"], 1), (f["keep"], 1)])],
     "VMATR": lambda f: [(0, [(f["dst"], 4), (f["eoff"] >> 1, 5), (W_VM + (f["mode"] == 0), 3)]),
@@ -125,12 +132,13 @@ SLOTS = {
                      (3, [(f["off"], 10), (f["src"] >> 3, 1)]),
                      (4, [(f["r"], 12)]),
                      (5, [(f["r"] >> 12, 3), (f["sh"], 5), (f["n"] >> 1, 4)])],
-    "VEW": lambda f: [(0, [(f["a"], 4), (f["eoff"] >> 1, 5), (W_VM, 3)]),
-                      (1, [(reg3(f, "a", 0) + reg3(f, "b", 0), 3),
-                           (reg3(f, "a", 1) + reg3(f, "b", 1), 3), (f["shb"], 5)]),
-                      (4, [(f["n"] >> 1, 6), (f["sh"], 5), (f["keep"], 1)]),
-                      (5, [(f["so"], 6), (f["p"], 6)]),
-                      (6, [(f["p"] >> 6, 9), (f["op"], 2)])],
+    "VEW": lambda f: [(0, [(f["b"] if f["op"] == 2 else f["a"], 4), (f["eoff"] >> 1, 5), (W_VM, 3)]),
+                      (1, [(reg3(f, "a", 0) + (f["op"] != 2) * reg3(f, "b", 0), 3),
+                           (reg3(f, "a", 1) + (f["op"] != 2) * reg3(f, "b", 1), 3), (f["shb"], 5)]),
+                      (4, [(f["p"], 12)]),
+                      (5, [(f["p"] >> 12, 3), (f["sh"], 5), (f["a"] >> 3, 1), (f["op"], 2),
+                           (f["keep"], 1)]),
+                      (6, [(f["n"] >> 1, 6), (f["so"], 6)])],
     "VEXP": lambda f: [(0, [(0, 4), (0, 5), (W_VA, 3)]),
                        (1, [(reg3(f, "src", 0), 3), (reg3(f, "src", 1), 3), (f["src"] >> 3, 1)]),
                        (2, [(f["off"], 9), (0, 1), (f["n"], 2)]),
@@ -143,7 +151,7 @@ SLOTS = {
                        (2, [(64 * f["off"], 9), (0, 1), (f["mode"], 1), (f["n"], 1)]),
                        (4, [(f["n"] >> 1, 6)])],
     "VPUT": lambda f: [(0, [(f["target"] >> 5 & 15, 4), (f["target"] & 31, 5),
-                            ((f["target"] < 512) * W_VM, 3)])],
+                            (W_VM if f["target"] < 512 else W_ROPE, 3)])],
 }
 
 
@@ -254,19 +262,20 @@ def execute(m, ins) -> list[int]:
         check(off % (1 << max(n - 1, 0).bit_length()) == 0, f"offset {off} for {n} elements")
 
     if op == "VMAT":
-        dst, n, k, mode, keep, chunk, base, doff = (
-            f[x] for x in ("dst", "n", "k", "mode", "keep", "chunk", "base", "doff"))
-        check(k == 1 or chunk == 0 and mode == 0, f"VMAT k {k} chunk {chunk} mode {mode}")
+        dst, n, k, mode, keep, chunk, base, doff, st = (
+            f[x] for x in ("dst", "n", "k", "mode", "keep", "chunk", "base", "doff", "start"))
+        check(k == 1 or chunk == 0 and mode == 0 and st == 0, f"VMAT k {k} chunk {chunk} mode {mode}")
+        check(st < 3 and 3 * (base + 1) <= S.VX_CHUNKS, f"VMAT start {st} base {base}")
         check(k in (1, 3) and (mode or n % 2 == doff % 2 == 0) and 0 < n <= 64,
               f"VMAT n {n} k {k} doff {doff}")
         if mode == 0:
             aligned(doff, n)
-        aligned(base, n)
-        check(k == 1 or base & 192 == 0, f"VMAT k 3 base {base}")
+        check((base & 63) + (n - 1 if k == 3 else (st + n - 1) // 3) < 64,
+              f"VMAT base {base} n {n}: the rows leave their block of 64 row pairs")
         for r in range(n):
             acc, sc, part = 0, 0, []
             for c in range(k):
-                w, sc = wrom_chunk(m, base + 64 * c + r)
+                w, sc = wrom_chunk(m, 3 * (base + r) + c if k == 3 else 3 * base + st + r)
                 acc += sum(v.va[64 * (chunk + c) + i] * w[i] for i in range(64))
                 part += [ve(acc), ve(acc >> 16)]  # the running sum, then the row's scaling
             o = s32(acc * sc)
@@ -277,27 +286,33 @@ def execute(m, ins) -> list[int]:
             else:
                 best = r == 0 and not keep or o > v.vbest
                 if best:
-                    v.vbest, v.varg = o, base + 64 * (k - 1) + r
+                    v.vbest, v.varg = o, base << 6 | r
                 check(-(1 << 30) <= o < 1 << 30, f"VMAT argmax out {o}")
                 toks += part + word(o, best)
     elif op == "VMATR":
         dst, n, mode, keep, off, base, eoff, s = (
             f[x] for x in ("dst", "n", "mode", "keep", "off", "base", "eoff", "s"))
-        check(0 < n <= 32, f"VMATR n {n}")
+        check(0 < n <= 32 and base % 32 == 0, f"VMATR n {n} base {base}")
         check(off < 6, f"VA chunk {off}")
         va = v.va[64 * off:64 * off + 64]
         if mode == 0:
             outs = [sum(va[i] * v.kc[base + t][i] for i in range(8)) for t in range(n)]
+            aligned(eoff, n + n % 2)
+            for i, o in enumerate(outs):
+                check(-(1 << 30) <= o < 1 << 30, f"VMATR out {o}")
+                put(dst, eoff + i, o)
+                toks += tracked(o, signed=True, first=i == 0 and not keep)
+            if n % 2:
+                put(dst, eoff + n, 0)
+                toks += word(0)
         else:
-            outs = [(sum(va[t] * v.vc[base + t][j] for t in range(n)) * s) >> 12 for j in range(8)]
-        aligned(eoff, len(outs) + len(outs) % 2)
-        for i, o in enumerate(outs):
-            check(-(1 << 30) <= o < 1 << 30, f"VMATR out {o}")
-            put(dst, eoff + i, o)
-            toks += tracked(o, signed=mode == 0, first=i == 0 and not keep)
-        if len(outs) % 2:
-            put(dst, eoff + len(outs), 0)
-            toks += word(0)
+            aligned(eoff, 8)
+            for j in range(8):
+                raw = sum(va[t] * v.vc[base + t][j] for t in range(n))
+                o = (raw * s) >> 12
+                check(-(1 << 30) <= o < 1 << 30, f"VMATR out {o}")
+                put(dst, eoff + j, o)
+                toks += [ve(raw), ve(raw >> 16)] + tracked(o, first=j == 0 and not keep)
     elif op == "VQ":
         src, eoff, n, dst, sh, off, r = (f[x] for x in ("src", "eoff", "n", "dst", "sh", "off", "r"))
         check(n % 2 == 0 and 0 < n <= 64 and (dst or off + n <= 384), f"VQ n {n}")
@@ -319,40 +334,45 @@ def execute(m, ins) -> list[int]:
         a, b, n, sub, keep, eoff, sh, so, shb, p = (
             f[x] for x in ("a", "b", "n", "op", "keep", "eoff", "sh", "so", "shb", "p"))
         so = sx(so, 6)
-        check(n % 2 == 0 and 0 < n <= 64 and sub < 3 and (sub == 2 or a >> 3 != b >> 3),
+        check(n % 2 == 0 and 0 < n <= 64 and sub < 3 and a != b and (sub == 2 or a >> 3 != b >> 3),
               f"VEW a {a} b {b} n {n} op {sub}")
         aligned(eoff, n)
         old = v.vm[a][eoff:eoff + n]
-        out = []
         for i in range(n):
-            ai = old[i]
+            ai, pre = old[i], []
             if sub == 0:
-                o = ai + shift(clamp16(v.vm[b][eoff + i] >> sh) * p, so)
+                t = shift(clamp16(v.vm[b][eoff + i] >> sh) * p, so)
             elif sub == 1:
-                o = (silu(shift(clamp16(ai >> sh) * p, so)) * clamp16(v.vm[b][eoff + i] >> shb)) >> 8
+                y = shift(clamp16(ai >> sh) * p, so)
+                check(-(1 << 31) <= y < 1 << 31, f"VEW GLU y {y}")
+                t = (silu(y) * clamp16(v.vm[b][eoff + i] >> shb)) >> 8
+                pre = [ve(y), ve(y >> 16)]
             else:
                 c, sn = v.rope[(i % 8) // 2]
                 u, w = clamp16(old[i & ~1] >> sh), clamp16(old[i | 1] >> sh)
-                o = shift(u * c - w * sn, sh - 14) if i % 2 == 0 else shift(u * sn + w * c, sh - 14)
-            out.append(sx(o, 31))
-        for i, o in enumerate(out):
-            put(a, eoff + i, o)
-            toks += [ve(0), ve(0)] * (sub == 1) + tracked(o, first=i == 0 and not keep)
+                t = shift(u * c - w * sn, sh - 14) if i % 2 == 0 else shift(u * sn + w * c, sh - 14)
+            t = s32(t)
+            o = sx(t + ai if sub == 0 else t, 31)
+            put(b if sub == 2 else a, eoff + i, o)
+            toks += pre + [ve(t), ve(t >> 16)] + tracked(o, first=i == 0 and not keep)
     elif op == "VEXP":
         src, n, off, ksh, c, mx = (f[x] for x in ("src", "n", "off", "ksh", "c", "m"))
-        check(0 < n <= 64 and off + n + n % 2 <= 384, f"VEXP n {n}")
+        check(0 < n <= 32 and off + n + n % 2 <= 384, f"VEXP n {n}")
         aligned(off, n + n % 2)
-        ps = []
-        for i in range(n):
-            e = min(sx(mx, 31) - v.vm[src][i], 65535)
-            check(e >= 0, "VEXP above the max")
-            d = (e * c) >> ksh
-            ps.append(EXP_T[d] if d < 256 else 0)
+        es, ps = [], []
+        for i in range(n + n % 2):
+            if i < n:
+                e = min(sx(mx, 31) - v.vm[src][i], 65535)
+                check(e >= 0, "VEXP above the max")
+                d = (e * c) >> ksh
+                es.append(e)
+                ps.append(EXP_T[d] if d < 256 else 0)
+            else:
+                es.append(0)
+                ps.append(0)
             v.va[off + i] = ps[-1]
-        if n % 2:
-            ps.append(0)
-            v.va[off + n] = 0
-        toks += [vh(p) for p in ps]
+        for i in range(0, len(es), 2):
+            toks += [ve(es[i]), ve(es[i + 1]), vh(ps[i]), vh(ps[i + 1])]
     elif op == "VRED":
         n, mode, off = f["n"], f["mode"], f["off"]
         check(off < 6 and n <= 64, f"VRED chunk {off} n {n}")

@@ -20,8 +20,8 @@
 #define OFFQ 3     // VA chunks: xq in 0..2, the head's query in 3, probabilities in 4
 #define OFFP 4
 // vector registers: bank A 0..7, bank B 8..15 (an op reads at most one of each)
-enum { RX = 0, RQ = 1, RK = 2, RH = 3 /* 3..5 */, RSC = 6, RXB = 8, RV = 9, RG = 10 /* 10..12 */,
-       RO = 13 };
+enum { RX = 0, RQ = 1, RK = 2, RH = 3 /* 3..5 */, RSC = 6, RQR = 7, RXB = 8, RV = 9,
+       RG = 10 /* 10..12 */, RO = 13, RKR = 14 };  // RQR, RKR: q and k after RoPE
 
 #define VOP(f3, cfg, a, b) \
     __asm__ volatile(".insn r 0x5B, " #f3 ", 0, %0, %1, %2" ::"r"(cfg), "r"(a), "r"(b) : "memory")
@@ -33,8 +33,8 @@ static inline int32_t vget(int32_t sel) {
 static inline uint32_t mulhu(uint32_t a, uint32_t b) { return (uint32_t)(((uint64_t)a * b) >> 32); }
 static inline int32_t mulh(int32_t a, int32_t b) { return (int32_t)(((int64_t)a * b) >> 32); }
 
-static void vmat(int dst, int doff, int n, int k, int mode, int keep, int chunk, int base) {
-    VOP(0, dst | n << 4 | k << 11 | mode << 13 | keep << 14 | chunk << 15, base | doff << 13, 0);
+static void vmat(int dst, int doff, int n, int k, int mode, int keep, int chunk, uint32_t base) {
+    VOP(0, dst | n << 4 | k << 11 | mode << 13 | keep << 14 | chunk << 15, base | doff << 13, 0);  // base: OPB
 }
 static void vmatr(int dst, int eoff, int n, int mode, int keep, int off, int base, int32_t s) {
     VOP(1, dst | n << 4 | mode << 10 | keep << 11 | off << 12, base | eoff << 10, s);
@@ -101,11 +101,11 @@ static int32_t norm_f(int n) {
 
 static int32_t plain_f(int32_t amax) { return (int32_t)(((uint32_t)amax << 9) / 127 << 8); }
 
-// rows of a 64-input matrix into registers dst.. (64 rows a register, 16 an op); returns the
-// window of the outputs
-static int matmul(int dst, int base, int rows) {
+// rows of a 64-input matrix into registers dst.. (64 rows a register, 16 an op; op: the matrix's
+// first op in OPB, the ops' row-pair bases); returns the window of the outputs
+static int matmul(int dst, int op, int rows) {
     for (int r = 0; r < rows; r += 16)
-        vmat(dst + r / 64, r % 64, rows - r < 16 ? rows - r : 16, 1, 0, r > 0, 0, base + r);
+        vmat(dst + r / 64, r % 64, rows - r < 16 ? rows - r : 16, 1, 0, r > 0, 0, OPB[op + r / 16]);
     return vwin();
 }
 
@@ -113,7 +113,7 @@ static int matmul(int dst, int base, int rows) {
 static void residual(int sh, uint32_t f) {
     int32_t r;
     int sr = fwin(f, &r);
-    for (int i = 0; i < DIM; i += 32) vew(RX, RO, i, 32, 0, i > 0, sh, sh + sr - 32, 0, r);
+    for (int i = 0; i < DIM; i += 16) vew(RX, RO, i, 16, 0, i > 0, sh, sh + sr - 32, 0, r);
 }
 
 static int32_t qmax[NH], xbmax;
@@ -131,7 +131,7 @@ static void attend(int l, int g, int n, int32_t f) {
             bl = bitlen((uint32_t)araw);
         }
         int sh = bl > 11 ? bl - 11 : 0;
-        vq(RQ, HS * h, HS, 0, sh, 64 * OFFQ, (127 << 15) / (araw >> sh));
+        vq(RQR, HS * h, HS, 0, sh, 64 * OFFQ, (127 << 15) / (araw >> sh));
         // ca = amax * KC >> 16 (stories6.c's exp-table scale), as its top 16 bits
         uint32_t lo = (uint32_t)amax * KC[l], hi = mulhu((uint32_t)amax, KC[l]);
         int32_t ca = (int32_t)(hi << 16 | lo >> 16), c, ksh;
@@ -174,14 +174,14 @@ static int forward(int tok, int pos) {
         int ak = matmul(RK, WB_wk[l], KVD);
         matmul(RV, WB_wv[l], KVD);
         for (int h = 0; h < NH; h++) {  // RoPE per head, keeping each head's max for its quantize
-            vew(RQ, 0, HS * h, HS, 2, 0, aq, 0, 0, 0);
+            vew(RQ, RQR, HS * h, HS, 2, 0, aq, 0, 0, 0);
             qmax[h] = vmax_bl(&qbl[h]);
         }
-        vew(RK, 0, 0, KVD, 2, 0, ak, 0, 0, 0);
+        for (int i = 0; i < KVD; i += 16) vew(RK, RKR, i, 16, 2, i > 0, ak, 0, 0, 0);
         int slot = pos == 0 ? 0 : 1 + (pos - 1) % (W - 1), n = pos + 1 < W ? pos + 1 : W;
         int32_t r;
         int sh = cache_q(mulhu((uint32_t)f, KQ[l]), &r);
-        vq(RK, 0, KVD, 1, sh, 4 * l * W + slot, r);
+        vq(RKR, 0, KVD, 1, sh, 4 * l * W + slot, r);
         sh = cache_q(mulhu((uint32_t)f, VQF[l]), &r);
         vq(RV, 0, KVD, 2, sh, 4 * l * W + slot, r);
         xbmax = 0;
@@ -207,7 +207,7 @@ static int forward(int tok, int pos) {
         int shq = bl > 11 ? bl - 11 : 0;
         int32_t rq = (127 << 15) / (vmax >> shq);
         for (int i = 0; i < HID; i += 64) vq(RH + i / 64, 0, HID - i < 64 ? HID - i : 64, 0, shq, i, rq);
-        for (int r2 = 0; r2 < DIM; r2 += 8) vmat(RO, r2, 8, 3, 0, r2 > 0, 0, WB_w2[l] + r2);
+        for (int r2 = 0; r2 < DIM; r2 += 8) vmat(RO, r2, 8, 3, 0, r2 > 0, 0, OPB[WB_w2[l] + r2 / 8]);
         int a2 = vwin();
         uint32_t fp = mulhu((uint32_t)plain_f(vmax), (uint32_t)f);  // * F / 2^(36 - shb)
         fp = shb >= 4 ? fp << (shb - 4) : fp >> (4 - shb);
@@ -216,8 +216,10 @@ static int forward(int tok, int pos) {
     }
     // the classifier: the final norm only rescales the logits, so argmax skips it
     quantize(RX, DIM, vmax, bl, 0);
-    for (int r = 0; r < VOCAB; r += 16) vmat(0, 0, 16, 1, 1, r > 0, 0, WB_CLS + r);
-    return vget(2) - WB_CLS;
+    for (int r = 0; r < VOCAB; r += 16) vmat(0, 0, 16, 1, 1, r > 0, 0, OPB[WB_CLS + r / 16]);
+    int arg = vget(2), j = 0;  // the best row: its op's base << 6 | its row in the op
+    while ((OPB[WB_CLS + j] & 0x1FFF) != (uint32_t)arg >> 6) j++;
+    return 16 * j + (arg & 63);
 }
 
 int main(void) {

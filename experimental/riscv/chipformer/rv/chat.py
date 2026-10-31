@@ -115,7 +115,7 @@ class RvChat:
         self.T = BR.Text(self.path / "tokenizer.json")
         cfg = self.model.config
         self.c = core.build(Target(cfg.linear_num_key_heads, cfg.linear_num_value_heads,
-                                   cfg.intermediate_size), self.T)
+                                   cfg.intermediate_size), self.T, vx=self.meta.get("vx", False))
         self.n_chip, self.v0 = self.meta["chip_layers"], self.meta["chip_token_offset"]
         self.code_dims = torch.tensor(self.meta["code_dims"], device=self.dev)
         self.eos = {248046, 248044}
