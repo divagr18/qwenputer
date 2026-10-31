@@ -59,11 +59,10 @@ def extend_tokenizer(src: Path, dst: Path, first_id: int) -> None:
     for f in ("chat_template.jinja", "LICENSE"):
         if (src / f).exists():
             shutil.copy(src / f, dst / f)
+    # tokenizer.json holds every added token; listing them in the config too makes it tens of
+    # MB, too big for the hubs to parse
     tc = json.loads((src / "tokenizer_config.json").read_text(encoding="utf-8"))
-    dec = tc.setdefault("added_tokens_decoder", {})
-    for i, t in enumerate(pad + chip):
-        dec[str(n + i)] = {"content": t.content, "lstrip": False, "normalized": False,
-                           "rstrip": False, "single_word": False, "special": True}
+    tc.pop("added_tokens_decoder", None)
     (dst / "tokenizer_config.json").write_text(json.dumps(tc, indent=2, ensure_ascii=False),
                                                encoding="utf-8")
 
