@@ -189,7 +189,7 @@ class Executor:
             if isinstance(st, tuple):
                 _, wab, nu, wd = st
                 ab = wab(x[:, None])
-                x = x + wd((torch.relu(ab[:, nu:]) * ab[:, :nu])[:, None])
+                x = x + wd((torch.relu(ab[:, nu:].bfloat16().float()) * ab[:, :nu])[:, None])
                 continue
             V, S, kh = st["V"], st["S"], st["kh"]
             hist = self.hist[i]

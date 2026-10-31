@@ -6,6 +6,8 @@ weights kept as sparse rows (CSR, padded per sublayer to a power-of-2 width KP s
 
   MLP    a program per block of units: a and b are sparse dot products with the residual, then
          coef * a * relu(b) goes (atomically) into the output buffer
+         (b rounded to bf16 first, as the model's gate projection is: a gate's fraction
+         then cancels exactly, as in the IR's bf16 check)
   heads  a program per value head: q / k / v / z are sparse dot products over the residual and
          its lag history (the conv taps folded into the weights); then decay (only the rows the
          head's keys reach), the one-row write (key = argmax), the read of the query's rows only
@@ -66,7 +68,7 @@ def _ffn_kernel(x_ptr, y_ptr, D, U, rpa, ixa, wa, rpb, ixb, wb, coef, outd,
     ib = tl.load(ixb + b0[:, None] + kb[None, :], mask=mb, other=0)
     bv = tl.sum(tl.load(wb + b0[:, None] + kb[None, :], mask=mb, other=0.0)
                 * tl.load(xb + ib, mask=mb, other=0.0), axis=1)
-    val = tl.load(coef + u, mask=m, other=0.0) * av * tl.maximum(bv, 0.0)
+    val = tl.load(coef + u, mask=m, other=0.0) * av * tl.maximum(bv.to(tl.bfloat16).to(tl.float32), 0.0)
     od = tl.load(outd + u, mask=m, other=0)
     tl.atomic_add(y_ptr + bat * D + od, val, mask=m)
 

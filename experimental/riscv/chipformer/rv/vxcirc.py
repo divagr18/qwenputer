@@ -555,7 +555,7 @@ def build(c, one, fam, pay, uops, A, B, C, jt, jeq, nr, rec_start, case, rdw_any
              for g_ in range(4) for t_ in range(32)}
         vhs = []
         for x in range(2):
-            beta = andpre([isVH, wt[1], wt[2], 1 - wt[0], w4] + lits([halfw], x))
+            beta = andpre([isVH, wt[1], wt[2], 1 - wt[0], w4] + lits([halfw], x) + lits(coff[7:10], kh))
             vhs.append({"data": dict(cdata), "ref": one, "beta": beta,
                         "into": kdims[32 * x:32 * x + 32]})
         thead(c, f"vx.kc{kh}", keys, q, vhs)
