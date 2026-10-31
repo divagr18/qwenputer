@@ -5,22 +5,22 @@ and semantics are the contract, and the circuit has to match it token for token.
 
 ## Why the early layers
 
-The core's datapaths sit in layers 5–9 and are nearly full there (MLP free: L5 0.6k, L6 1.7k, L8
-1.2k, L9 0.7k; heads: L3–L9 full). The free room is:
+The core's datapaths sit in layers 5â€“9 and are nearly full there (MLP free: L5 0.6k, L6 1.7k, L8
+1.2k, L9 0.7k; heads: L3â€“L9 full). The free room is:
 
 - heads: L1 11, L2 16, L10 16, L11 16
 - MLP units: L1 about 8.9k, L2 7.8k, L3 8.8k, L4 4.9k, L7 5.1k, L10 7.9k, L11 8.1k
-- live dims: low in L1–L4 (about 120–240) against a peak of about 1,090 at L8–L9
+- live dims: low in L1â€“L4 (about 120â€“240) against a peak of about 1,090 at L8â€“L9
 
 Exact arithmetic costs one MLP stage, and so one layer, per carry or threshold level. A multiply
 takes about 5 stages and a 64-lane dot product about 6. A unit that reads its operands in layers
-2–3 has 8–9 MLP stages before the exit (L11). A unit on top of the core would add one layer per
+2â€“3 has 8â€“9 MLP stages before the exit (L11). A unit on top of the core would add one layer per
 stage.
 
 ## The rule the design follows
 
-1. **Memories:** the unit's memories are its own heads in L1–L3, so its addresses never need the
-   register file (L5) or RAM (L7–8).
+1. **Memories:** the unit's memories are its own heads in L1â€“L3, so its addresses never need the
+   register file (L5) or RAM (L7â€“8).
    - L1 attention queries can use only token features.
    - L2 queries can use L1 outputs, the `j` thermometers included, but only in linear (andpre)
      forms.
@@ -40,8 +40,8 @@ stage.
 
 | Memory | Contents | Rows | Heads, layer |
 |---|---|---|---|
-| VM | 16 vector registers × 64 int32; bank A = v0–v7, bank B = v8–v15, one read port each | element pairs (64 bits), written every 4th stream token | 2, L2 |
-| VA | 256 int8 activations, 4 chunks of 64 | byte pairs in pair-specific columns, read a chunk at a time (multi-hot) | 1–2, L2 |
+| VM | 16 vector registers Ã— 64 int32; bank A = v0â€“v7, bank B = v8â€“v15, one read port each | element pairs (64 bits), written every 4th stream token | 2, L2 |
+| VA | 256 int8 activations, 4 chunks of 64 | byte pairs in pair-specific columns, read a chunk at a time (multi-hot) | 1â€“2, L2 |
 | KC | K cache: rows (l, g, t) of 8 int8, 1024 rows | 8 bytes written from 4 tokens' payloads | 3, L2 |
 | VC | V cache: rows (l, g, t) of 8 int8, laid out so a read of column j over t < 32 is one query | as KC | 3, L2 |
 | WROM | int4 weights, one row-chunk (8 words, 64 cells) plus the row scale S_r per value-head row, 4,152 row-chunks | read-only (snapshot) | 17, L3 (+1 L2) |
@@ -56,12 +56,12 @@ To free L3, the ROM shrinks to 128 KB (16 heads, L4 only). The ROM fetch timing 
 
 | Op | Does | Tokens |
 |---|---|---|
-| VMAT | out = acc × S_r into a VM register (k = 1: 64 lanes); argmax mode | 2 a row (k = 1), 6 a row (k = 3) |
-| VMATR | scores: VA q · K rows (signed max tracked); p·V: VA p · V column j, × r0 >> 12 | 2 an output |
-| VQ | a VM register's pairs → int8 pairs into VA or a cache row | 1 per 2 elements |
-| VEW | ADD (window × factor, then add); ROPE (pairs, cos/sin from state); GLU (two multiplies chained) | ADD, ROPE: 2 an element; GLU: 4 an element |
-| VEXP | exp-table softmax numerators, VM scores → VA | 1 an element |
-| VRED | Σ VA² or Σ VA over a chunk | 1–2 |
+| VMAT | out = acc Ã— S_r into a VM register (k = 1: 64 lanes); argmax mode | 2 a row (k = 1), 6 a row (k = 3) |
+| VMATR | scores: VA q Â· K rows (signed max tracked); pÂ·V: VA p Â· V column j, Ã— r0 >> 12 | 2 an output |
+| VQ | a VM register's pairs â†’ int8 pairs into VA or a cache row | 1 per 2 elements |
+| VEW | ADD (window Ã— factor, then add); ROPE (pairs, cos/sin from state); GLU (two multiplies chained) | ADD, ROPE: 2 an element; GLU: 4 an element |
+| VEXP | exp-table softmax numerators, VM scores â†’ VA | 1 an element |
+| VRED | Î£ VAÂ² or Î£ VA over a chunk | 1â€“2 |
 | VGET | rd = tracker | value record |
 | VPUT | VM[v][i] = register | 1 VC + 2 + NT |
 | VSETR | RoPE cos/sin into state | VC + payload |
@@ -101,7 +101,7 @@ The model's weights, scales and caches stay data.
 - **Counters for the unit (L1):** vel counts VH tokens since the last VC or record start (the
   element of the next token), and vsub counts VE tokens since the last VH or VC (its position
   inside the element).
-- **VM:** one element per row (31 bit columns): 2 banks � 512 rows = 4 key heads. A read is the
+- **VM:** one element per row (31 bit columns): 2 banks × 512 rows = 4 key heads. A read is the
   2-hot pair containing the element; a write is one element at its VH, from lags 1 (VE, bits
   0-15) and 0 (VH, bits 16-30).
 - **VA:** 6 chunks of 32 byte pairs. A row is a pair (16 columns), 4 rows per value head, so a
@@ -112,43 +112,30 @@ The model's weights, scales and caches stay data.
   giving 256 dims. Not built yet. The head budget is tight: L2 has 16, L1 11; L3 frees 16 if the
   ROM shrinks to 128 KB.
 
-## Status
+## Status (QwenPU, 2026-10-31)
 
-- **Reference v6:**
-  - element units, aligned offsets, 6-chunk VA, slotted VC, VE / VH, 31-bit words
-  - write-target codes in slot 0; trackers flagged on their own VH; argmax rows as words
-  - stories260K: 2.22M trace tokens for the 60-token story (12.53M today), same story
-- **Circuit (vxcirc.py), still 11 layers:**
-  - config slots, element counters, VM, VA, trackers
-  - VPUT, VQ, VRED and VGET, teacher-forced exact on random programs (tests/test_rv_vx.py)
-- **Lesson:** every literal in a case or t_and must be exactly 0 or 1 at every position,
-  including where the case doesn't fire. A sum of two register bits broke ordinary instructions.
+Built and exact: every op in `tests/test_rv_vx.py`, the story program through the IR (first
+110,000 steps) and on the GPU executor (all 3,184,921 steps), and the merged checkpoint's own
+layers (`vxcheck`). What changed from the plan above, while building:
 
-## Next: VMAT
+- **Weight memory:** a 2-hot row-pair table in L3, 3 row-chunks a pair (12 key heads). A k = 1
+  op's row r is chunk 3 base + start + r (ops packed back to back, a start slot in the config);
+  a k = 3 op's row r is pair base + r, chunk c in slot c. The pair index is an adder in L2's
+  MLP.
+- **Dot products:** by bit planes (VMAT) and bit-pair counts (VRED, VMATR), so the first
+  reduction round splits small sums.
+- **One multiply-and-shift datapath** serves VQ and VEW: a window of a VM element (a one-stage
+  shifter, clamp16 folded into the products) times a factor, then a signed shift.
+- **Streams:** VEW and VMATR p.V stream a raw value first, then the word from the lags, so the
+  add and the tracker compare stay shallow. VEXP streams e, e' then p, p'.
+- **Caches:** K rows in 5 key heads (halves in the two value heads); V with one value head per
+  slot (16 key heads), so p.V reads byte j of every slot at once. VQ writes 4 bytes at a time.
+- **Placement:** `q35/sched.py` re-places the built graph by criticality (15 to 12 layers before
+  the last ops; 13 now), with a level checker.
+- **Gotchas:** counter functions must hold at reset tokens; literals from config slots must stay
+  0/1 under every op's config (fold them into gates); executors write a zero key's row 0, so
+  every write is gated by its own key head; the executors round MLP gates to bf16 as the model
+  does.
 
-- **Weights.** WROM needs 9 heads: row-chunks packed 2 int4 cells a byte column, 2 chunks a row,
-  S in 2 byte columns. L2 has 7 free. Plan: a 128 KB ROM in the NPU build (a build option;
-  MicroPython images need 205 KB), pinned to L4 so the fetch timing stays, which frees L3's 16
-  heads for the WROM.
-- **One tracker.** Programs always read a tracker right after the op that set it, so vmx, vsum
-  and vbest could share one head (frees 2 in L2). The reference would follow.
-- **4 tokens a row.** The dot product (about 7 stages from the L3 read) and the row-scale
-  multiply (5) don't fit one token. A row becomes acc lo, acc hi, then o = acc * S lo, hi; the
-  multiply reads acc from the previous tokens through an L1 "lag" head (written every token from
-  the lagged payloads, read at once). Expect about 44k trace tokens per story token (4.7-5x
-  fewer than today) at about +0 layers.
-
-### Found building VMAT
-
-- **Byte tables need 2-hot reads.** A byte-valued snapshot table read one-hot isn't exact
-  through the HF kernel: it scales by 2^-3.5, and only power-of-two data survives the bf16 cast.
-  The ROM and DROM read row pairs (p, p + 64), which scales by 2^-4 and is exact. Counts of 2, 8
-  and 32 rows scale by powers of 2. Bit tables are exact at any count, because the data and the
-  ballast round alike.
-- **So a key head holds 126 byte columns × 64 row pairs × 2 value heads = 16 KB.** The WROM (4,152
-  chunks × 34 bytes) needs about 12 heads with 3 chunks a row pair.
-- **New WROM addressing.** The WROM goes in L3, where queries may use L2's MLP outputs, so the row
-  pair = base + (k = 1: r // 3, k = 3: r) by a one-stage threshold adder, and the slot = r % 3 (k
-  = 1) or the chunk c (k = 3). The CPU passes the row-pair base; each op starts at slot 0.
-- **Layer count.** The first VMAT build (one-hot WROM, 4 comparison adders) placed at 13 layers:
-  L5, L6, L8 and L9's MLPs hit the 9,216-unit cap, so the dot product spilled upward.
+Next: the hidden size (5120, from about 2,250 live dims at L8-L9) and with it the checkpoint
+(26.7 GB).
