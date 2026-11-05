@@ -276,8 +276,10 @@ details:
 
 ## Citing
 
-If you use Qwenputer in your work, please cite it. GitHub's "Cite this repository" button reads
-[CITATION.cff](CITATION.cff); in BibTeX:
+Author: [Divyansh Agrawal](https://orcid.org/0009-0003-0739-2473) (ORCID: [0009-0003-0739-2473](https://orcid.org/0009-0003-0739-2473)).
+
+For the source code, cite the software entry below. GitHub's "Cite this repository" button reads
+[CITATION.cff](CITATION.cff).
 
 ```bibtex
 @software{agrawal2026qwenputer,
@@ -286,7 +288,25 @@ If you use Qwenputer in your work, please cite it. GitHub's "Cite this repositor
   year    = {2026},
   version = {0.1.0},
   url     = {https://github.com/divagr18/qwenputer},
-  license = {MIT}
+  license = {MIT},
+  note    = {Author ORCID: https://orcid.org/0009-0003-0739-2473}
+}
+```
+
+For the Hugging Face model artifact, use DOI [10.57967/hf/11140](https://doi.org/10.57967/hf/11140).
+This DOI identifies the model artifact, not a GitHub source-code release.
+
+```bibtex
+@misc{agrawal2026qwenputer_model,
+  author    = {Agrawal, Divyansh},
+  title     = {{Qwen3.5-4B-Qwenputer}},
+  year      = {2026},
+  publisher = {Hugging Face},
+  version   = {5ba9ad0},
+  doi       = {10.57967/hf/11140},
+  url       = {https://huggingface.co/divagr1925/Qwen3.5-4B-Qwenputer},
+  license   = {Apache-2.0},
+  note      = {Model artifact. Author ORCID: https://orcid.org/0009-0003-0739-2473}
 }
 ```
 
