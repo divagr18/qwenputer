@@ -280,8 +280,9 @@ def commands(meta, cond):
             tg = [[ri for ri, r in enumerate(m["runs"]) if r[2] == o] for o in ops]
             out.append((m, m["own"][0], op, tg))
         else:
+            saved = set(m["pos"])  # a call right after a tool response decides at a forced token (not saved)
             for c in m["calls"]:
-                if c["binary"] and c["op"] in OPS:
+                if c["binary"] and c["op"] in OPS and c["pos"] in saved:
                     out.append((m, c["pos"], c["op"], c["targets"]))
     return out
 
@@ -291,10 +292,6 @@ def pointer_fit(H, tr, te, li, rank=64, epochs=200, dev="cuda"):
     D = next(iter(H.values()))["h"].shape[-1]
     res = []
     for slot in range(2):
-        A = torch.nn.Linear(D, rank, bias=False).to(dev)
-        B = torch.nn.Linear(D, rank, bias=False).to(dev)
-        opt = torch.optim.Adam([*A.parameters(), *B.parameters()], lr=2e-3, weight_decay=1e-4)
-
         def batch(items):
             for m, q, op, tg in items:
                 cand = [r[1] for r in m["runs"] if r[1] < q + 1]
@@ -303,25 +300,38 @@ def pointer_fit(H, tr, te, li, rank=64, epochs=200, dev="cuda"):
                 Q = at(H, m, li, [q]).to(dev)
                 K = at(H, m, li, cand).to(dev)
                 yield Q, K, tg[slot], tg[1 - slot], op, m
-        sc = 1 / 50.0
         trb = list(batch(tr))
+        # standardized inputs: a few of Qwen's dims are orders of magnitude larger than the rest
+        qs, ks = torch.cat([b[0] for b in trb]), torch.cat([b[1] for b in trb])
+        A = torch.nn.Sequential(Std(qs), torch.nn.Linear(D, rank, bias=False)).to(dev)
+        B = torch.nn.Sequential(Std(ks), torch.nn.Linear(D, rank, bias=False)).to(dev)
+        opt = torch.optim.Adam([*A[1].parameters(), *B[1].parameters()], lr=1e-3, weight_decay=1e-4)
         for _ in range(epochs // 10):
             random.shuffle(trb)
             for Q, K, pos, _, _, _ in trb:
                 opt.zero_grad()
-                s = (A(Q * sc) @ B(K * sc).T)[0]
+                s = (A(Q) @ B(K).T)[0] / rank ** 0.5
                 loss = -torch.logsumexp(s[pos], 0) + torch.logsumexp(s, 0)
                 loss.backward()
                 opt.step()
-            res.append((A, B))
+        res.append((A, B))
     return res
+
+
+class Std(torch.nn.Module):
+    def __init__(self, x):
+        super().__init__()
+        self.register_buffer("mu", x.mean(0))
+        self.register_buffer("sd", x.std(0) + 1e-3)
+
+    def forward(self, x):
+        return (x - self.mu) / self.sd
 
 
 def evaluate(H, items, li, ptr, dev="cuda"):
     """Per command: the op from the op probe is scored separately; here: slot picks vs targets.
     + and * accept the swapped pair."""
     ok = tot = 0
-    sc = 1 / 50.0
     with torch.no_grad():
         for m, q, op, tg in items:
             cand = [r[1] for r in m["runs"] if r[1] < q + 1]
@@ -329,7 +339,7 @@ def evaluate(H, items, li, ptr, dev="cuda"):
                 continue
             Q = at(H, m, li, [q]).to(dev)
             K = at(H, m, li, cand).to(dev)
-            pick = [int((A(Q * sc) @ B(K * sc).T)[0].argmax()) for A, B in ptr]
+            pick = [int((A(Q) @ B(K).T)[0].argmax()) for A, B in ptr]
             good = pick[0] in tg[0] and pick[1] in tg[1]
             if op in "+*":
                 good = good or (pick[0] in tg[1] and pick[1] in tg[0])
