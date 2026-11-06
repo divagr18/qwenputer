@@ -33,6 +33,34 @@ static uint64_t episodes, episodes_full, lines_full_once;
 static uint32_t min_store = 0xffffffffu, max_store, lo_watch = 0, hi_watch = 0, min_watch_store = 0xffffffffu;
 static int mt_on;
 
+#ifdef MT_TRACE
+/* Optional full word-level trace (kvram study): one 8-byte record per touched word.
+ * Unlike the counters above it covers the whole address space (native stack and .data too).
+ * rec[0] = absolute word index (address >> 2) | kind << 28 (0 load, 1 store, 2 host store, 3 phase mark),
+ * rec[1] = the word's value (after the store; as read for a load). */
+static uint32_t* tr_buf;
+static uint64_t tr_n, tr_cap;
+EXPORT int mt_trace_enable(uint64_t cap_records) {
+  tr_buf = malloc(cap_records * 8);
+  tr_cap = cap_records;
+  tr_n = 0;
+  return tr_buf ? 0 : -1;
+}
+EXPORT uint32_t* mt_trace_buf(void) { return tr_buf; }
+EXPORT uint64_t mt_trace_len(void) { return tr_n; }
+static inline void tr_push(uint32_t w, uint32_t kind) {
+  if (!tr_buf || tr_n >= tr_cap) return;
+  uint32_t v;
+  memcpy(&v, M + 4 * w, 4);
+  tr_buf[2 * tr_n] = w | (kind << 28);
+  tr_buf[2 * tr_n + 1] = v;
+  tr_n++;
+}
+#define TR(ad, n, kind) for (uint32_t tw = (ad) >> 2; tw <= ((ad) + (n) - 1) >> 2; tw++) tr_push(tw, (kind))
+#else
+#define TR(ad, n, kind) ((void)0)
+#endif
+
 static void run_flush(void) {
   if (run_bytes) {
     int b = 0;
@@ -67,6 +95,7 @@ static void close_line(uint32_t l) {
 }
 
 static inline void mt_load(uint32_t ad, uint32_t n) {
+  TR(ad, n, 0);
   if (!mt_on || ad < LIN) return;
   uint32_t o = ad - LIN;
   phase_t* p = &ph[cur_ph];
@@ -83,6 +112,7 @@ static inline void mt_load(uint32_t ad, uint32_t n) {
 }
 
 static inline void mt_store(uint32_t ad, uint32_t n) {
+  TR(ad, n, 1);
   if (!mt_on || ad < LIN) return;
   uint32_t o = ad - LIN;
   phase_t* p = &ph[cur_ph];
@@ -112,6 +142,7 @@ static inline void mt_store(uint32_t ad, uint32_t n) {
  * chunks): they define words like a store does, but are not CPU stores. */
 static uint64_t host_bytes;
 EXPORT void mt_host_store(uint32_t ad, uint32_t n) {
+  if (n) TR(ad, n, 2);
   if (!mt_on || ad < LIN || n == 0) return;
   uint32_t o = ad - LIN;
   host_bytes += n;
@@ -129,6 +160,9 @@ EXPORT void mt_host_store(uint32_t ad, uint32_t n) {
 
 EXPORT void mt_phase(int k) {
   ph[cur_ph].icount_end = mt_icount_now;
+#ifdef MT_TRACE
+  if (tr_buf && tr_n < tr_cap) { tr_buf[2 * tr_n] = (uint32_t)k | (3u << 28); tr_buf[2 * tr_n + 1] = (uint32_t)mt_icount_now; tr_n++; }
+#endif
   for (uint32_t w = 0; w < NW; w++) wflag[w] &= ~(F_W_STEP | F_R_STEP);
   for (uint32_t l = 0; l < NL; l++) lflag[l] &= ~L_W_STEP;
   cur_ph = k < MAXPH ? k : MAXPH - 1;
