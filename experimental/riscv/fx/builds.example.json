@@ -1,0 +1,9 @@
+{"wasm_releasesmall_757bdb9": {"wasm": "build-stock/bin/fx-core.wasm"},
+ "wasm_releasesmall_names": {"wasm": "build-wasm-names/bin/fx-core.wasm"},
+ "wasm_releasefast": {"wasm": "build-wasm-fast/bin/fx-core.wasm"},
+ "wasm_stripped_root": {"wasm": "build-wasm-stripped/bin/fx-core.wasm"},
+ "wasm_published_libfx_0.0.16": {"wasm": "libfx-pkg/package/fx-core.wasm"},
+ "rv32_os_zba_unaligned": {"elf": "rvb/fx--Os-generic_rv32_m_zba_unaligned_scalar_mem.elf"},
+ "rv32_os_zba_aligned_only": {"elf": "rvb/fx--Os-generic_rv32_m_zba.elf"},
+ "rv32_releasefast_os_zba_unaligned": {"elf": "rvbf/fx--Os-generic_rv32_m_zba_unaligned_scalar_mem.elf"},
+ "rv32_stripped_os_zba_unaligned": {"elf": "rvbs/fx--Os-generic_rv32_m_zba_unaligned_scalar_mem.elf"}}
