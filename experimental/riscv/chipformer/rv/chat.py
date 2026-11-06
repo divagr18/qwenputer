@@ -26,6 +26,19 @@ from chipformer.rv import bridge as BR
 from chipformer.rv import core, elf, hf, ref
 from chipformer.rv import spec as S
 
+class NextTokenControlError(ValueError):
+    """An invalid optional next-token control request."""
+
+    def __init__(self, code):
+        messages = {
+            "not_callable": "on_step must be callable or None.",
+            "machine_owned": "on_step cannot replace a circuit-owned token.",
+            "invalid_token": "on_step must return None or an integer text token index.",
+        }
+        self.code = code
+        super().__init__(messages[code])
+
+
 CALC_TOOL = {"type": "function", "function": {
     "name": "calc",
     "description": "Evaluate an arithmetic expression exactly, with numbers of up to 62 digits: "
@@ -323,10 +336,16 @@ class RvChat:
     @torch.no_grad()
     def generate(self, ids: list[int], machine: "ref.Machine", max_new: int = 4000,
                  max_chip: int = 60000, check_head: bool = False, verbose: bool = False,
-                 lock: "BR.Session | None" = None, on_token=None) -> dict:
+                 lock: "BR.Session | None" = None, on_token=None, on_step=None) -> dict:
         """Greedy decoding after the prompt ``ids`` with the parked ``machine`` loaded.
         ``lock`` (a Session on a copy of the machine): stop at the first token that differs from
-        the reference's. ``on_token(id)`` is called with every generated model id as it comes."""
+        the reference's. ``on_token(id)`` observes each emitted token.
+        ``on_step(current, circuit_next, default_next)`` runs after each processed
+        token. Return None to retain the next selection, or a text token index
+        when circuit_next is None. Circuit-owned positions cannot be replaced.
+        The final selection may remain unemitted when a token budget expires."""
+        if on_step is not None and not callable(on_step):
+            raise NextTokenControlError("not_callable")
         x = torch.tensor([ids], device=self.dev)
         out = self.model(input_ids=x, use_cache=True)
         cache = out.past_key_values  # (fast: Qwen's layers only)
@@ -356,6 +375,7 @@ class RvChat:
         t_chip = t_text = 0.0
         expect, lock_error = [], None
         while n_text < max_new and n_chip_tok < max_chip:
+            current_token = nxt
             gen.append(nxt)
             if on_token is not None:
                 on_token(nxt)
@@ -425,6 +445,15 @@ class RvChat:
                     mismatch += 1
                 nxt = ct if ct is not None else int(torch.argmax(logits[: self.v0]))
                 t_text += time.time() - ts
+            if on_step is not None:
+                circuit_next = nxt if chip_in else ct
+                selected = on_step(current_token, circuit_next, nxt)
+                if selected is not None:
+                    if circuit_next is not None:
+                        raise NextTokenControlError("machine_owned")
+                    if type(selected) is not int or not 0 <= selected < self.v0:
+                        raise NextTokenControlError("invalid_token")
+                    nxt = selected
         dt = time.time() - t0
         return {"tokens": gen, "text_tokens": n_text, "chip_tokens": n_chip_tok,
                 "seconds": dt, "head_mismatch": mismatch, "lock_error": lock_error,
@@ -496,6 +525,8 @@ def main() -> None:
     ap.add_argument("--max-new", type=int, default=600)
     ap.add_argument("--check", action="store_true")
     ap.add_argument("--slow", action="store_true", help="every layer through the HF modules")
+    ap.add_argument("--acknowledge-repeats", action="store_true",
+                    help="acknowledge a successfully repeated calculator expression once")
     args = ap.parse_args()
     chat = RvChat(args.model, fast=not args.slow)
     m = ref.Machine.from_program(elf.program(args.firmware))
@@ -505,7 +536,12 @@ def main() -> None:
     BR.park(m2)
     lock = BR.Session(chat.T, m2)
     lock.history(ids)
-    r = chat.generate(ids, m, args.max_new, check_head=True, verbose=True, lock=lock)
+    control = None
+    if args.acknowledge_repeats:
+        from chipformer.rv.repeat_results import RepeatedResultAcknowledgement
+        control = RepeatedResultAcknowledgement.for_chat(chat)
+    r = chat.generate(ids, m, args.max_new, check_head=True, verbose=True, lock=lock,
+                      on_step=control)
     print(chat.text_of(r["tokens"]))
     print(f"[{r['text_tokens']} text + {r['chip_tokens']} chip tokens in {r['seconds']:.1f}s, "
           f"head mismatches {r['head_mismatch']}, lock error {r['lock_error']}]")
