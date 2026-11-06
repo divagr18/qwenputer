@@ -3,6 +3,11 @@ from the fxcore.h that wasm2c wrote.
 
 ABI: a7 = 0x400 + import index, a0 = pointer to the u32 argument words (a u64
 argument takes two words, low first), a1 = word count. The host returns in a0.
+
+With --native-tools (4th argument), `fx_host_tool_call` first calls the module's own
+`fxplat_native_tool` export (zbuild/rv_tools_main.zig): fx's file tools run in the guest.
+Ecalls 96/97 bracket that call so the host can time it; only a `not_native` (-100)
+result falls through to the host.
 """
 import json
 import re
@@ -10,6 +15,7 @@ import sys
 
 hdr = open(sys.argv[1]).read()
 out_c, out_j = sys.argv[2], sys.argv[3]
+native = len(sys.argv) > 4 and sys.argv[4] == "--native-tools"
 pat = re.compile(r"/\* import: '([^']+)' '([^']+)' \*/\n(\w+) (w2c_\w+)\(([^)]*)\);")
 table = []
 c = ['#include <stdint.h>', '#include "fxcore.h"', '',
@@ -19,6 +25,14 @@ c = ['#include <stdint.h>', '#include "fxcore.h"', '',
      '  register uint32_t a7 asm("a7") = 0x400 + id;',
      '  asm volatile("ecall" : "+r"(a0) : "r"(a1), "r"(a7) : "memory");',
      '  return a0;', '}', '']
+if native:
+    c += ['extern w2c_fxcore rv_fx_instance;',
+          'static inline void mark(uint32_t nr, uint32_t a, uint32_t b) {',
+          '  register uint32_t a0 asm("a0") = a;',
+          '  register uint32_t a1 asm("a1") = b;',
+          '  register uint32_t a7 asm("a7") = nr;',
+          '  asm volatile("ecall" : "+r"(a0) : "r"(a1), "r"(a7) : "memory");',
+          '}', '']
 for k, (mod, name, ret, fn, params) in enumerate(pat.findall(hdr)):
     ps = [p.strip() for p in params.split(",")]
     inst, types = ps[0], ps[1:]
@@ -35,6 +49,10 @@ for k, (mod, name, ret, fn, params) in enumerate(pat.findall(hdr)):
     sig = ", ".join([inst + " inst"] + args)
     arr = "{" + ", ".join(words) + "}" if words else "{0}"
     body = f"  uint32_t a[] = {arr};\n  "
+    if native and name == "fx_host_tool_call":
+        ps_ = ", ".join(f"p{i}" for i in range(len(types)))
+        body = (f"  mark(96, p0, p1);\n  u32 r = w2c_fxcore_fxplat_native_tool(&rv_fx_instance, {ps_});\n"
+                f"  mark(97, r, 0);\n  if (r != (u32)-100) return r;\n" + body)
     call = f"hostcall({k}, a, {len(words)})"
     if ret == "void":
         body += call + ";"

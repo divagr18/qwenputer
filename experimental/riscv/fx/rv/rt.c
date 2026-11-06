@@ -6,12 +6,23 @@
  *   0x00010000  code, rodata, data, bss
  *   0x01FFFFF0  C stack top (grows down)
  *   0x02000000  wasm linear memory (up to 32 MB)
+ * build.py can move linear memory to 0 (-DLINEAR_BASE_ADDR=0, wasm address = physical
+ * address) with the image at 0x02000000 and the C stack under 128 MB (-DCSTACK_TOP).
  */
 #include <stddef.h>
 #include <stdint.h>
 #include "fxcore.h"
 
-#define LINEAR_BASE ((uint8_t*)0x02000000u)
+#ifndef LINEAR_BASE_ADDR
+#define LINEAR_BASE_ADDR 0x02000000u
+#endif
+#ifndef CSTACK_TOP
+#define CSTACK_TOP 0x01FFFFF0
+#endif
+#define STR2(x) #x
+#define STR(x) STR2(x)
+#define LINEAR_BASE ((uint8_t*)(uintptr_t)LINEAR_BASE_ADDR)
+__attribute__((used, retain)) const uint32_t rv_linear_base = LINEAR_BASE_ADDR; /* read by rvhost.py */
 #define LINEAR_MAX_PAGES 512u /* 32 MB */
 #define TABLE_MAX 8192u
 
@@ -40,7 +51,7 @@ void wasm_rt_allocate_memory(wasm_rt_memory_t* m, uint64_t initial, uint64_t max
   m->size = initial * 65536u;
   m->data_end = m->data + m->size;
   m->is64 = is64;
-  rv_linear_bytes = (uint32_t)m->size;
+  if ((uint32_t)m->size > rv_linear_bytes) rv_linear_bytes = (uint32_t)m->size;
 }
 
 uint64_t wasm_rt_grow_memory(wasm_rt_memory_t* m, uint64_t delta) {
@@ -67,6 +78,114 @@ void wasm_rt_allocate_funcref_table(wasm_rt_funcref_table_t* t, uint32_t element
 void wasm_rt_free_funcref_table(wasm_rt_funcref_table_t* t) { (void)t; }
 
 /* ---- libc pieces (this file is built with -ffreestanding -fno-builtin) ---- */
+#if RT_FASTCOPY
+/* speed-iter: word-at-a-time copies whatever the relative alignment (wasm's memory.copy
+ * is memmove here, and most of fx's copies are between differently aligned buffers, which
+ * P0's version did a byte at a time). The destination is aligned first; the source is
+ * read with unaligned loads (RT_UNALIGNED CPUs) or as aligned words merged with shifts.
+ * The shift path reads the aligned words that contain the source bytes, so it may touch
+ * up to 3 bytes beyond either end of the source, never outside its aligned words. */
+static void copy_fwd(uint8_t* dp, const uint8_t* sp, size_t n) {
+  if (n >= 8) {
+    while ((uintptr_t)dp & 3) {
+      *dp++ = *sp++;
+      n--;
+    }
+    uint32_t* dw = (uint32_t*)dp;
+    unsigned off = (uintptr_t)sp & 3;
+    if (off == 0) {
+      const uint32_t* sw = (const uint32_t*)sp;
+      for (; n >= 16; n -= 16, dw += 4, sw += 4) {
+        uint32_t a = sw[0], b = sw[1], c = sw[2], e = sw[3];
+        dw[0] = a; dw[1] = b; dw[2] = c; dw[3] = e;
+      }
+      for (; n >= 4; n -= 4) *dw++ = *sw++;
+      sp = (const uint8_t*)sw;
+    } else {
+#if RT_UNALIGNED
+      typedef uint32_t __attribute__((aligned(1))) u32u;
+      for (; n >= 16; n -= 16, dw += 4, sp += 16) {
+        uint32_t a = ((const u32u*)sp)[0], b = ((const u32u*)sp)[1], c = ((const u32u*)sp)[2], e = ((const u32u*)sp)[3];
+        dw[0] = a; dw[1] = b; dw[2] = c; dw[3] = e;
+      }
+      for (; n >= 4; n -= 4, sp += 4) *dw++ = *(const u32u*)sp;
+#else
+      const uint32_t* sw = (const uint32_t*)(sp - off);
+      unsigned sh = off * 8, sl = 32 - sh;
+      uint32_t w0 = *sw++;
+      for (; n >= 16; n -= 16, sw += 4, dw += 4) {
+        uint32_t w1 = sw[0], w2 = sw[1], w3 = sw[2], w4 = sw[3];
+        dw[0] = (w0 >> sh) | (w1 << sl);
+        dw[1] = (w1 >> sh) | (w2 << sl);
+        dw[2] = (w2 >> sh) | (w3 << sl);
+        dw[3] = (w3 >> sh) | (w4 << sl);
+        w0 = w4;
+      }
+      for (; n >= 4; n -= 4) {
+        uint32_t w1 = *sw++;
+        *dw++ = (w0 >> sh) | (w1 << sl);
+        w0 = w1;
+      }
+      sp = (const uint8_t*)sw - 4 + off;
+#endif
+    }
+    dp = (uint8_t*)dw;
+  }
+  while (n--) *dp++ = *sp++;
+}
+
+static void copy_bwd(uint8_t* dp, const uint8_t* sp, size_t n) { /* dp, sp: one past the end */
+  if (n >= 8) {
+    while ((uintptr_t)dp & 3) {
+      *--dp = *--sp;
+      n--;
+    }
+    uint32_t* dw = (uint32_t*)dp;
+    unsigned off = (uintptr_t)sp & 3;
+    if (off == 0) {
+      const uint32_t* sw = (const uint32_t*)sp;
+      for (; n >= 4; n -= 4) *--dw = *--sw;
+      sp = (const uint8_t*)sw;
+    } else {
+#if RT_UNALIGNED
+      typedef uint32_t __attribute__((aligned(1))) u32u;
+      for (; n >= 4; n -= 4) {
+        sp -= 4;
+        *--dw = *(const u32u*)sp;
+      }
+#else
+      const uint32_t* sw = (const uint32_t*)(sp - off); /* word holding sp's last bytes */
+      unsigned sh = off * 8, sl = 32 - sh;
+      uint32_t w1 = *sw;
+      for (; n >= 4; n -= 4) {
+        uint32_t w0 = *--sw;
+        *--dw = (w0 >> sh) | (w1 << sl);
+        w1 = w0;
+      }
+      sp = (const uint8_t*)sw + off;
+#endif
+    }
+    dp = (uint8_t*)dw;
+  }
+  while (n--) *--dp = *--sp;
+}
+
+void* memcpy(void* restrict d, const void* restrict s, size_t n) {
+  copy_fwd(d, s, n);
+  return d;
+}
+
+void* memmove(void* d, const void* s, size_t n) {
+  uint8_t* dp = d;
+  const uint8_t* sp = s;
+  if (dp == sp || n == 0) return d;
+  if (dp < sp || dp >= sp + n)
+    copy_fwd(dp, sp, n);
+  else
+    copy_bwd(dp + n, sp + n, n);
+  return d;
+}
+#else
 void* memcpy(void* restrict d, const void* restrict s, size_t n) {
   uint8_t* dp = d;
   const uint8_t* sp = s;
@@ -120,6 +239,7 @@ void* memmove(void* d, const void* s, size_t n) {
   while (n--) *--dp = *--sp;
   return d;
 }
+#endif /* RT_FASTCOPY */
 
 void* memset(void* d, int c, size_t n) {
   uint8_t* dp = d;
@@ -168,7 +288,8 @@ size_t wcslen(const int* s) {
   return (size_t)(p - s);
 }
 
-static w2c_fxcore instance;
+w2c_fxcore rv_fx_instance; /* global: imports.c's native-tool bridge calls back into it */
+#define instance rv_fx_instance
 
 int rv_main(void) {
   wasm_rt_init();
@@ -180,7 +301,7 @@ int rv_main(void) {
 
 __attribute__((naked, section(".text.start"))) void _start(void) {
   asm volatile(
-      "li sp, 0x01FFFFF0\n"
+      "li sp, " STR(CSTACK_TOP) "\n"
       "call rv_main\n"
       "li a7, 93\n"
       "ecall\n"

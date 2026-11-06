@@ -1,0 +1,30 @@
+--- a/lib/libc/wasi/libc-bottom-half/cloudlibc/src/libc/sys/stat/stat_impl.h	2026-10-01 22:02:34.000000000 +0530
++++ b/lib/libc/wasi/libc-bottom-half/cloudlibc/src/libc/sys/stat/stat_impl.h	2026-11-07 01:02:54.170195100 +0530
+@@ -53,10 +53,12 @@
+       out->st_mode |= S_IFCHR;
+       break;
+     case __WASI_FILETYPE_DIRECTORY:
+-      out->st_mode |= S_IFDIR;
++      out->st_mode |= S_IFDIR | 0755; /* Qwenputer platform libc, as below */
+       break;
+     case __WASI_FILETYPE_REGULAR_FILE:
+-      out->st_mode |= S_IFREG;
++      /* Qwenputer platform libc: WASI has no permission bits; report the access the
++       * preopen grants (rw for owner, r for others) instead of mode 0. */
++      out->st_mode |= S_IFREG | 0644;
+       break;
+     case __WASI_FILETYPE_SOCKET_DGRAM:
+     case __WASI_FILETYPE_SOCKET_STREAM:
+--- a/lib/std/Io/Threaded.zig	2026-10-01 22:02:34.000000000 +0530
++++ b/lib/std/Io/Threaded.zig	2026-11-07 01:12:03.751171100 +0530
+@@ -9258,7 +9258,9 @@
+                 else => |status| return syscall.unexpectedNtstatus(status),
+             };
+         },
+-        .wasi => return error.Unexpected, // Unsupported OS.
++        // Qwenputer platform std: WASI has no permission bits, so setting them is a no-op
++        // (the platform libc reports the preopen's access as 0644, see stat_impl.h).
++        .wasi => return,
+         else => return setPermissionsPosix(file.handle, permissions.toMode()),
+     }
+ }

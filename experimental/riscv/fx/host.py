@@ -25,10 +25,39 @@ import wasmtime
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import tinyrepo  # noqa: E402
+import wasifs  # noqa: E402
 import wasmbin  # noqa: E402
+
+# Host-side knobs for the speed iteration (speed-iter.md). The defaults are P0's host.
+#   stream:   token  one SSE event per ~4 characters (about one token), one read each
+#             event  the whole reply as one SSE event (content or tool calls, finish, usage)
+#             chunk  token-sized events, but all of a reply's bytes in one read
+#             event_chunk  one event, one read
+#   provider: configured  FX_CONFIGURED_PROVIDERS (OpenAI Chat Completions), as libfx's customProvider
+#             gateway     no configured provider: fx's built-in AI Gateway route (Vercel protocol SSE)
+#   clock:    ms (+1 ms per clock_time_get) | frozen (constant) | ns (+1 ns per call)
+#   tools:    names of the host tools to advertise (default: all five)
+#   tool_schemas: host (P0's schemas) | fx (fx's own built-in schemas, for the native-tool bridge)
+#   env:      extra environment entries "K=V"
+#   native:   0 | 1  run fx's own file tools in the guest (zbuild/rv_tools_main.zig's
+#             fxplat_native_tool export); needs fs=repo. Tools it does not cover stay host tools.
+#   fs:       none (P0: no preopens, as libfx) | repo (WASI preopen "/" = the repo, wasifs.py)
+OPTS = {"stream": "token", "provider": "configured", "clock": "ms", "tools": None, "tool_schemas": "host", "env": [],
+        "native": "0", "fs": "none"}
+
+
+TRACE = os.environ.get("FXH_TRACE") == "1"
+
+
+def set_opts(**kw):
+    for k, v in kw.items():
+        assert k in OPTS, k
+        OPTS[k] = v
+
 
 PROVIDER = "local"
 MODEL = "local-model"
+GATEWAY_MODEL = "openai/gpt-5"
 PROVIDER_JSON = json.dumps({PROVIDER: {
     "protocol": "openai-chat-completions",
     "base_url": "http://localhost:8000/v1",
@@ -53,6 +82,7 @@ TOOLS = [
      "inputSchema": {"type": "object", "properties": {"pattern": {"type": "string"}}, "required": ["pattern"], "additionalProperties": False},
      "idempotent": True},
 ]
+FX_TOOLS = TOOLS  # replaced by fx's own schemas for the native-tool bridge (native_tools.py)
 INSTRUCTIONS = "You are a coding agent working in a small Python repository. Use the tools to inspect and change files. Be concise."
 
 PROMPTS = [
@@ -99,6 +129,49 @@ def sse(obj):
 
 def model_response(step, idx):
     """SSE chunks (one per network read) for scripted step `idx`."""
+    if OPTS["provider"] == "gateway":
+        chunks, out_tokens = gateway_response(step, idx)
+    else:
+        chunks, out_tokens = chat_response(step, idx)
+    if OPTS["stream"] in ("chunk", "event_chunk"):
+        chunks = [b"".join(chunks)]
+    return chunks, out_tokens
+
+
+def gateway_response(step, idx):
+    """The same reply in the Vercel AI Gateway stream protocol (fx's gateway/client.zig)."""
+    one = OPTS["stream"] in ("event", "event_chunk")
+    ev = []
+    out_tokens = 0
+    kind = step[0][0]
+    if kind == "text":
+        ev.append({"type": "text-start", "id": "t0"})
+        pieces = [step[0][1]] if one else toks(step[0][1])
+        for t in pieces:
+            ev.append({"type": "text-delta", "id": "t0", "delta": t})
+        out_tokens = len(toks(step[0][1]))
+        ev.append({"type": "text-end", "id": "t0"})
+        reason = "stop"
+    else:
+        for k, (_, name, args) in enumerate(step):
+            call_id = f"call_{idx}_{k}"
+            a = json.dumps(args)
+            if not one:
+                ev.append({"type": "tool-input-start", "id": call_id, "toolName": name})
+                for t in toks(a):
+                    ev.append({"type": "tool-input-delta", "id": call_id, "delta": t})
+                ev.append({"type": "tool-input-end", "id": call_id})
+            ev.append({"type": "tool-call", "toolCallId": call_id, "toolName": name, "input": a})
+            out_tokens += len(toks(a))
+        reason = "tool-calls"
+    ev.append({"type": "finish", "finishReason": {"unified": reason, "raw": reason},
+               "usage": {"inputTokens": {"total": 1000 + 200 * idx}, "outputTokens": {"total": out_tokens}}})
+    return [sse(e) for e in ev], out_tokens
+
+
+def chat_response(step, idx):
+    if OPTS["stream"] in ("event", "event_chunk"):
+        return chat_response_one(step, idx)
     cid = f"chatcmpl-{idx}"
     chunks = [sse({"id": cid, "model": MODEL, "choices": [{"index": 0, "delta": {"role": "assistant", "content": ""}, "finish_reason": None}]})]
     out_tokens = 0
@@ -120,6 +193,29 @@ def model_response(step, idx):
                        "usage": {"prompt_tokens": 1000 + 200 * idx, "completion_tokens": out_tokens, "total_tokens": 1000 + 200 * idx + out_tokens}}))
     chunks.append(b"data: [DONE]\n\n")
     return chunks, out_tokens
+
+
+def chat_response_one(step, idx):
+    """The whole reply as one Chat Completions event: the content (or every tool call with its
+    complete arguments), the finish reason and the usage, then [DONE]."""
+    cid = f"chatcmpl-{idx}"
+    kind = step[0][0]
+    if kind == "text":
+        delta = {"role": "assistant", "content": step[0][1]}
+        out_tokens = len(toks(step[0][1]))
+        reason = "stop"
+    else:
+        calls = []
+        out_tokens = 0
+        for k, (_, name, args) in enumerate(step):
+            a = json.dumps(args)
+            calls.append({"index": k, "id": f"call_{idx}_{k}", "type": "function", "function": {"name": name, "arguments": a}})
+            out_tokens += len(toks(a))
+        delta = {"role": "assistant", "content": None, "tool_calls": calls}
+        reason = "tool_calls"
+    ev = {"id": cid, "model": MODEL, "choices": [{"index": 0, "delta": delta, "finish_reason": reason}],
+          "usage": {"prompt_tokens": 1000 + 200 * idx, "completion_tokens": out_tokens, "total_tokens": 1000 + 200 * idx + out_tokens}}
+    return [sse(ev), b"data: [DONE]\n\n"], out_tokens
 
 
 class RepoTools:
@@ -177,26 +273,36 @@ class RepoTools:
         return f"unknown tool {name}", True
 
 
+def repo_dir(tmp):
+    """Where the scratch repo goes: the temp dir, or <temp>/w under the WASI preopen."""
+    if OPTS["fs"] == "repo":
+        d = os.path.join(tmp, "w")
+        os.makedirs(d)
+        return d
+    return tmp
+
+
+def host_env():
+    env = [f"FX_MODEL={GATEWAY_MODEL if OPTS['provider'] == 'gateway' else MODEL}"]
+    if OPTS["provider"] == "configured":
+        env = [f"FX_PROVIDER={PROVIDER}", f"FX_CONFIGURED_PROVIDERS={PROVIDER_JSON}"] + env
+    return env + list(OPTS["env"])
+
+
+def host_tools():
+    tools = TOOLS
+    if OPTS["tool_schemas"] == "fx":
+        tools = FX_TOOLS
+    if OPTS["tools"]:
+        tools = [t for t in tools if t["name"] in OPTS["tools"]]
+    return tools
+
+
 class Host:
-    def __init__(self, wasm_bytes, repo, instrument=False, turns=2, log=None):
+    def _init_common(self, repo, turns, log):
         self.repo = RepoTools(repo)
         self.turns = turns
         self.log = log or (lambda *a: None)
-        cfg = wasmtime.Config()
-        cfg.consume_fuel = True
-        self.engine = wasmtime.Engine(cfg)
-        self.store = wasmtime.Store(self.engine)
-        self.FUEL0 = 1 << 62
-        self.store.set_fuel(self.FUEL0)
-        src = wasmbin.Module(wasm_bytes)
-        self.names = src.func_names
-        self.n_imported = src.n_imported_funcs
-        self.n_defined = len(src.code)
-        self.instrumented = instrument
-        if instrument:
-            wasm_bytes = wasmbin.instrument(src)
-        self.module = wasmtime.Module(self.engine, wasm_bytes)
-        self.linker = wasmtime.Linker(self.engine)
         self.stdin = bytearray()
         self.stdout = bytearray()
         self.events = []  # (fuel, kind, detail)
@@ -215,9 +321,32 @@ class Host:
         self.messages_out = {}
         self.request_bytes = []
         self.exit_code = None
-        self.env = [f"FX_PROVIDER={PROVIDER}", f"FX_CONFIGURED_PROVIDERS={PROVIDER_JSON}", f"FX_MODEL={MODEL}"]
+        self.env = host_env()
         self.args = ["fx", "acp"]
         self.new_method = os.environ.get("FX_NEW_METHOD", "libfx/new")
+        # fs=repo: the preopen "/" is the repo's parent, the repo is /w (rv_tools_main.zig).
+        self.fs = wasifs.WasiFs(self, os.path.dirname(os.path.abspath(repo))) if OPTS["fs"] == "repo" else None
+        self.unsupported = {}
+        self.native_calls = []
+        self.native_fn = None  # wasmtime: the fxplat_native_tool export (RV32: imports.c calls it)
+
+    def __init__(self, wasm_bytes, repo, instrument=False, turns=2, log=None):
+        self._init_common(repo, turns, log)
+        cfg = wasmtime.Config()
+        cfg.consume_fuel = True
+        self.engine = wasmtime.Engine(cfg)
+        self.store = wasmtime.Store(self.engine)
+        self.FUEL0 = 1 << 62
+        self.store.set_fuel(self.FUEL0)
+        src = wasmbin.Module(wasm_bytes)
+        self.names = src.func_names
+        self.n_imported = src.n_imported_funcs
+        self.n_defined = len(src.code)
+        self.instrumented = instrument
+        if instrument:
+            wasm_bytes = wasmbin.instrument(src)
+        self.module = wasmtime.Module(self.engine, wasm_bytes)
+        self.linker = wasmtime.Linker(self.engine)
         for imp in self.module.imports:
             fn = getattr(self, "w_" + imp.name if imp.module.startswith("wasi") else "x_" + imp.name, None)
             if fn is None:
@@ -227,6 +356,7 @@ class Host:
         ex = self.inst.exports(self.store)
         self.mem = ex["memory"]
         self.start = ex["_start"]
+        self.native_fn = ex["fxplat_native_tool"] if "fxplat_native_tool" in ex else None
         if instrument:
             self.counters = []
             for fi in range(self.n_defined):
@@ -239,6 +369,8 @@ class Host:
 
     def mark(self, kind, detail=None):
         self.events.append((self.fuel(), kind, detail))
+        if TRACE and kind in ("tool_call", "tool_result"):
+            print("mark", kind, detail, file=sys.stderr)
         if self.instrumented and kind in ("boot_end", "stream_open", "stream_close", "tool_call", "tool_result", "response", "deliver"):
             self.snapshots.append((len(self.events) - 1, self.snapshot()))
 
@@ -248,6 +380,10 @@ class Host:
     def _wrap(self, name, fn):
         def w(*args):
             self.import_calls[name] = self.import_calls.get(name, 0) + 1
+            if TRACE and name.startswith(("path_", "fd_")) and name not in ("fd_write", "fd_read") or (TRACE and args and args[0] >= 3 and name in ("fd_write", "fd_read")):
+                r = fn(*args)
+                print("wasi", name, args, "->", r, file=sys.stderr)
+                return r
             n = self.mem.data_len(self.store) if self.mem else 0
             if n > self.peak_mem:
                 self.peak_mem = n
@@ -256,6 +392,7 @@ class Host:
 
     def _make_unavailable(self, mod, name):
         def f(*args):
+            self.unsupported[name] = self.unsupported.get(name, 0) + 1
             return 52 if mod.startswith("wasi") else -1
         return f
 
@@ -293,12 +430,29 @@ class Host:
     def w_args_get(self, p, d): return self._vec(self.args, p, d)
     def w_environ_sizes_get(self, c, s): return self._vec_sizes(self.env, c, s)
     def w_environ_get(self, p, d): return self._vec(self.env, p, d)
-    def w_fd_close(self, fd): return 0
+    def w_fd_close(self, fd): return self.fs.close(fd) if self.fs and fd >= 3 else 0
     def w_fd_sync(self, fd): return 0
-    def w_fd_prestat_get(self, fd, out): return 8
-    def w_fd_seek(self, *a): return 29
+    def w_fd_datasync(self, fd): return 0
+    def w_fd_prestat_get(self, fd, out): return self.fs.prestat_get(fd, out) if self.fs else 8
+    def w_fd_prestat_dir_name(self, fd, p, n): return self.fs.prestat_dir_name(fd, p, n) if self.fs else 8
+    def w_fd_seek(self, fd, off, wh, out): return self.fs.seek(fd, off, wh, out) if self.fs and fd >= 3 else 29
+    def w_fd_tell(self, fd, out): return self.fs.tell(fd, out) if self.fs and fd >= 3 else 29
+    def w_fd_pread(self, fd, iovs, n, off, nread): return self.fs.read(fd, iovs, n, nread, off) if self.fs else 8
+    def w_fd_pwrite(self, fd, iovs, n, off, nw): return self.fs.write(fd, iovs, n, nw, off) if self.fs else 8
+    def w_fd_filestat_get(self, fd, out): return self.fs.filestat_get(fd, out) if self.fs else 8
+    def w_fd_filestat_set_size(self, fd, size): return self.fs.filestat_set_size(fd, size) if self.fs else 8
+    def w_fd_readdir(self, fd, buf, ln, cookie, used): return self.fs.readdir(fd, buf, ln, cookie, used) if self.fs else 8
+    def w_path_open(self, *a): return self.fs.path_open(*a) if self.fs else 44
+    def w_path_filestat_get(self, *a): return self.fs.path_filestat_get(*a) if self.fs else 44
+    def w_path_create_directory(self, *a): return self.fs.mkdir(*a) if self.fs else 44
+    def w_path_unlink_file(self, *a): return self.fs.unlink(*a) if self.fs else 44
+    def w_path_remove_directory(self, *a): return self.fs.rmdir(*a) if self.fs else 44
+    def w_path_rename(self, *a): return self.fs.rename(*a) if self.fs else 44
+    def w_path_readlink(self, *a): return self.fs.readlink(*a) if self.fs else 44
 
     def w_fd_fdstat_get(self, fd, out):
+        if self.fs and fd >= 3:
+            return self.fs.fdstat_get(fd, out)
         self.wr(out, bytes(24))
         self.wr(out, bytes([2 if fd <= 2 else 0]))
         self.wr(out + 8, b"\xff" * 16)
@@ -309,8 +463,8 @@ class Host:
         return 0
 
     def w_clock_time_get(self, cid, prec, out):
-        # Deterministic: 1 ms per call, so both metering modes see the same times.
-        self.clock_ns += 1_000_000
+        # Deterministic: 1 ms per call (P0), so both metering modes see the same times.
+        self.clock_ns += {"ms": 1_000_000, "ns": 1, "frozen": 0}[OPTS["clock"]]
         self.wr(out, struct.pack("<Q", self.clock_ns))
         return 0
 
@@ -328,6 +482,8 @@ class Host:
         raise SystemExit(code)
 
     def w_fd_write(self, fd, iovs, n, nwritten):
+        if self.fs and fd >= 3:
+            return self.fs.write(fd, iovs, n, nwritten)
         total = 0
         chunk = bytearray()
         for i in range(n):
@@ -347,6 +503,8 @@ class Host:
         return 0
 
     def w_fd_read(self, fd, iovs, n, nread):
+        if self.fs and fd >= 3:
+            return self.fs.read(fd, iovs, n, nread)
         if fd != 0:
             return 8
         if not self.stdin:
@@ -429,6 +587,13 @@ class Host:
         name = self.text(np, nl)
         args = json.loads(self.rd(ap, al))
         self.mark("tool_call", {"name": name, "args_bytes": al})
+        if OPTS["native"] == "1" and self.native_fn is not None:
+            # fx's own tool code, in the guest: re-enter the module through the root's export.
+            r = self.native_fn(self.store, np, nl, ap, al, op, ocap, sp, cp, cl)
+            if r != -100:
+                self.native_calls.append({"name": name, "status": self.rd(sp, 1)[0], "result": self.text(op, r)[:400] if r > 0 else r})
+                self.mark("tool_result", {"name": name, "bytes": r, "native": True})
+                return r
         t0 = time.perf_counter()
         content, is_error = self.repo.call(name, args)
         self.host_tool_seconds = getattr(self, "host_tool_seconds", 0) + time.perf_counter() - t0
@@ -466,7 +631,7 @@ class Host:
         """The core waits for stdin: send the next scripted client message."""
         if self.state == "init":
             self.mark("boot_end")
-            self.request("initialize", {"protocolVersion": 1, "clientCapabilities": {"libfx": {"tools": TOOLS, "instructions": INSTRUCTIONS}}})
+            self.request("initialize", {"protocolVersion": 1, "clientCapabilities": {"libfx": {"tools": host_tools(), "instructions": INSTRUCTIONS}}})
             self.state = "await_init"
         elif self.state == "ready_session":
             self.request(self.new_method, {} if self.new_method == "libfx/new" else {"cwd": "/", "mcpServers": []})
@@ -539,8 +704,11 @@ def main():
     ap.add_argument("out")
     ap.add_argument("--instrument", action="store_true")
     ap.add_argument("--turns", type=int, default=2)
+    ap.add_argument("--opt", action="append")
     a = ap.parse_args()
-    tmp = tempfile.mkdtemp(prefix="fxrepo-")
+    from rv.rvhost import parse_opts, turn_summary  # noqa: E402  (same option syntax as rvhost.py)
+    set_opts(**parse_opts(a.opt))
+    tmp = repo_dir(tempfile.mkdtemp(prefix="fxrepo-"))
     tinyrepo.make_repo(tmp)
     h = Host(open(a.wasm, "rb").read(), tmp, a.instrument, a.turns, log=lambda *x: print(*x, file=sys.stderr))
     h.run()
@@ -548,7 +716,9 @@ def main():
         "wasm": os.path.abspath(a.wasm), "instrumented": a.instrument, "fuel_total": h.fuel(),
         "peak_linear_memory_bytes": h.peak_mem, "wall_s": h.wall, "exit_code": h.exit_code,
         "events": h.events, "import_calls": h.import_calls, "model_requests": h.request_bytes,
-        "messages_out": h.messages_out, "final_repo": {r: open(os.path.join(tmp, r), encoding="utf-8").read() for r in h.repo.files() if r.startswith("tinycalc/calc") or r.startswith("tests/test_div")},
+        "messages_out": h.messages_out, "opts": dict(OPTS), "summary": turn_summary(h.events),
+        "unsupported_imports": h.unsupported, "native_calls": h.native_calls,
+        "fs_calls": h.import_calls, "final_repo": {r: open(os.path.join(tmp, r), encoding="utf-8").read() for r in h.repo.files() if r.startswith("tinycalc/calc") or r.startswith("tests/test_div")},
     }
     if a.instrument:
         res["func_names"] = {str(k): v for k, v in h.names.items()}

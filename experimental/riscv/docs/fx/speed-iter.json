@@ -1,0 +1,2811 @@
+{
+ "status": "2026-11-07, CPU only, fx 757bdb9 (sources hash-checked: 717 files identical), Zig 0.17.0, wabt 1.0.42",
+ "units": "RV32 instructions retired in rv32emu; turn = session/prompt sent to its response",
+ "speeds_instr_per_s": [
+  2300,
+  15000
+ ],
+ "configs": {
+  "p0": {
+   "label": "P0 baseline: ReleaseSmall wasm, wasm2c, clang -Os, unaligned scalar access, configured Chat Completions provider, one SSE event per token",
+   "build": "p0",
+   "host_opts": [],
+   "waterfall": true,
+   "verdict": "exact fx code (P0)",
+   "turn1": 32505371,
+   "turn2": 3736134,
+   "total": 38024738,
+   "boot_to_first_read": 393019,
+   "initialize": 1090819,
+   "steps": [
+    {
+     "intake_and_request": 825427,
+     "stream": 651015,
+     "after_stream": 1301654
+    },
+    {
+     "intake_and_request": 528069,
+     "stream": 778265,
+     "after_stream": 1387126
+    },
+    {
+     "intake_and_request": 566570,
+     "stream": 4223833,
+     "after_stream": 2829444
+    },
+    {
+     "intake_and_request": 622478,
+     "stream": 3523795,
+     "after_stream": 2398587
+    },
+    {
+     "intake_and_request": 670376,
+     "stream": 587881,
+     "after_stream": 1308709
+    },
+    {
+     "intake_and_request": 731489,
+     "stream": 8946605,
+     "after_stream": 624048
+    },
+    {
+     "intake_and_request": 1154018,
+     "stream": 2362578,
+     "after_stream": 219538
+    }
+   ],
+   "tool_in_guest": [
+    0,
+    0,
+    0,
+    0,
+    0
+   ],
+   "misaligned_accesses": 128221,
+   "same_repo_as_p0": true,
+   "native_calls": [],
+   "unsupported_imports": {},
+   "x_turn1": 1.0,
+   "x_turn2": 1.0,
+   "wall_turn1_at_2300": 14132.77,
+   "wall_turn2_at_2300": 1624.4060869565217,
+   "wall_turn1_at_15000": 2167.024733333333,
+   "wall_turn2_at_15000": 249.0756
+  },
+  "gateway": {
+   "label": "+ fx's built-in AI Gateway route instead of FX_CONFIGURED_PROVIDERS",
+   "build": "p0",
+   "host_opts": [
+    "provider=gateway",
+    "env=AI_GATEWAY_API_KEY=placeholder"
+   ],
+   "waterfall": true,
+   "verdict": "exact fx code, same semantics; config picks fx's default provider route (gateway serializer and Vercel-protocol SSE reducer instead of the Chat Completions ones)",
+   "turn1": 19859857,
+   "turn2": 2683324,
+   "total": 24061029,
+   "boot_to_first_read": 303873,
+   "initialize": 1023763,
+   "steps": [
+    {
+     "intake_and_request": 559508,
+     "stream": 359618,
+     "after_stream": 428410
+    },
+    {
+     "intake_and_request": 507478,
+     "stream": 419908,
+     "after_stream": 513809
+    },
+    {
+     "intake_and_request": 541508,
+     "stream": 1847310,
+     "after_stream": 2129106
+    },
+    {
+     "intake_and_request": 589769,
+     "stream": 1557281,
+     "after_stream": 1698500
+    },
+    {
+     "intake_and_request": 618735,
+     "stream": 336940,
+     "after_stream": 435583
+    },
+    {
+     "intake_and_request": 662206,
+     "stream": 6081540,
+     "after_stream": 572648
+    },
+    {
+     "intake_and_request": 904394,
+     "stream": 1624908,
+     "after_stream": 154022
+    }
+   ],
+   "tool_in_guest": [
+    0,
+    0,
+    0,
+    0,
+    0
+   ],
+   "misaligned_accesses": 99466,
+   "same_repo_as_p0": true,
+   "native_calls": [],
+   "unsupported_imports": {},
+   "x_turn1": 1.636737414574536,
+   "x_turn2": 1.3923529175008311,
+   "wall_turn1_at_2300": 8634.720434782608,
+   "wall_turn2_at_2300": 1166.6626086956521,
+   "wall_turn1_at_15000": 1323.9904666666666,
+   "wall_turn2_at_15000": 178.88826666666668
+  },
+  "event": {
+   "label": "+ the whole model reply as one SSE event",
+   "build": "p0",
+   "host_opts": [
+    "provider=gateway",
+    "env=AI_GATEWAY_API_KEY=placeholder",
+    "stream=event"
+   ],
+   "waterfall": true,
+   "verdict": "exact fx code, same semantics; the model server's chunking",
+   "turn1": 10184637,
+   "turn2": 1243766,
+   "total": 12946251,
+   "boot_to_first_read": 303873,
+   "initialize": 1023763,
+   "steps": [
+    {
+     "intake_and_request": 559508,
+     "stream": 117518,
+     "after_stream": 428308
+    },
+    {
+     "intake_and_request": 507006,
+     "stream": 123441,
+     "after_stream": 513717
+    },
+    {
+     "intake_and_request": 541036,
+     "stream": 154443,
+     "after_stream": 2129125
+    },
+    {
+     "intake_and_request": 589297,
+     "stream": 148113,
+     "after_stream": 1698519
+    },
+    {
+     "intake_and_request": 618263,
+     "stream": 117014,
+     "after_stream": 435384
+    },
+    {
+     "intake_and_request": 661734,
+     "stream": 269459,
+     "after_stream": 572752
+    },
+    {
+     "intake_and_request": 904394,
+     "stream": 184497,
+     "after_stream": 154875
+    }
+   ],
+   "tool_in_guest": [
+    0,
+    0,
+    0,
+    0,
+    0
+   ],
+   "misaligned_accesses": 61049,
+   "same_repo_as_p0": true,
+   "native_calls": [],
+   "unsupported_imports": {},
+   "x_turn1": 3.1916082036109876,
+   "x_turn2": 3.0038881911870883,
+   "wall_turn1_at_2300": 4428.103043478261,
+   "wall_turn2_at_2300": 540.7678260869566,
+   "wall_turn1_at_15000": 678.9758,
+   "wall_turn2_at_15000": 82.91773333333333
+  },
+  "chunk": {
+   "label": "+ that event in one network read",
+   "build": "p0",
+   "host_opts": [
+    "provider=gateway",
+    "env=AI_GATEWAY_API_KEY=placeholder",
+    "stream=event_chunk"
+   ],
+   "waterfall": true,
+   "verdict": "exact fx code, same semantics; transport chunking",
+   "turn1": 10177390,
+   "turn2": 1241004,
+   "total": 12936242,
+   "boot_to_first_read": 303873,
+   "initialize": 1023763,
+   "steps": [
+    {
+     "intake_and_request": 559508,
+     "stream": 116621,
+     "after_stream": 428308
+    },
+    {
+     "intake_and_request": 507006,
+     "stream": 122544,
+     "after_stream": 513717
+    },
+    {
+     "intake_and_request": 541036,
+     "stream": 153546,
+     "after_stream": 2129125
+    },
+    {
+     "intake_and_request": 589297,
+     "stream": 147216,
+     "after_stream": 1698519
+    },
+    {
+     "intake_and_request": 618263,
+     "stream": 116117,
+     "after_stream": 435384
+    },
+    {
+     "intake_and_request": 661734,
+     "stream": 266768,
+     "after_stream": 572681
+    },
+    {
+     "intake_and_request": 904394,
+     "stream": 181806,
+     "after_stream": 154804
+    }
+   ],
+   "tool_in_guest": [
+    0,
+    0,
+    0,
+    0,
+    0
+   ],
+   "misaligned_accesses": 61049,
+   "same_repo_as_p0": true,
+   "native_calls": [],
+   "unsupported_imports": {},
+   "x_turn1": 3.193880847643649,
+   "x_turn2": 3.0105736967809933,
+   "wall_turn1_at_2300": 4424.952173913043,
+   "wall_turn2_at_2300": 539.5669565217391,
+   "wall_turn1_at_15000": 678.4926666666667,
+   "wall_turn2_at_15000": 82.7336
+  },
+  "clock": {
+   "label": "+ frozen virtual clock",
+   "build": "p0",
+   "host_opts": [
+    "provider=gateway",
+    "env=AI_GATEWAY_API_KEY=placeholder",
+    "stream=event_chunk",
+    "clock=frozen"
+   ],
+   "waterfall": true,
+   "verdict": "exact fx code, same semantics; OS clock (deterministic)",
+   "turn1": 10175632,
+   "turn2": 1240711,
+   "total": 12934191,
+   "boot_to_first_read": 303873,
+   "initialize": 1023763,
+   "steps": [
+    {
+     "intake_and_request": 559508,
+     "stream": 116345,
+     "after_stream": 428291
+    },
+    {
+     "intake_and_request": 507006,
+     "stream": 122268,
+     "after_stream": 513700
+    },
+    {
+     "intake_and_request": 541036,
+     "stream": 153270,
+     "after_stream": 2129108
+    },
+    {
+     "intake_and_request": 589297,
+     "stream": 146940,
+     "after_stream": 1698502
+    },
+    {
+     "intake_and_request": 618263,
+     "stream": 115841,
+     "after_stream": 435367
+    },
+    {
+     "intake_and_request": 661734,
+     "stream": 266492,
+     "after_stream": 572664
+    },
+    {
+     "intake_and_request": 904394,
+     "stream": 181530,
+     "after_stream": 154787
+    }
+   ],
+   "tool_in_guest": [
+    0,
+    0,
+    0,
+    0,
+    0
+   ],
+   "misaligned_accesses": 61049,
+   "same_repo_as_p0": true,
+   "native_calls": [],
+   "unsupported_imports": {},
+   "x_turn1": 3.1944326406458097,
+   "x_turn2": 3.011284658554651,
+   "wall_turn1_at_2300": 4424.187826086956,
+   "wall_turn2_at_2300": 539.4395652173913,
+   "wall_turn1_at_15000": 678.3754666666666,
+   "wall_turn2_at_15000": 82.71406666666667
+  },
+  "fast": {
+   "label": "+ ReleaseFast wasm (Zig build mode)",
+   "build": "fast_os_ua",
+   "host_opts": [
+    "provider=gateway",
+    "env=AI_GATEWAY_API_KEY=placeholder",
+    "stream=event_chunk",
+    "clock=frozen"
+   ],
+   "waterfall": true,
+   "verdict": "exact fx code, same semantics; build flag (both modes drop safety checks)",
+   "turn1": 5776470,
+   "turn2": 916645,
+   "total": 7840400,
+   "boot_to_first_read": 297703,
+   "initialize": 715644,
+   "steps": [
+    {
+     "intake_and_request": 421841,
+     "stream": 72039,
+     "after_stream": 289106
+    },
+    {
+     "intake_and_request": 382417,
+     "stream": 76443,
+     "after_stream": 331345
+    },
+    {
+     "intake_and_request": 408453,
+     "stream": 102312,
+     "after_stream": 664295
+    },
+    {
+     "intake_and_request": 448811,
+     "stream": 97733,
+     "after_stream": 570427
+    },
+    {
+     "intake_and_request": 468512,
+     "stream": 71607,
+     "after_stream": 284882
+    },
+    {
+     "intake_and_request": 499055,
+     "stream": 176720,
+     "after_stream": 410472
+    },
+    {
+     "intake_and_request": 685167,
+     "stream": 115094,
+     "after_stream": 116384
+    }
+   ],
+   "tool_in_guest": [
+    0,
+    0,
+    0,
+    0,
+    0
+   ],
+   "misaligned_accesses": 17572,
+   "same_repo_as_p0": true,
+   "native_calls": [],
+   "unsupported_imports": {},
+   "x_turn1": 5.627203291975896,
+   "x_turn2": 4.075878884409995,
+   "wall_turn1_at_2300": 2511.508695652174,
+   "wall_turn2_at_2300": 398.5413043478261,
+   "wall_turn1_at_15000": 385.098,
+   "wall_turn2_at_15000": 61.10966666666667
+  },
+  "i_event": {
+   "label": "P0 + one SSE event per reply only",
+   "build": "p0",
+   "host_opts": [
+    "stream=event"
+   ],
+   "waterfall": false,
+   "verdict": "exact fx code, same semantics",
+   "turn1": 14705286,
+   "turn2": 1511797,
+   "total": 18000316,
+   "boot_to_first_read": 393019,
+   "initialize": 1090819,
+   "steps": [
+    {
+     "intake_and_request": 825427,
+     "stream": 129120,
+     "after_stream": 1301237
+    },
+    {
+     "intake_and_request": 528069,
+     "stream": 131426,
+     "after_stream": 1386833
+    },
+    {
+     "intake_and_request": 566570,
+     "stream": 148344,
+     "after_stream": 2827547
+    },
+    {
+     "intake_and_request": 622478,
+     "stream": 146648,
+     "after_stream": 2398192
+    },
+    {
+     "intake_and_request": 670376,
+     "stream": 129078,
+     "after_stream": 1308416
+    },
+    {
+     "intake_and_request": 731489,
+     "stream": 226759,
+     "after_stream": 627277
+    },
+    {
+     "intake_and_request": 1154079,
+     "stream": 137526,
+     "after_stream": 220192
+    }
+   ],
+   "tool_in_guest": [
+    0,
+    0,
+    0,
+    0,
+    0
+   ],
+   "misaligned_accesses": 62871,
+   "same_repo_as_p0": true,
+   "native_calls": [],
+   "unsupported_imports": {},
+   "x_turn1": 2.210454866365741,
+   "x_turn2": 2.4713198928162976,
+   "wall_turn1_at_2300": 6393.602608695652,
+   "wall_turn2_at_2300": 657.3030434782609,
+   "wall_turn1_at_15000": 980.3524,
+   "wall_turn2_at_15000": 100.78646666666667
+  },
+  "i_chunk_only": {
+   "label": "P0 + token events in one read",
+   "build": "p0",
+   "host_opts": [
+    "stream=chunk"
+   ],
+   "waterfall": false,
+   "verdict": "exact fx code, same semantics",
+   "turn1": 32236544,
+   "turn2": 3702057,
+   "total": 37721834,
+   "boot_to_first_read": 393019,
+   "initialize": 1090819,
+   "steps": [
+    {
+     "intake_and_request": 825427,
+     "stream": 642045,
+     "after_stream": 1301606
+    },
+    {
+     "intake_and_request": 528069,
+     "stream": 767501,
+     "after_stream": 1387078
+    },
+    {
+     "intake_and_request": 566570,
+     "stream": 4163865,
+     "after_stream": 2829398
+    },
+    {
+     "intake_and_request": 622478,
+     "stream": 3473694,
+     "after_stream": 2398541
+    },
+    {
+     "intake_and_request": 670376,
+     "stream": 579808,
+     "after_stream": 1308661
+    },
+    {
+     "intake_and_request": 731489,
+     "stream": 8815905,
+     "after_stream": 624033
+    },
+    {
+     "intake_and_request": 1154018,
+     "stream": 2328492,
+     "after_stream": 219547
+    }
+   ],
+   "tool_in_guest": [
+    0,
+    0,
+    0,
+    0,
+    0
+   ],
+   "misaligned_accesses": 128221,
+   "same_repo_as_p0": true,
+   "native_calls": [],
+   "unsupported_imports": {},
+   "x_turn1": 1.0083392003807852,
+   "x_turn2": 1.0092048825828452,
+   "wall_turn1_at_2300": 14015.888695652175,
+   "wall_turn2_at_2300": 1609.59,
+   "wall_turn1_at_15000": 2149.102933333333,
+   "wall_turn2_at_15000": 246.8038
+  },
+  "i_clock": {
+   "label": "P0 + frozen clock only",
+   "build": "p0",
+   "host_opts": [
+    "clock=frozen"
+   ],
+   "waterfall": false,
+   "verdict": "exact fx code, same semantics",
+   "turn1": 32418898,
+   "turn2": 3725400,
+   "total": 37927531,
+   "boot_to_first_read": 393019,
+   "initialize": 1090819,
+   "steps": [
+    {
+     "intake_and_request": 825427,
+     "stream": 647989,
+     "after_stream": 1301589
+    },
+    {
+     "intake_and_request": 528069,
+     "stream": 774689,
+     "after_stream": 1387061
+    },
+    {
+     "intake_and_request": 566570,
+     "stream": 4204641,
+     "after_stream": 2829381
+    },
+    {
+     "intake_and_request": 622478,
+     "stream": 3507628,
+     "after_stream": 2398524
+    },
+    {
+     "intake_and_request": 670376,
+     "stream": 585130,
+     "after_stream": 1308644
+    },
+    {
+     "intake_and_request": 731489,
+     "stream": 8905197,
+     "after_stream": 624016
+    },
+    {
+     "intake_and_request": 1154018,
+     "stream": 2351852,
+     "after_stream": 219530
+    }
+   ],
+   "tool_in_guest": [
+    0,
+    0,
+    0,
+    0,
+    0
+   ],
+   "misaligned_accesses": 128221,
+   "same_repo_as_p0": true,
+   "native_calls": [],
+   "unsupported_imports": {},
+   "x_turn1": 1.002667363955431,
+   "x_turn2": 1.0028813013367692,
+   "wall_turn1_at_2300": 14095.17304347826,
+   "wall_turn2_at_2300": 1619.7391304347825,
+   "wall_turn1_at_15000": 2161.2598666666668,
+   "wall_turn2_at_15000": 248.36
+  },
+  "i_fast": {
+   "label": "P0 + ReleaseFast only",
+   "build": "fast_os_ua",
+   "host_opts": [],
+   "waterfall": false,
+   "verdict": "exact fx code, same semantics",
+   "turn1": 20524792,
+   "turn2": 2555766,
+   "total": 24414461,
+   "boot_to_first_read": 354435,
+   "initialize": 754254,
+   "steps": [
+    {
+     "intake_and_request": 632459,
+     "stream": 400205,
+     "after_stream": 991943
+    },
+    {
+     "intake_and_request": 396667,
+     "stream": 478309,
+     "after_stream": 1034243
+    },
+    {
+     "intake_and_request": 425194,
+     "stream": 2597651,
+     "after_stream": 1228123
+    },
+    {
+     "intake_and_request": 471827,
+     "stream": 2167598,
+     "after_stream": 1134004
+    },
+    {
+     "intake_and_request": 508677,
+     "stream": 361625,
+     "after_stream": 987696
+    },
+    {
+     "intake_and_request": 555123,
+     "stream": 5705871,
+     "after_stream": 447577
+    },
+    {
+     "intake_and_request": 884463,
+     "stream": 1504382,
+     "after_stream": 166921
+    }
+   ],
+   "tool_in_guest": [
+    0,
+    0,
+    0,
+    0,
+    0
+   ],
+   "misaligned_accesses": 67939,
+   "same_repo_as_p0": true,
+   "native_calls": [],
+   "unsupported_imports": {},
+   "x_turn1": 1.583712565759497,
+   "x_turn2": 1.4618450984949327,
+   "wall_turn1_at_2300": 8923.822608695653,
+   "wall_turn2_at_2300": 1111.202608695652,
+   "wall_turn1_at_15000": 1368.3194666666666,
+   "wall_turn2_at_15000": 170.3844
+  },
+  "i_os_split": {
+   "label": "P0 build split into 96 files (-Os)",
+   "build": "rs_os_ua",
+   "host_opts": [],
+   "waterfall": false,
+   "verdict": "exact fx code, same semantics",
+   "turn1": 31954798,
+   "turn2": 3676592,
+   "total": 39265736,
+   "boot_to_first_read": 2261595,
+   "initialize": 1073850,
+   "steps": [
+    {
+     "intake_and_request": 824119,
+     "stream": 629841,
+     "after_stream": 1300881
+    },
+    {
+     "intake_and_request": 528076,
+     "stream": 752818,
+     "after_stream": 1385378
+    },
+    {
+     "intake_and_request": 565909,
+     "stream": 4083018,
+     "after_stream": 2827100
+    },
+    {
+     "intake_and_request": 621476,
+     "stream": 3406487,
+     "after_stream": 2396988
+    },
+    {
+     "intake_and_request": 669104,
+     "stream": 568846,
+     "after_stream": 1307854
+    },
+    {
+     "intake_and_request": 729959,
+     "stream": 8732760,
+     "after_stream": 624184
+    },
+    {
+     "intake_and_request": 1151041,
+     "stream": 2305468,
+     "after_stream": 220083
+    }
+   ],
+   "tool_in_guest": [
+    0,
+    0,
+    0,
+    0,
+    0
+   ],
+   "misaligned_accesses": 128221,
+   "same_repo_as_p0": true,
+   "native_calls": [],
+   "unsupported_imports": {},
+   "x_turn1": 1.0172297443407403,
+   "x_turn2": 1.0161948891799797,
+   "wall_turn1_at_2300": 13893.390434782608,
+   "wall_turn2_at_2300": 1598.5182608695652,
+   "wall_turn1_at_15000": 2130.3198666666667,
+   "wall_turn2_at_15000": 245.10613333333333
+  },
+  "i_aligned_p0": {
+   "label": "P0 on an aligned-only CPU, no hints (P0's 60.4M build)",
+   "build": "p0_aligned",
+   "host_opts": [],
+   "waterfall": false,
+   "verdict": "exact fx code, same semantics",
+   "turn1": 51776444,
+   "turn2": 5938761,
+   "total": 60380464,
+   "boot_to_first_read": 451051,
+   "initialize": 1778915,
+   "steps": [
+    {
+     "intake_and_request": 1287110,
+     "stream": 1108667,
+     "after_stream": 1956797
+    },
+    {
+     "intake_and_request": 832887,
+     "stream": 1326924,
+     "after_stream": 2097260
+    },
+    {
+     "intake_and_request": 902670,
+     "stream": 7214474,
+     "after_stream": 4046485
+    },
+    {
+     "intake_and_request": 992808,
+     "stream": 6017361,
+     "after_stream": 3444709
+    },
+    {
+     "intake_and_request": 1070422,
+     "stream": 1000406,
+     "after_stream": 1969280
+    },
+    {
+     "intake_and_request": 1157021,
+     "stream": 14435765,
+     "after_stream": 915398
+    },
+    {
+     "intake_and_request": 1811360,
+     "stream": 3819008,
+     "after_stream": 308393
+    }
+   ],
+   "tool_in_guest": [
+    0,
+    0,
+    0,
+    0,
+    0
+   ],
+   "misaligned_accesses": 0,
+   "same_repo_as_p0": true,
+   "native_calls": [],
+   "unsupported_imports": {},
+   "x_turn1": 0.6278023071650112,
+   "x_turn2": 0.6291100113306463,
+   "wall_turn1_at_2300": 22511.497391304347,
+   "wall_turn2_at_2300": 2582.07,
+   "wall_turn1_at_15000": 3451.7629333333334,
+   "wall_turn2_at_15000": 395.9174
+  },
+  "i_tools1": {
+   "label": "P0 tool set cut to read_file (turn 2 only is comparable)",
+   "build": "p0",
+   "host_opts": [
+    "tools=read_file"
+   ],
+   "waterfall": false,
+   "verdict": "changes fx's behaviour (fewer tools); turn 1's tool calls then fail",
+   "turn1": 31092869,
+   "turn2": 3510818,
+   "total": 35657812,
+   "boot_to_first_read": 393019,
+   "initialize": 361815,
+   "steps": [
+    {
+     "intake_and_request": 617454,
+     "stream": 651097,
+     "after_stream": 1302172
+    },
+    {
+     "intake_and_request": 327064,
+     "stream": 778265,
+     "after_stream": 27416817
+    },
+    {
+     "intake_and_request": 2949942,
+     "stream": 4223833,
+     "after_stream": 21348371
+    },
+    {
+     "intake_and_request": 10216665,
+     "stream": 3523795,
+     "after_stream": 14781686
+    },
+    {
+     "intake_and_request": 16436227,
+     "stream": 587881,
+     "after_stream": 11498038
+    },
+    {
+     "intake_and_request": 18954422,
+     "stream": 8946590,
+     "after_stream": 621134
+    },
+    {
+     "intake_and_request": 928702,
+     "stream": 2362578,
+     "after_stream": 219538
+    }
+   ],
+   "tool_in_guest": [
+    0
+   ],
+   "misaligned_accesses": 128483,
+   "same_repo_as_p0": false,
+   "native_calls": [],
+   "unsupported_imports": {},
+   "x_turn1": 1.0454284871556883,
+   "x_turn2": 1.0641776360950639,
+   "wall_turn1_at_2300": 13518.638695652175,
+   "wall_turn2_at_2300": 1526.442608695652,
+   "wall_turn1_at_15000": 2072.857933333333,
+   "wall_turn2_at_15000": 234.05453333333332
+  },
+  "zbb": {
+   "label": "+ Zbb + Zbs (ISA extension)",
+   "build": "fast_o2_check_b0_zbb_fc",
+   "host_opts": [
+    "provider=gateway",
+    "env=AI_GATEWAY_API_KEY=placeholder",
+    "stream=event_chunk",
+    "clock=frozen"
+   ],
+   "waterfall": true,
+   "verdict": "exact fx code, same semantics; CPU extension (costs circuit)",
+   "turn1": 4872453,
+   "turn2": 783056,
+   "total": 6883188,
+   "boot_to_first_read": 516761,
+   "initialize": 609978,
+   "steps": [
+    {
+     "intake_and_request": 352619,
+     "stream": 65809,
+     "after_stream": 238853
+    },
+    {
+     "intake_and_request": 318872,
+     "stream": 69643,
+     "after_stream": 277262
+    },
+    {
+     "intake_and_request": 342079,
+     "stream": 90293,
+     "after_stream": 557261
+    },
+    {
+     "intake_and_request": 375234,
+     "stream": 86439,
+     "after_stream": 480868
+    },
+    {
+     "intake_and_request": 399909,
+     "stream": 65558,
+     "after_stream": 246053
+    },
+    {
+     "intake_and_request": 426631,
+     "stream": 142578,
+     "after_stream": 336492
+    },
+    {
+     "intake_and_request": 587973,
+     "stream": 96862,
+     "after_stream": 98221
+    }
+   ],
+   "tool_in_guest": [
+    0,
+    0,
+    0,
+    0,
+    0
+   ],
+   "misaligned_accesses": 0,
+   "same_repo_as_p0": true,
+   "native_calls": [],
+   "unsupported_imports": {},
+   "x_turn1": 6.67125388382402,
+   "x_turn2": 4.771221981569645,
+   "wall_turn1_at_2300": 2118.4578260869566,
+   "wall_turn2_at_2300": 340.4591304347826,
+   "wall_turn1_at_15000": 324.8302,
+   "wall_turn2_at_15000": 52.20373333333333
+  },
+  "i_o2": {
+   "label": "P0 + -O2 only",
+   "build": "rs_o2_ua",
+   "host_opts": [],
+   "waterfall": false,
+   "verdict": "exact fx code, same semantics",
+   "turn1": 27048467,
+   "turn2": 3313999,
+   "total": 33840519,
+   "boot_to_first_read": 2246268,
+   "initialize": 955031,
+   "steps": [
+    {
+     "intake_and_request": 750981,
+     "stream": 541521,
+     "after_stream": 1135611
+    },
+    {
+     "intake_and_request": 490781,
+     "stream": 647226,
+     "after_stream": 1197854
+    },
+    {
+     "intake_and_request": 525414,
+     "stream": 3513665,
+     "after_stream": 1858606
+    },
+    {
+     "intake_and_request": 576498,
+     "stream": 2931573,
+     "after_stream": 1631167
+    },
+    {
+     "intake_and_request": 620791,
+     "stream": 489188,
+     "after_stream": 1132677
+    },
+    {
+     "intake_and_request": 680008,
+     "stream": 7754141,
+     "after_stream": 570765
+    },
+    {
+     "intake_and_request": 1061515,
+     "stream": 2044224,
+     "after_stream": 208260
+    }
+   ],
+   "tool_in_guest": [
+    0,
+    0,
+    0,
+    0,
+    0
+   ],
+   "misaligned_accesses": 128221,
+   "same_repo_as_p0": true,
+   "native_calls": [],
+   "unsupported_imports": {},
+   "x_turn1": 1.2017454076048006,
+   "x_turn2": 1.1273793383763846,
+   "wall_turn1_at_2300": 11760.203043478261,
+   "wall_turn2_at_2300": 1440.8691304347826,
+   "wall_turn1_at_15000": 1803.2311333333334,
+   "wall_turn2_at_15000": 220.93326666666667
+  },
+  "i_aligned_bytes_fast": {
+   "label": "final stack but under-aligned accesses as byte ops (no address check)",
+   "build": "fast_o2_bytes_b0",
+   "host_opts": [
+    "provider=gateway",
+    "env=AI_GATEWAY_API_KEY=placeholder",
+    "stream=event_chunk",
+    "clock=frozen"
+   ],
+   "waterfall": false,
+   "verdict": "exact fx code, same semantics",
+   "turn1": 5199705,
+   "turn2": 827959,
+   "total": 8885179,
+   "boot_to_first_read": 2138700,
+   "initialize": 601947,
+   "steps": [
+    {
+     "intake_and_request": 378557,
+     "stream": 64752,
+     "after_stream": 260962
+    },
+    {
+     "intake_and_request": 343307,
+     "stream": 68359,
+     "after_stream": 298463
+    },
+    {
+     "intake_and_request": 366315,
+     "stream": 91082,
+     "after_stream": 597308
+    },
+    {
+     "intake_and_request": 403323,
+     "stream": 87312,
+     "after_stream": 510920
+    },
+    {
+     "intake_and_request": 420294,
+     "stream": 64351,
+     "after_stream": 266324
+    },
+    {
+     "intake_and_request": 448815,
+     "stream": 154322,
+     "after_stream": 374939
+    },
+    {
+     "intake_and_request": 617928,
+     "stream": 102207,
+     "after_stream": 107824
+    }
+   ],
+   "tool_in_guest": [
+    0,
+    0,
+    0,
+    0,
+    0
+   ],
+   "misaligned_accesses": 0,
+   "same_repo_as_p0": true,
+   "native_calls": [],
+   "unsupported_imports": {},
+   "x_turn1": 6.251387530638757,
+   "x_turn2": 4.512462573629854,
+   "wall_turn1_at_2300": 2260.741304347826,
+   "wall_turn2_at_2300": 359.9821739130435,
+   "wall_turn1_at_15000": 346.647,
+   "wall_turn2_at_15000": 55.197266666666664
+  },
+  "native": {
+   "label": "best honest stack + fx's own read/edit/write tools in the guest",
+   "build": "tools_fast_o2_check_b0_fc",
+   "host_opts": [
+    "provider=gateway",
+    "env=AI_GATEWAY_API_KEY=placeholder",
+    "stream=event_chunk",
+    "clock=frozen",
+    "native=1",
+    "fs=repo"
+   ],
+   "waterfall": false,
+   "verdict": "changes which fx code runs, toward more of it: fx's native read/edit/write run on the CPU (platform libc/std patched for WASI permissions); grep/glob stay host tools",
+   "turn1": 5648040,
+   "turn2": 801217,
+   "total": 7701699,
+   "boot_to_first_read": 526882,
+   "initialize": 617726,
+   "steps": [
+    {
+     "intake_and_request": 358113,
+     "stream": 66216,
+     "after_stream": 248506
+    },
+    {
+     "intake_and_request": 322786,
+     "stream": 70071,
+     "after_stream": 288045
+    },
+    {
+     "intake_and_request": 347140,
+     "stream": 91236,
+     "after_stream": 572282
+    },
+    {
+     "intake_and_request": 382053,
+     "stream": 87285,
+     "after_stream": 493180
+    },
+    {
+     "intake_and_request": 407147,
+     "stream": 65954,
+     "after_stream": 255548
+    },
+    {
+     "intake_and_request": 433772,
+     "stream": 144290,
+     "after_stream": 348424
+    },
+    {
+     "intake_and_request": 600177,
+     "stream": 97955,
+     "after_stream": 103085
+    }
+   ],
+   "tool_in_guest": [
+    51136,
+    0,
+    398564,
+    216292,
+    0
+   ],
+   "misaligned_accesses": 0,
+   "same_repo_as_p0": true,
+   "native_calls": [
+    "read_file",
+    "edit_file",
+    "write_file"
+   ],
+   "unsupported_imports": {},
+   "x_turn1": 5.755159488955461,
+   "x_turn2": 4.663073798983297,
+   "wall_turn1_at_2300": 2455.669565217391,
+   "wall_turn2_at_2300": 348.35521739130434,
+   "wall_turn1_at_15000": 376.536,
+   "wall_turn2_at_15000": 53.41446666666667
+  },
+  "fast_split": {
+   "label": "same, built as 96 wasm2c files + ThinLTO (the pipeline -O2 needs; clang runs out of memory on one 47 MB file)",
+   "build": "fast_os_ua_lto",
+   "host_opts": [
+    "provider=gateway",
+    "env=AI_GATEWAY_API_KEY=placeholder",
+    "stream=event_chunk",
+    "clock=frozen"
+   ],
+   "waterfall": true,
+   "verdict": "exact fx code, same semantics; build pipeline",
+   "turn1": 5795138,
+   "turn2": 920092,
+   "total": 9709110,
+   "boot_to_first_read": 2140028,
+   "initialize": 719728,
+   "steps": [
+    {
+     "intake_and_request": 422981,
+     "stream": 72442,
+     "after_stream": 289774
+    },
+    {
+     "intake_and_request": 382997,
+     "stream": 76880,
+     "after_stream": 332353
+    },
+    {
+     "intake_and_request": 409254,
+     "stream": 102816,
+     "after_stream": 666537
+    },
+    {
+     "intake_and_request": 449749,
+     "stream": 98210,
+     "after_stream": 572170
+    },
+    {
+     "intake_and_request": 469488,
+     "stream": 72010,
+     "after_stream": 285569
+    },
+    {
+     "intake_and_request": 500013,
+     "stream": 177256,
+     "after_stream": 414639
+    },
+    {
+     "intake_and_request": 686998,
+     "stream": 115617,
+     "after_stream": 117477
+    }
+   ],
+   "tool_in_guest": [
+    0,
+    0,
+    0,
+    0,
+    0
+   ],
+   "misaligned_accesses": 17572,
+   "same_repo_as_p0": true,
+   "native_calls": [],
+   "unsupported_imports": {},
+   "x_turn1": 5.609076263585095,
+   "x_turn2": 4.060609156475657,
+   "wall_turn1_at_2300": 2519.6252173913044,
+   "wall_turn2_at_2300": 400.04,
+   "wall_turn1_at_15000": 386.34253333333334,
+   "wall_turn2_at_15000": 61.33946666666667
+  },
+  "o2": {
+   "label": "+ clang -O2",
+   "build": "fast_o2_ua",
+   "host_opts": [
+    "provider=gateway",
+    "env=AI_GATEWAY_API_KEY=placeholder",
+    "stream=event_chunk",
+    "clock=frozen"
+   ],
+   "waterfall": true,
+   "verdict": "exact fx code, same semantics; C compiler flag",
+   "turn1": 5679196,
+   "turn2": 895724,
+   "total": 9554158,
+   "boot_to_first_read": 2139657,
+   "initialize": 708457,
+   "steps": [
+    {
+     "intake_and_request": 410307,
+     "stream": 71264,
+     "after_stream": 286106
+    },
+    {
+     "intake_and_request": 369907,
+     "stream": 75562,
+     "after_stream": 327812
+    },
+    {
+     "intake_and_request": 395435,
+     "stream": 100923,
+     "after_stream": 661389
+    },
+    {
+     "intake_and_request": 435090,
+     "stream": 96580,
+     "after_stream": 568221
+    },
+    {
+     "intake_and_request": 453997,
+     "stream": 70827,
+     "after_stream": 282270
+    },
+    {
+     "intake_and_request": 483413,
+     "stream": 171817,
+     "after_stream": 418276
+    },
+    {
+     "intake_and_request": 665956,
+     "stream": 112803,
+     "after_stream": 116965
+    }
+   ],
+   "tool_in_guest": [
+    0,
+    0,
+    0,
+    0,
+    0
+   ],
+   "misaligned_accesses": 17572,
+   "same_repo_as_p0": true,
+   "native_calls": [],
+   "unsupported_imports": {},
+   "x_turn1": 5.723586754181402,
+   "x_turn2": 4.1710772514747845,
+   "wall_turn1_at_2300": 2469.215652173913,
+   "wall_turn2_at_2300": 389.44521739130437,
+   "wall_turn1_at_15000": 378.61306666666667,
+   "wall_turn2_at_15000": 59.714933333333335
+  },
+  "base0": {
+   "label": "+ wasm linear memory at address 0",
+   "build": "fast_o2_ua_b0",
+   "host_opts": [
+    "provider=gateway",
+    "env=AI_GATEWAY_API_KEY=placeholder",
+    "stream=event_chunk",
+    "clock=frozen"
+   ],
+   "waterfall": true,
+   "verdict": "exact fx code, same semantics; wasm2c runtime layout",
+   "turn1": 5042864,
+   "turn2": 812015,
+   "total": 8695935,
+   "boot_to_first_read": 2138355,
+   "initialize": 587488,
+   "steps": [
+    {
+     "intake_and_request": 372326,
+     "stream": 60059,
+     "after_stream": 251787
+    },
+    {
+     "intake_and_request": 339732,
+     "stream": 63614,
+     "after_stream": 287240
+    },
+    {
+     "intake_and_request": 362262,
+     "stream": 86285,
+     "after_stream": 568331
+    },
+    {
+     "intake_and_request": 399127,
+     "stream": 82568,
+     "after_stream": 487104
+    },
+    {
+     "intake_and_request": 415924,
+     "stream": 59658,
+     "after_stream": 249464
+    },
+    {
+     "intake_and_request": 443848,
+     "stream": 148743,
+     "after_stream": 364792
+    },
+    {
+     "intake_and_request": 610093,
+     "stream": 96626,
+     "after_stream": 105296
+    }
+   ],
+   "tool_in_guest": [
+    0,
+    0,
+    0,
+    0,
+    0
+   ],
+   "misaligned_accesses": 17577,
+   "same_repo_as_p0": true,
+   "native_calls": [],
+   "unsupported_imports": {},
+   "x_turn1": 6.445815512772107,
+   "x_turn2": 4.6010652512576735,
+   "wall_turn1_at_2300": 2192.5495652173913,
+   "wall_turn2_at_2300": 353.05,
+   "wall_turn1_at_15000": 336.1909333333333,
+   "wall_turn2_at_15000": 54.13433333333333
+  },
+  "aligned": {
+   "label": "aligned-only CPU: memargs' alignment hints honoured, under-aligned accesses checked",
+   "build": "fast_o2_check_b0",
+   "host_opts": [
+    "provider=gateway",
+    "env=AI_GATEWAY_API_KEY=placeholder",
+    "stream=event_chunk",
+    "clock=frozen"
+   ],
+   "waterfall": true,
+   "verdict": "exact fx code, same semantics; wasm2c patch (alignment hints); no misaligned access left",
+   "turn1": 5263930,
+   "turn2": 839274,
+   "total": 8983107,
+   "boot_to_first_read": 2138728,
+   "initialize": 624257,
+   "steps": [
+    {
+     "intake_and_request": 384949,
+     "stream": 66762,
+     "after_stream": 264944
+    },
+    {
+     "intake_and_request": 345741,
+     "stream": 70527,
+     "after_stream": 303794
+    },
+    {
+     "intake_and_request": 369416,
+     "stream": 93543,
+     "after_stream": 603965
+    },
+    {
+     "intake_and_request": 406709,
+     "stream": 89696,
+     "after_stream": 516828
+    },
+    {
+     "intake_and_request": 423978,
+     "stream": 66361,
+     "after_stream": 270304
+    },
+    {
+     "intake_and_request": 452637,
+     "stream": 156590,
+     "after_stream": 377186
+    },
+    {
+     "intake_and_request": 626381,
+     "stream": 104457,
+     "after_stream": 108436
+    }
+   ],
+   "tool_in_guest": [
+    0,
+    0,
+    0,
+    0,
+    0
+   ],
+   "misaligned_accesses": 0,
+   "same_repo_as_p0": true,
+   "native_calls": [],
+   "unsupported_imports": {},
+   "x_turn1": 6.1751146006880795,
+   "x_turn2": 4.451626048227396,
+   "wall_turn1_at_2300": 2288.6652173913044,
+   "wall_turn2_at_2300": 364.9017391304348,
+   "wall_turn1_at_15000": 350.9286666666667,
+   "wall_turn2_at_15000": 55.9516
+  },
+  "fastcopy": {
+   "label": "+ word-at-a-time memcpy/memmove in the runtime for any alignment",
+   "build": "fast_o2_check_b0_fc",
+   "host_opts": [
+    "provider=gateway",
+    "env=AI_GATEWAY_API_KEY=placeholder",
+    "stream=event_chunk",
+    "clock=frozen"
+   ],
+   "waterfall": true,
+   "verdict": "exact fx code, same semantics; platform libc routine (wasm memory.copy)",
+   "turn1": 4972917,
+   "turn2": 797667,
+   "total": 7012819,
+   "boot_to_first_read": 517159,
+   "initialize": 617237,
+   "steps": [
+    {
+     "intake_and_request": 358039,
+     "stream": 66175,
+     "after_stream": 249085
+    },
+    {
+     "intake_and_request": 321902,
+     "stream": 70012,
+     "after_stream": 288527
+    },
+    {
+     "intake_and_request": 345002,
+     "stream": 91129,
+     "after_stream": 574113
+    },
+    {
+     "intake_and_request": 378597,
+     "stream": 87178,
+     "after_stream": 494840
+    },
+    {
+     "intake_and_request": 403416,
+     "stream": 65913,
+     "after_stream": 256052
+    },
+    {
+     "intake_and_request": 430257,
+     "stream": 144391,
+     "after_stream": 348289
+    },
+    {
+     "intake_and_request": 596378,
+     "stream": 98054,
+     "after_stream": 103235
+    }
+   ],
+   "tool_in_guest": [
+    0,
+    0,
+    0,
+    0,
+    0
+   ],
+   "misaligned_accesses": 0,
+   "same_repo_as_p0": true,
+   "native_calls": [],
+   "unsupported_imports": {},
+   "x_turn1": 6.536479695920925,
+   "x_turn2": 4.683826709641994,
+   "wall_turn1_at_2300": 2162.1378260869565,
+   "wall_turn2_at_2300": 346.8117391304348,
+   "wall_turn1_at_15000": 331.5278,
+   "wall_turn2_at_15000": 53.1778
+  },
+  "i_aligned_bytes": {
+   "label": "P0 on an aligned-only CPU, hints honoured, under-aligned = byte ops",
+   "build": "rs_os_bytes",
+   "host_opts": [],
+   "waterfall": false,
+   "verdict": "exact fx code, same semantics",
+   "turn1": 33597197,
+   "turn2": 3780190,
+   "total": 41049997,
+   "boot_to_first_read": 2265984,
+   "initialize": 1101429,
+   "steps": [
+    {
+     "intake_and_request": 842630,
+     "stream": 658878,
+     "after_stream": 1351674
+    },
+    {
+     "intake_and_request": 534602,
+     "stream": 787581,
+     "after_stream": 1443862
+    },
+    {
+     "intake_and_request": 573418,
+     "stream": 4272535,
+     "after_stream": 3199398
+    },
+    {
+     "intake_and_request": 629510,
+     "stream": 3564472,
+     "after_stream": 2688557
+    },
+    {
+     "intake_and_request": 677585,
+     "stream": 594993,
+     "after_stream": 1362101
+    },
+    {
+     "intake_and_request": 739308,
+     "stream": 9029349,
+     "after_stream": 646744
+    },
+    {
+     "intake_and_request": 1170221,
+     "stream": 2384972,
+     "after_stream": 224997
+    }
+   ],
+   "tool_in_guest": [
+    0,
+    0,
+    0,
+    0,
+    0
+   ],
+   "misaligned_accesses": 0,
+   "same_repo_as_p0": true,
+   "native_calls": [],
+   "unsupported_imports": {},
+   "x_turn1": 0.9675024675421584,
+   "x_turn2": 0.9883455593501914,
+   "wall_turn1_at_2300": 14607.47695652174,
+   "wall_turn2_at_2300": 1643.5608695652174,
+   "wall_turn1_at_15000": 2239.8131333333336,
+   "wall_turn2_at_15000": 252.01266666666666
+  },
+  "native_p0": {
+   "label": "P0 + fx's own read/edit/write tools in the guest",
+   "build": "tools_rs_os_ua",
+   "host_opts": [
+    "native=1",
+    "fs=repo"
+   ],
+   "waterfall": false,
+   "verdict": "as above, on P0's stack",
+   "turn1": 32922762,
+   "turn2": 3653928,
+   "total": 40252317,
+   "boot_to_first_read": 2302751,
+   "initialize": 1073983,
+   "steps": [
+    {
+     "intake_and_request": 823933,
+     "stream": 629925,
+     "after_stream": 1300872
+    },
+    {
+     "intake_and_request": 542196,
+     "stream": 752922,
+     "after_stream": 1385855
+    },
+    {
+     "intake_and_request": 580454,
+     "stream": 4083662,
+     "after_stream": 2827035
+    },
+    {
+     "intake_and_request": 628018,
+     "stream": 3407020,
+     "after_stream": 2396940
+    },
+    {
+     "intake_and_request": 690552,
+     "stream": 568919,
+     "after_stream": 1308350
+    },
+    {
+     "intake_and_request": 716363,
+     "stream": 8732180,
+     "after_stream": 625605
+    },
+    {
+     "intake_and_request": 1128511,
+     "stream": 2305324,
+     "after_stream": 220093
+    }
+   ],
+   "tool_in_guest": [
+    74067,
+    0,
+    556224,
+    291670,
+    0
+   ],
+   "misaligned_accesses": 129056,
+   "same_repo_as_p0": true,
+   "native_calls": [
+    "read_file",
+    "edit_file",
+    "write_file"
+   ],
+   "unsupported_imports": {},
+   "x_turn1": 0.9873221147120038,
+   "x_turn2": 1.0224979802557685,
+   "wall_turn1_at_2300": 14314.244347826087,
+   "wall_turn2_at_2300": 1588.664347826087,
+   "wall_turn1_at_15000": 2194.8508,
+   "wall_turn2_at_15000": 243.5952
+  },
+  "i_o3": {
+   "label": "final stack (row 12) at clang -O3 instead of -O2",
+   "build": "fast_o3_check_b0_fc",
+   "host_opts": [
+    "provider=gateway",
+    "env=AI_GATEWAY_API_KEY=placeholder",
+    "stream=event_chunk",
+    "clock=frozen"
+   ],
+   "waterfall": false,
+   "verdict": "exact fx code, same semantics",
+   "turn1": 4972917,
+   "turn2": 797667,
+   "total": 7012819,
+   "boot_to_first_read": 517159,
+   "initialize": 617237,
+   "steps": [
+    {
+     "intake_and_request": 358039,
+     "stream": 66175,
+     "after_stream": 249085
+    },
+    {
+     "intake_and_request": 321902,
+     "stream": 70012,
+     "after_stream": 288527
+    },
+    {
+     "intake_and_request": 345002,
+     "stream": 91129,
+     "after_stream": 574113
+    },
+    {
+     "intake_and_request": 378597,
+     "stream": 87178,
+     "after_stream": 494840
+    },
+    {
+     "intake_and_request": 403416,
+     "stream": 65913,
+     "after_stream": 256052
+    },
+    {
+     "intake_and_request": 430257,
+     "stream": 144391,
+     "after_stream": 348289
+    },
+    {
+     "intake_and_request": 596378,
+     "stream": 98054,
+     "after_stream": 103235
+    }
+   ],
+   "tool_in_guest": [
+    0,
+    0,
+    0,
+    0,
+    0
+   ],
+   "misaligned_accesses": 0,
+   "same_repo_as_p0": true,
+   "native_calls": [],
+   "unsupported_imports": {},
+   "x_turn1": 6.536479695920925,
+   "x_turn2": 4.683826709641994,
+   "wall_turn1_at_2300": 2162.1378260869565,
+   "wall_turn2_at_2300": 346.8117391304348,
+   "wall_turn1_at_15000": 331.5278,
+   "wall_turn2_at_15000": 53.1778
+  }
+ },
+ "native_tools_rv32_instr_per_call": {
+  "final_stack (row 11 + native)": {
+   "read_file": 51136,
+   "grep_files(host)": 0,
+   "edit_file": 398564,
+   "write_file": 216292,
+   "glob_files(host)": 0
+  },
+  "p0_stack": {
+   "read_file": 74067,
+   "grep_files(host)": 0,
+   "edit_file": 556224,
+   "write_file": 291670,
+   "glob_files(host)": 0
+  },
+  "wasm_fuel_releasesmall": {
+   "read_file": 95359,
+   "edit_file": 850697,
+   "write_file": 388720
+  },
+  "not_compilable_on_wasi": {
+   "grep_files": "core/workspace/grep_search.zig -> tool_files.zig -> core/indexer/scan.zig:418 std.Thread.spawn (single-threaded build)",
+   "glob_files": "glob_files.zig:135 -> core/workspace/tool_files.zig:52 -> core/indexer/scan.zig:418 std.Thread.spawn"
+  }
+ },
+ "profile_final_stack": {
+  "build": "fast_o2_check_b0_fc (row 11)",
+  "total_instructions": 7006253,
+  "groups": [
+   {
+    "group": "memcpy/memmove/memset (rt.c, wasm memory.copy/fill)",
+    "instructions": 1602035,
+    "share": 0.22865788603408985,
+    "bytes_moved": 2529758,
+    "instr_per_byte": 0.6332759892448211,
+    "streaming_tokens_at_16B": 158109.875,
+    "instructions_saved_equiv": 1492993.7068965517,
+    "saved_share": 0.21309446103310167,
+    "top_functions": [
+     [
+      "copy_fwd",
+      1387834
+     ],
+     [
+      "memmove",
+      150998
+     ],
+     [
+      "memset",
+      55391
+     ],
+     [
+      "memcpy",
+      7812
+     ]
+    ]
+   },
+   {
+    "group": "JSON write / string escape",
+    "instructions": 1033708,
+    "share": 0.1475407753616662,
+    "bytes_moved": 1492868,
+    "instr_per_byte": 0.6924309449998258,
+    "streaming_tokens_at_16B": 93304.25,
+    "instructions_saved_equiv": 969360.2413793104,
+    "saved_share": 0.13835644264906083,
+    "top_functions": [
+     [
+      "json.Stringify.encodeJsonString",
+      425145
+     ],
+     [
+      "json.Stringify.write__func_1398",
+      186096
+     ],
+     [
+      "json.Stringify.valueStartAssumeTypeOk",
+      130103
+     ],
+     [
+      "json.Stringify.write__func_4401",
+      103079
+     ],
+     [
+      "acp.jsonrpc.writeJsonStr",
+      80814
+     ]
+    ]
+   },
+   {
+    "group": "JSON scanner / tokenizer",
+    "instructions": 1027378,
+    "share": 0.14663729671195144,
+    "bytes_moved": 1415193,
+    "instr_per_byte": 0.725963172514279,
+    "streaming_tokens_at_16B": 88449.5625,
+    "instructions_saved_equiv": 966378.301724138,
+    "saved_share": 0.1379308314621436,
+    "top_functions": [
+     [
+      "json.Scanner.next",
+      511634
+     ],
+     [
+      "json.Scanner.peekNextTokenType",
+      150893
+     ],
+     [
+      "json.Scanner.nextAllocMax",
+      142397
+     ],
+     [
+      "json.Scanner.appendSlice",
+      101820
+     ],
+     [
+      "json.Scanner.allocNextIntoArrayListMax",
+      76550
+     ]
+    ]
+   },
+   {
+    "group": "token estimate (incl. prompt_context.measureProviderRequest, where it is inlined)",
+    "instructions": 614026,
+    "share": 0.08763971269664399,
+    "bytes_moved": 81008,
+    "instr_per_byte": 7.579819277108434,
+    "streaming_tokens_at_16B": 5063.0,
+    "instructions_saved_equiv": 610534.275862069,
+    "saved_share": 0.0871413401517286,
+    "top_functions": [
+     [
+      "core.agent.runtime.prompt_context.measureProviderRequest",
+      546921
+     ],
+     [
+      "core.shared.language_script.count_text",
+      67105
+     ]
+    ]
+   },
+   {
+    "group": "secret masking (text_utils.maskSecrets)",
+    "instructions": 436737,
+    "share": 0.06233531675204992,
+    "bytes_moved": 240667,
+    "instr_per_byte": 1.8146941624734592,
+    "streaming_tokens_at_16B": 15041.6875,
+    "instructions_saved_equiv": 426363.4224137931,
+    "saved_share": 0.06085469971092867,
+    "top_functions": [
+     [
+      "core.shared.text_utils.maskSecrets",
+      436737
+     ]
+    ]
+   },
+   {
+    "group": "SHA-256",
+    "instructions": 155192,
+    "share": 0.02215049898997367,
+    "bytes_moved": 60225,
+    "instr_per_byte": 2.5768700705687007,
+    "streaming_tokens_at_16B": 3764.0625,
+    "instructions_saved_equiv": 152596.0948275862,
+    "saved_share": 0.021779986367547133,
+    "top_functions": [
+     [
+      "crypto.sha2.Sha2x32(.{ 1779033703, 3144134277, 1013904242, 2773480762, 1359893119, 2600822924, 528734635, 1541459225 },256).round",
+      153069
+     ],
+     [
+      "crypto.sha2.Sha2x32(.{ 1779033703, 3144134277, 1013904242, 2773480762, 1359893119, 2600822924, 528734635, 1541459225 },256).final",
+      2123
+     ]
+    ]
+   },
+   {
+    "group": "wyhash (+ its 128-bit multiply)",
+    "instructions": 141442,
+    "share": 0.020187966378034022,
+    "bytes_moved": 146542,
+    "instr_per_byte": 0.9651976907644225,
+    "streaming_tokens_at_16B": 9158.875,
+    "instructions_saved_equiv": 135125.5344827586,
+    "saved_share": 0.019286419500231952,
+    "top_functions": [
+     [
+      "hash.wyhash.Wyhash.hash",
+      141442
+     ]
+    ]
+   },
+   {
+    "group": "compare: mem.eqlBytes / memcmp / startsWith / eqlIgnoreCase",
+    "instructions": 118036,
+    "share": 0.016847236318756974,
+    "bytes_moved": 46842,
+    "instr_per_byte": 2.5198753255625292,
+    "streaming_tokens_at_16B": 2927.625,
+    "instructions_saved_equiv": 116016.94827586207,
+    "saved_share": 0.016559057783934163,
+    "top_functions": [
+     [
+      "mem.eqlBytes",
+      118036
+     ]
+    ]
+   },
+   {
+    "group": "Io.Writer byte appends",
+    "instructions": 390,
+    "share": 5.566456135683367e-05,
+    "bytes_moved": 837,
+    "instr_per_byte": 0.4659498207885305,
+    "streaming_tokens_at_16B": 52.3125,
+    "instructions_saved_equiv": 353.92241379310343,
+    "saved_share": 5.0515220302935596e-05,
+    "top_functions": [
+     [
+      "Io.Writer.writeAll",
+      335
+     ],
+     [
+      "Io.Writer.writeByte",
+      55
+     ]
+    ]
+   },
+   {
+    "group": "scan: mem.findScalar / indexOf / memchr",
+    "instructions": 132,
+    "share": 1.8840313074620627e-05,
+    "bytes_moved": 68,
+    "instr_per_byte": 1.9411764705882353,
+    "streaming_tokens_at_16B": 4.25,
+    "instructions_saved_equiv": 129.06896551724137,
+    "saved_share": 1.8421967564865467e-05,
+    "top_functions": [
+     [
+      "mem.trim__func_21",
+      132
+     ]
+    ]
+   },
+   {
+    "group": "UTF-8 validation / text scan",
+    "instructions": 0,
+    "share": 0.0,
+    "bytes_moved": 0,
+    "instr_per_byte": null,
+    "streaming_tokens_at_16B": 0.0,
+    "instructions_saved_equiv": 0.0,
+    "saved_share": 0.0,
+    "top_functions": []
+   }
+  ],
+  "top_functions": [
+   {
+    "function": "copy_fwd",
+    "instructions": 1387834,
+    "share": 0.1980850534515382,
+    "bytes": 2225034
+   },
+   {
+    "function": "core.agent.runtime.prompt_context.measureProviderRequest",
+    "instructions": 546921,
+    "share": 0.07806183990215597,
+    "bytes": 37728
+   },
+   {
+    "function": "json.Scanner.next",
+    "instructions": 511634,
+    "share": 0.07302533893651857,
+    "bytes": 516142
+   },
+   {
+    "function": "core.shared.text_utils.maskSecrets",
+    "instructions": 436737,
+    "share": 0.06233531675204992,
+    "bytes": 240667
+   },
+   {
+    "function": "json.Stringify.encodeJsonString",
+    "instructions": 425145,
+    "share": 0.060680794712951416,
+    "bytes": 477802
+   },
+   {
+    "function": "heap.ArenaAllocator.alloc",
+    "instructions": 201546,
+    "share": 0.028766588931344615,
+    "bytes": 396456
+   },
+   {
+    "function": "json.Stringify.write__func_1398",
+    "instructions": 186096,
+    "share": 0.026561415923746973,
+    "bytes": 130786
+   },
+   {
+    "function": "crypto.sha2.Sha2x32(.{ 1779033703, 3144134277, 1013904242, 2773480762, 1359893119, 2600822924, 528734635, 1541459225 },256).round",
+    "instructions": 153069,
+    "share": 0.02184748395469019,
+    "bytes": 58164
+   },
+   {
+    "function": "memmove",
+    "instructions": 150998,
+    "share": 0.021551890860920953,
+    "bytes": 186096
+   },
+   {
+    "function": "json.Scanner.peekNextTokenType",
+    "instructions": 150893,
+    "share": 0.02153690424824796,
+    "bytes": 225552
+   },
+   {
+    "function": "json.Scanner.nextAllocMax",
+    "instructions": 142397,
+    "share": 0.020324273188536014,
+    "bytes": 289231
+   },
+   {
+    "function": "hash.wyhash.Wyhash.hash",
+    "instructions": 141442,
+    "share": 0.020187966378034022,
+    "bytes": 146542
+   },
+   {
+    "function": "core.agent.runtime.orchestrator.processQueuedPromptLoop",
+    "instructions": 139266,
+    "share": 0.01987738667159179,
+    "bytes": 195704
+   },
+   {
+    "function": "json.Stringify.valueStartAssumeTypeOk",
+    "instructions": 130103,
+    "share": 0.01856955493899521,
+    "bytes": 310658
+   },
+   {
+    "function": "mem.eqlBytes",
+    "instructions": 118036,
+    "share": 0.016847236318756974,
+    "bytes": 46842
+   },
+   {
+    "function": "json.Stringify.write__func_4401",
+    "instructions": 103079,
+    "share": 0.01471242902590015,
+    "bytes": 195234
+   },
+   {
+    "function": "json.Scanner.appendSlice",
+    "instructions": 101820,
+    "share": 0.01453273240346873,
+    "bytes": 191336
+   },
+   {
+    "function": "acp.jsonrpc.writeJsonStr",
+    "instructions": 80814,
+    "share": 0.011534553491002965,
+    "bytes": 114328
+   },
+   {
+    "function": "c.malloc.realloc",
+    "instructions": 77607,
+    "share": 0.011076819521076387,
+    "bytes": 37206
+   },
+   {
+    "function": "json.Scanner.allocNextIntoArrayListMax",
+    "instructions": 76550,
+    "share": 0.010925954286834917,
+    "bytes": 140568
+   },
+   {
+    "function": "acp.jsonrpc.writeOneLine",
+    "instructions": 73064,
+    "share": 0.010428398746091527,
+    "bytes": 18622
+   },
+   {
+    "function": "core.shared.language_script.count_text",
+    "instructions": 67105,
+    "share": 0.00957787279448801,
+    "bytes": 43280
+   },
+   {
+    "function": "json.dynamic.handleCompleteValue__func_1074",
+    "instructions": 65263,
+    "share": 0.009314964789310348,
+    "bytes": 157843
+   },
+   {
+    "function": "json.static.parseFromTokenSourceLeaky__func_1070",
+    "instructions": 62976,
+    "share": 0.008988542092328095,
+    "bytes": 106285
+   },
+   {
+    "function": "json.Stringify.indent",
+    "instructions": 62520,
+    "share": 0.008923457374433952,
+    "bytes": 182871
+   },
+   {
+    "function": "memset",
+    "instructions": 55391,
+    "share": 0.007905937738759933,
+    "bytes": 105236
+   },
+   {
+    "function": "Io.Writer.Allocating.drain",
+    "instructions": 54643,
+    "share": 0.007799175964670417,
+    "bytes": 105737
+   },
+   {
+    "function": "gateway.client.consumeSseStreamTraced",
+    "instructions": 49952,
+    "share": 0.007129631202298861,
+    "bytes": 35828
+   },
+   {
+    "function": "json.Scanner.skipWhitespaceCheckEnd",
+    "instructions": 44084,
+    "share": 0.006292093648345271,
+    "bytes": 52364
+   },
+   {
+    "function": "heap.BrkAllocator.alloc",
+    "instructions": 43850,
+    "share": 0.00625869491153117,
+    "bytes": 25924
+   },
+   {
+    "function": "core.shared.text_utils.terminalSafeToken",
+    "instructions": 41895,
+    "share": 0.005979658456524479,
+    "bytes": 97755
+   },
+   {
+    "function": "array_hash_map.Custom([]const u8,json.dynamic.Value,array_hash_map.StringContext,true).getOrPutAssumeCapacityAdapted__func_972",
+    "instructions": 40502,
+    "share": 0.005780836061729429,
+    "bytes": 88463
+   },
+   {
+    "function": "core.shared.display_width.decodeUtf8Sequence",
+    "instructions": 39960,
+    "share": 0.005703476594407881,
+    "bytes": 48840
+   },
+   {
+    "function": "array_hash_map.Custom([]const u8,json.dynamic.Value,array_hash_map.StringContext,true).getOrPutContext",
+    "instructions": 39771,
+    "share": 0.005676500691596493,
+    "bytes": 70704
+   },
+   {
+    "function": "wrap_w2c_fxcore_heap.c_allocator_impl.free",
+    "instructions": 35532,
+    "share": 0.005071469728541062,
+    "bytes": 17748
+   },
+   {
+    "function": "multi_array_list.MultiArrayList(array_hash_map.Custom([]const u8,json.dynamic.Value,array_hash_map.StringContext,true).Data).ensureTotalCapacity",
+    "instructions": 27699,
+    "share": 0.003953468423135733,
+    "bytes": 64116
+   },
+   {
+    "function": "array_hash_map.Custom([]const u8,json.dynamic.Value,array_hash_map.StringContext,true).getIndexAdapted__func_969",
+    "instructions": 27067,
+    "share": 0.0038632632878087617,
+    "bytes": 52199
+   },
+   {
+    "function": "wrap_w2c_fxcore_heap.ArenaAllocator.remap",
+    "instructions": 26148,
+    "share": 0.0037320947445089406,
+    "bytes": 36324
+   },
+   {
+    "function": "builtins.gateway.buildAgentRequest",
+    "instructions": 25854,
+    "share": 0.0036901322290245585,
+    "bytes": 38724
+   },
+   {
+    "function": "json.Stringify.outputSpecialEscape",
+    "instructions": 25035,
+    "share": 0.003573236650175208,
+    "bytes": 46820
+   }
+  ],
+  "pairs": [
+   {
+    "pair": "LW LW",
+    "count": 678385,
+    "dependent": 10293,
+    "share": 0.09682564988732208
+   },
+   {
+    "pair": "SW SW",
+    "count": 640868,
+    "dependent": 0,
+    "share": 0.09147086181443918
+   },
+   {
+    "pair": "ADDI ADDI",
+    "count": 524482,
+    "dependent": 1056,
+    "share": 0.07485912940911497
+   },
+   {
+    "pair": "LW ADDI",
+    "count": 193828,
+    "dependent": 30956,
+    "share": 0.027665001535057326
+   },
+   {
+    "pair": "ADDI SW",
+    "count": 185296,
+    "dependent": 119315,
+    "share": 0.026447232208143212
+   },
+   {
+    "pair": "SW ADDI",
+    "count": 172259,
+    "dependent": 0,
+    "share": 0.024586465832735414
+   },
+   {
+    "pair": "ADDI BLTU",
+    "count": 162842,
+    "dependent": 72732,
+    "share": 0.02324238077043464
+   },
+   {
+    "pair": "BEQ ADDI",
+    "count": 131521,
+    "dependent": 0,
+    "share": 0.018771945574902877
+   },
+   {
+    "pair": "ADDI BNE",
+    "count": 122019,
+    "dependent": 26322,
+    "share": 0.0174157284928192
+   },
+   {
+    "pair": "ADDI LW",
+    "count": 109694,
+    "dependent": 759,
+    "share": 0.015656585624298752
+   },
+   {
+    "pair": "LBU ADDI",
+    "count": 106297,
+    "dependent": 61242,
+    "share": 0.01517173302191628
+   },
+   {
+    "pair": "BNE LBU",
+    "count": 83471,
+    "dependent": 0,
+    "share": 0.011913786156451958
+   },
+   {
+    "pair": "JALR ADDI",
+    "count": 78383,
+    "dependent": 0,
+    "share": 0.011187577725212035
+   },
+   {
+    "pair": "ADD LBU",
+    "count": 72919,
+    "dependent": 66589,
+    "share": 0.010407702947638346
+   },
+   {
+    "pair": "SRL OR",
+    "count": 70403,
+    "dependent": 5,
+    "share": 0.010048595162064515
+   },
+   {
+    "pair": "OR SLL",
+    "count": 70403,
+    "dependent": 0,
+    "share": 0.010048595162064515
+   },
+   {
+    "pair": "SLL SRL",
+    "count": 70398,
+    "dependent": 0,
+    "share": 0.010047881513841993
+   },
+   {
+    "pair": "ADDI BGEU",
+    "count": 69883,
+    "dependent": 65821,
+    "share": 0.009974375746922072
+   },
+   {
+    "pair": "LUI ADDI",
+    "count": 69839,
+    "dependent": 55354,
+    "share": 0.009968095642563865
+   },
+   {
+    "pair": "LBU BEQ",
+    "count": 67116,
+    "dependent": 62150,
+    "share": 0.009579442820577561
+   },
+   {
+    "pair": "BLTU ADDI",
+    "count": 63652,
+    "dependent": 0,
+    "share": 0.009085027332013275
+   },
+   {
+    "pair": "SW LW",
+    "count": 63428,
+    "dependent": 0,
+    "share": 0.009053055891644221
+   },
+   {
+    "pair": "ADDI JALR",
+    "count": 61181,
+    "dependent": 0,
+    "share": 0.008732342380442156
+   },
+   {
+    "pair": "LW BEQ",
+    "count": 60885,
+    "dependent": 43752,
+    "share": 0.008690094405668765
+   },
+   {
+    "pair": "OR OR",
+    "count": 60374,
+    "dependent": 5024,
+    "share": 0.008617159557326863
+   },
+   {
+    "pair": "LBU LBU",
+    "count": 60222,
+    "dependent": 0,
+    "share": 0.008595464651362147
+   },
+   {
+    "pair": "ADDI ANDI",
+    "count": 56050,
+    "dependent": 44490,
+    "share": 0.007999996574488532
+   },
+   {
+    "pair": "LW ADD",
+    "count": 54262,
+    "dependent": 47971,
+    "share": 0.007744795970114125
+   },
+   {
+    "pair": "ADDI BEQ",
+    "count": 52401,
+    "dependent": 36122,
+    "share": 0.007479176101690875
+   },
+   {
+    "pair": "AUIPC JALR",
+    "count": 51214,
+    "dependent": 51214,
+    "share": 0.007309756013663795
+   },
+   {
+    "pair": "SLLI OR",
+    "count": 49764,
+    "dependent": 38258,
+    "share": 0.007102798029131977
+   },
+   {
+    "pair": "ANDI ADDI",
+    "count": 49720,
+    "dependent": 18290,
+    "share": 0.00709651792477377
+   },
+   {
+    "pair": "BLTU LW",
+    "count": 49529,
+    "dependent": 0,
+    "share": 0.007069256562673372
+   },
+   {
+    "pair": "ADDI AUIPC",
+    "count": 48698,
+    "dependent": 0,
+    "share": 0.006950648228089965
+   },
+   {
+    "pair": "BEQ ADD",
+    "count": 45831,
+    "dependent": 0,
+    "share": 0.006541442337294985
+   },
+   {
+    "pair": "ADD ADD",
+    "count": 43873,
+    "dependent": 9526,
+    "share": 0.006261977693354779
+   },
+   {
+    "pair": "OR ADDI",
+    "count": 43785,
+    "dependent": 14,
+    "share": 0.006249417484638365
+   },
+   {
+    "pair": "LW SW",
+    "count": 38865,
+    "dependent": 18767,
+    "share": 0.005547187633675232
+   },
+   {
+    "pair": "BGEU BEQ",
+    "count": 38574,
+    "dependent": 0,
+    "share": 0.005505653307124364
+   },
+   {
+    "pair": "ADDI SB",
+    "count": 38081,
+    "dependent": 9372,
+    "share": 0.005435287592383546
+   }
+  ],
+  "triples": [
+   {
+    "triple": "SW SW SW",
+    "count": 466321,
+    "share": 0.06655783055507701
+   },
+   {
+    "triple": "LW LW LW",
+    "count": 452583,
+    "share": 0.06459701069887143
+   },
+   {
+    "triple": "ADDI ADDI ADDI",
+    "count": 171283,
+    "share": 0.024447161699698825
+   },
+   {
+    "triple": "LW LW ADDI",
+    "count": 136200,
+    "share": 0.019439777581540377
+   },
+   {
+    "triple": "SW SW ADDI",
+    "count": 134369,
+    "share": 0.019178439602452267
+   },
+   {
+    "triple": "ADDI SW SW",
+    "count": 107020,
+    "share": 0.01527492655489318
+   },
+   {
+    "triple": "SW ADDI ADDI",
+    "count": 102914,
+    "share": 0.014688878634556873
+   },
+   {
+    "triple": "ADDI ADDI BLTU",
+    "count": 85121,
+    "share": 0.012149290069884716
+   },
+   {
+    "triple": "ADDI BNE LBU",
+    "count": 76102,
+    "share": 0.01086201140609681
+   },
+   {
+    "triple": "ADDI ADDI BNE",
+    "count": 74725,
+    "share": 0.010665472685613837
+   },
+   {
+    "triple": "LW ADDI SW",
+    "count": 72098,
+    "share": 0.010290521909499984
+   },
+   {
+    "triple": "SRL OR SLL",
+    "count": 70403,
+    "share": 0.010048595162064515
+   },
+   {
+    "triple": "SLL SRL OR",
+    "count": 70398,
+    "share": 0.010047881513841993
+   },
+   {
+    "triple": "BNE LBU ADDI",
+    "count": 58666,
+    "share": 0.008373377324512831
+   },
+   {
+    "triple": "LW ADDI JALR",
+    "count": 53097,
+    "share": 0.007578515934266148
+   },
+   {
+    "triple": "LW ADDI ADDI",
+    "count": 49767,
+    "share": 0.007103226218065491
+   },
+   {
+    "triple": "ADDI AUIPC JALR",
+    "count": 48698,
+    "share": 0.006950648228089965
+   },
+   {
+    "triple": "JALR ADDI SW",
+    "count": 47403,
+    "share": 0.006765813338456376
+   },
+   {
+    "triple": "OR SLL SRL",
+    "count": 46932,
+    "share": 0.006698587675894661
+   },
+   {
+    "triple": "ADDI BLTU LW",
+    "count": 44475,
+    "share": 0.006347900939346609
+   },
+   {
+    "triple": "LBU ADDI ADDI",
+    "count": 43313,
+    "share": 0.006182049092432146
+   },
+   {
+    "triple": "BLTU LW LW",
+    "count": 43290,
+    "share": 0.006178766310608538
+   },
+   {
+    "triple": "BEQ ADD LBU",
+    "count": 43217,
+    "share": 0.006168347046559695
+   },
+   {
+    "triple": "SW LW LW",
+    "count": 42409,
+    "share": 0.0060530214937998955
+   },
+   {
+    "triple": "AUIPC JALR ADDI",
+    "count": 40795,
+    "share": 0.005822655847569307
+   },
+   {
+    "triple": "ADDI BLTU ADDI",
+    "count": 39854,
+    "share": 0.005688347252090382
+   },
+   {
+    "triple": "ADDI ADDI LW",
+    "count": 37316,
+    "share": 0.00532609941433745
+   },
+   {
+    "triple": "LBU LBU LBU",
+    "count": 36943,
+    "share": 0.005272861256937196
+   },
+   {
+    "triple": "ADDI BGEU BEQ",
+    "count": 36349,
+    "share": 0.005188079848101403
+   },
+   {
+    "triple": "OR OR ADDI",
+    "count": 36310,
+    "share": 0.00518251339196572
+   },
+   {
+    "triple": "LBU BEQ ADDI",
+    "count": 36090,
+    "share": 0.005151112870174685
+   },
+   {
+    "triple": "LBU ADDI BGEU",
+    "count": 35870,
+    "share": 0.005119712348383651
+   },
+   {
+    "triple": "SW ADDI BLTU",
+    "count": 35180,
+    "share": 0.005021228893675407
+   },
+   {
+    "triple": "OR ADDI ADDI",
+    "count": 35154,
+    "share": 0.005017517922918284
+   },
+   {
+    "triple": "ADD LBU BEQ",
+    "count": 34124,
+    "share": 0.0048705063890784415
+   },
+   {
+    "triple": "ADDI OR OR",
+    "count": 33910,
+    "share": 0.0048399622451544356
+   },
+   {
+    "triple": "ADDI SLTIU ADD",
+    "count": 33903,
+    "share": 0.004838963137642903
+   },
+   {
+    "triple": "BGEU BEQ ADDI",
+    "count": 33897,
+    "share": 0.004838106759775874
+   },
+   {
+    "triple": "OR SLTU ADDI",
+    "count": 33806,
+    "share": 0.004825118362125947
+   },
+   {
+    "triple": "BEQ ADDI SLTIU",
+    "count": 33799,
+    "share": 0.004824119254614414
+   }
+  ]
+ },
+ "memmove_callers_final_stack": {
+  "w2c_fxcore_acp0x2Eprompt0x2EAcpContext0x2EtoolContext": [
+   322,
+   82685
+  ],
+  "w2c_fxcore_acp0x2Eserver0x2ErunWithTransport": [
+   16,
+   71604
+  ],
+  "w2c_fxcore_core0x2Eagent0x2Eruntime0x2Eprompt_context0x2EbuildProviderPrompt": [
+   40,
+   47424
+  ],
+  "w2c_fxcore_Io0x2EWriter0x2EAllocating0x2Edrain": [
+   346,
+   42991
+  ],
+  "w2c_fxcore_builtins0x2Egateway0x2EbuildAgentRequest": [
+   301,
+   39294
+  ],
+  "w2c_fxcore_core0x2Eagent0x2Eruntime0x2Eorchestrator0x2EprocessQueuedPromptLoop": [
+   246,
+   31791
+  ],
+  "w2c_fxcore_gateway0x2Evercel_protocol0x2EbuildGatewayRequestBodyValidated": [
+   106,
+   29655
+  ],
+  "w2c_fxcore_core0x2Egateway0x2Eprovider_set0x2ESet0x2Eselect": [
+   80,
+   22400
+  ],
+  "w2c_fxcore_json0x2EStringify0x2EencodeJsonString": [
+   1881,
+   19410
+  ],
+  "w2c_fxcore_json0x2EScanner0x2EappendSlice": [
+   1430,
+   17076
+  ],
+  "w2c_fxcore_array_list0x2EAligned0x28core0x2Eshared0x2Etypes0x2EChatMessage0x2Cnull0x290x2Eappend": [
+   21,
+   12480
+  ],
+  "w2c_fxcore_core0x2Eshared0x2Etypes0x2EdupeExecutionMemory": [
+   180,
+   11787
+  ],
+  "w2c_fxcore_core0x2Eagent0x2Eruntime0x2Edeps0x2EAgentRuntimeDeps0x2EexecuteToolCall": [
+   25,
+   9645
+  ],
+  "w2c_fxcore_gateway0x2Evercel_protocol0x2Ewrite_tool_result_group": [
+   60,
+   8880
+  ],
+  "w2c_fxcore_acp0x2Eprompt0x2EexecuteToolCall": [
+   40,
+   8800
+  ],
+  "w2c_fxcore_core0x2Egateway0x2Egateway_provider0x2ECapabilityResolver0x2Eavailable": [
+   7,
+   7644
+  ],
+  "w2c_fxcore_core0x2Etooling0x2Etool_admission0x2ErequestPermissionOutcome": [
+   15,
+   7120
+  ],
+  "w2c_fxcore_core0x2Eagent0x2Eruntime0x2Egateway_step0x2EstreamModelCompletion": [
+   56,
+   6220
+  ],
+  "w2c_fxcore_core0x2Eagent0x2Eruntime0x2Etool_admission0x2ErequestToolPermissionTraced": [
+   16,
+   5052
+  ],
+  "w2c_fxcore_acp0x2Eprompt0x2ErequestToolPermissionOutcomeWithRequest": [
+   10,
+   5000
+  ],
+  "w2c_fxcore_core0x2Etooling0x2Etool_runtime0x2EContext0x2EadmissionInput": [
+   24,
+   4928
+  ],
+  "w2c_fxcore_gateway0x2Ehost_stream_provider0x2Estream": [
+   42,
+   4900
+  ],
+  "w2c_fxcore_core0x2Etooling0x2Etool_admission0x2EresolveOrdinaryPermissionOutcome": [
+   10,
+   4800
+  ],
+  "w2c_fxcore_core0x2Eagent0x2Eruntime0x2Erequest_recovery0x2ERequestRecovery0x2EstepLocked": [
+   39,
+   4444
+  ],
+  "w2c_fxcore_core0x2Eagent0x2Eexecution_memory0x2EbuildNormalExecutionMemory_0x5Ffunc_1499": [
+   32,
+   4440
+  ]
+ },
+ "build_notes": {
+  "giant_function_isolated": {
+   "b_fast_o2_check_b0": {
+    "function": "w2c_fxcore_core0x2Eagent0x2Eruntime0x2Eorchestrator0x2EprocessQueuedPromptLoop",
+    "lines": 192814,
+    "from": "fxcore_33.c"
+   },
+   "b_os_ua_lto": {
+    "function": "w2c_fxcore_core0x2Eagent0x2Eruntime0x2Eorchestrator0x2EprocessQueuedPromptLoop",
+    "lines": 137297,
+    "from": "fxcore_32.c"
+   },
+   "b_tools_fast_o2_check_b0": {
+    "function": "w2c_fxcore_core0x2Eagent0x2Eruntime0x2Eorchestrator0x2EprocessQueuedPromptLoop",
+    "lines": 192814,
+    "from": "fxcore_33.c"
+   }
+  },
+  "o2_crash_cause": "LLVM ERROR: out of memory (C: nearly full so the page file cannot grow; other jobs hold ~3 GB). Fix: wasm2c --num-outputs=96, the largest function in its own file compiled alone first, ThinLTO across the files.",
+  "header_bug_found": "split files #include \"fxcore-impl.h\" by quotes, which resolves next to the .c before -I: the unpatched header (bounds checks on) made the first split builds ~2x slower; build.py now patches c/fxcore-impl.h in place.",
+  "o3": "identical instruction count to -O2 under ThinLTO"
+ }
+}

@@ -3,6 +3,10 @@ with exactly the host and scripted conversation of ../host.py. Every executed RV
 instruction is counted, by mnemonic and by PC.
 
 Usage: python -I rvhost.py RV32EMU_DLL FX_ELF IMPORTS_JSON OUT_JSON [--turns N]
+           [--opt KEY=VALUE ...] [--prof] [--no-memtrace]
+--opt sets host.py's OPTS (stream, provider, clock, tools, tool_schemas, env); --prof adds
+mnemonic pairs/triples and bytes moved per function. The wasm linear-memory base is read from
+the ELF's `rv_linear_base` symbol (P0's images: 0x02000000).
 """
 from __future__ import annotations
 
@@ -23,40 +27,20 @@ sys.path.insert(0, os.path.dirname(HERE))
 import host as H  # noqa: E402
 import tinyrepo  # noqa: E402
 
-LIN = 0x02000000
+LIN = 0x02000000  # default; RvHost reads the image's rv_linear_base
 STACK_TOP = 0x100000  # __stack_pointer initial value (stack first, data at 1 MB)
 HEAP_BASE = 0x149120  # end of the data segments
 MNEMONICS = ("LUI AUIPC JAL JALR BEQ BNE BLT BGE BLTU BGEU LB LH LW LBU LHU SB SH SW ADDI SLTI SLTIU XORI ORI "
              "ANDI SLLI SRLI SRAI ADD SUB SLL SLT SLTU XOR SRL SRA OR AND FENCE ECALL EBREAK MUL MULH MULHSU MULHU "
-             "DIV DIVU REM REMU SH1ADD SH2ADD SH3ADD LR.W SC.W CSR").split()
+             "DIV DIVU REM REMU SH1ADD SH2ADD SH3ADD LR.W SC.W CSR "
+             "ANDN ORN XNOR CLZ CTZ CPOP SEXT.B SEXT.H ZEXT.H MAX MAXU MIN MINU ROL ROR ORC.B REV8 "
+             "BCLR BEXT BINV BSET").split()
 
 
 class RvHost(H.Host):
-    def __init__(self, dll, elf_path, imports, repo, turns=2, log=None):
-        self.repo = H.RepoTools(repo)
-        self.turns = turns
-        self.log = log or (lambda *a: None)
+    def __init__(self, dll, elf_path, imports, repo, turns=2, log=None, prof=False, memtrace=True):
+        self._init_common(repo, turns, log)
         self.instrumented = False
-        self.stdin = bytearray()
-        self.stdout = bytearray()
-        self.events = []
-        self.import_calls = {}
-        self.peak_mem = 0
-        self.mem = None
-        self.clock_ns = 1_767_000_000_000_000_000
-        self.rand = 0x12345678
-        self.next_id = 1
-        self.pending = {}
-        self.state = "init"
-        self.turn = 0
-        self.model_calls = 0
-        self.streams = {}
-        self.snapshots = []
-        self.messages_out = {}
-        self.request_bytes = []
-        self.exit_code = None
-        self.env = [f"FX_PROVIDER={H.PROVIDER}", f"FX_CONFIGURED_PROVIDERS={H.PROVIDER_JSON}", f"FX_MODEL={H.MODEL}"]
-        self.args = ["fx", "acp"]
         self.new_method = "libfx/new"
 
         e = dll
@@ -71,13 +55,34 @@ class RvHost(H.Host):
         e.rv_mispc.restype = ctypes.POINTER(ctypes.c_uint32)
         e.rv_run.argtypes = [ctypes.c_uint64]
         e.rv_fault_addr.restype = ctypes.c_uint32
+        for f in (e.rv_pairs, e.rv_pairs_dep, e.rv_trips):
+            f.restype = ctypes.POINTER(ctypes.c_uint64)
+        e.rv_pcbytes.restype = ctypes.POINTER(ctypes.c_uint32)
+        e.rv_incl.restype = ctypes.POINTER(ctypes.c_uint64)
+        e.rv_wcalls.restype = ctypes.POINTER(ctypes.c_uint32)
+        e.rv_wbytes.restype = ctypes.POINTER(ctypes.c_uint64)
+        e.rv_set_watch.argtypes = [ctypes.c_uint32]
+
+        e.rv_set_lin.argtypes = [ctypes.c_uint32]
         self.e = e
         f = open(elf_path, "rb")
         elf = ELFFile(f)
         text = elf.get_section_by_name(".text")
         self.text_lo, self.text_hi = text["sh_addr"], text["sh_addr"] + text["sh_size"]
+        sym = elf.get_section_by_name(".symtab")
+        lb = sym.get_symbol_by_name("rv_linear_base")
+        assert lb or self.text_lo < 0x02000000, "image without rv_linear_base: linear-memory base unknown"
+        self.lin = LIN
+        if lb:
+            off = lb[0]["st_value"]
+            for seg in elf.iter_segments():
+                if seg["p_type"] == "PT_LOAD" and seg["p_vaddr"] <= off < seg["p_vaddr"] + seg["p_filesz"]:
+                    self.lin = struct.unpack("<I", seg.data()[off - seg["p_vaddr"]:off - seg["p_vaddr"] + 4])[0]
+        e.rv_set_lin(self.lin)
+        e.rv_set_prof(1 if prof else 0)
         assert e.rv_init(self.text_lo, self.text_hi) == 0
-        assert e.mt_init() == 0
+        if memtrace:
+            assert e.mt_init() == 0
         e.mt_set_watch(0, STACK_TOP)  # wasm shadow stack: [0, 1 MB), grows down
         e.mt_host_store.argtypes = [ctypes.c_uint32, ctypes.c_uint32]
         e.mt_phases.restype = ctypes.POINTER(ctypes.c_uint64)
@@ -90,10 +95,13 @@ class RvHost(H.Host):
                 data = seg.data()
                 ctypes.memmove(self.base + seg["p_vaddr"], data, len(data))
         e.rv_set_pc(elf.header["e_entry"])
-        sym = elf.get_section_by_name(".symtab")
         self.linear_bytes_addr = sym.get_symbol_by_name("rv_linear_bytes")[0]["st_value"]
         self.funcs = sorted((s["st_value"], s["st_size"], s.name) for s in sym.iter_symbols()
                             if s["st_info"]["type"] == "STT_FUNC" and s["st_size"])
+        if prof and os.environ.get("RV_WATCH"):  # call sites of one function (e.g. memmove)
+            w = [ad for ad, sz, nm in self.funcs if nm == os.environ["RV_WATCH"]]
+            if w:
+                e.rv_set_watch(w[0])
         self.imports = imports
         self.regs = e.rv_regs()
         self.handlers = []
@@ -107,11 +115,11 @@ class RvHost(H.Host):
         return self.e.rv_icount()
 
     def rd(self, p, n):
-        return ctypes.string_at(self.base + LIN + p, n)
+        return ctypes.string_at(self.base + self.lin + p, n)
 
     def wr(self, p, b):
-        ctypes.memmove(self.base + LIN + p, bytes(b), len(b))
-        self.e.mt_host_store(LIN + p, len(b))
+        ctypes.memmove(self.base + self.lin + p, bytes(b), len(b))
+        self.e.mt_host_store(self.lin + p, len(b))
 
     def mark(self, kind, detail=None):
         super().mark(kind, detail)
@@ -160,6 +168,19 @@ class RvHost(H.Host):
                         break
                     self.e.rv_set_pc(pc + 4)
                     continue
+                if a7 == 96:  # native tool call begins (imports.c --native-tools)
+                    self.native_start = (self.e.rv_icount(), self.text(self.regs[10], self.regs[11]))
+                    self.e.rv_set_pc(pc + 4)
+                    continue
+                if a7 == 97:  # native tool call ended; a0 = its result (-100: not native)
+                    r = self.regs[10]
+                    if r != 0xFFFFFF9C:
+                        st, nm = self.native_start
+                        self.events.append((st, "tool_call", {"name": nm, "native": True}))
+                        self.mark("tool_result", {"name": nm, "bytes": r, "native": True})
+                        self.native_calls.append(nm)
+                    self.e.rv_set_pc(pc + 4)
+                    continue
                 if a7 == 95:
                     self.next_phase(self.phase_names[1])
                     self.phase_names.pop()
@@ -173,7 +194,7 @@ class RvHost(H.Host):
                     break
                 self.mark("trap", f"unknown ecall {a7}")
                 break
-            word = struct.unpack("<I", ctypes.string_at(self.base + pc, 4))[0] if pc < 0x04000000 else 0
+            word = struct.unpack("<I", ctypes.string_at(self.base + pc, 4))[0] if pc < 0x08000000 else 0
             self.mark("trap", f"rv_run={r} pc={pc:#x} insn={word:#010x} fault={self.e.rv_fault_addr():#x} sym={self.sym(pc)}")
             break
         self.wall = time.perf_counter() - t0
@@ -188,7 +209,7 @@ class RvHost(H.Host):
 
     def profile(self, which="pc"):
         n = (self.text_hi - self.text_lo) // 4
-        ptr = self.e.rv_pccounts() if which == "pc" else self.e.rv_mispc()
+        ptr = {"pc": self.e.rv_pccounts, "mis": self.e.rv_mispc, "bytes": self.e.rv_pcbytes}[which]()
         arr = (ctypes.c_uint32 * n).from_address(ctypes.addressof(ptr.contents))
         counts = memoryview(arr).cast("B").cast("I")
         per = {}
@@ -238,6 +259,45 @@ def memory_stats(h):
     }
 
 
+def parse_opts(items):
+    kw = {}
+    for it in items or []:
+        k, _, v = it.partition("=")
+        if k in ("tools", "env"):
+            kw[k] = [x for x in v.split(",") if x] if k == "tools" else kw.get("env", []) + [v]
+        else:
+            kw[k] = v
+    return kw
+
+
+def turn_summary(events):
+    """Turn totals (prompt sent to its response) and per-step splits, from the event list."""
+    ev = [(f, k, d) for f, k, d in events if k != "deliver"]
+    req = [(f, d) for f, k, d in ev if k == "request"]
+    resp = [(f, d) for f, k, d in ev if k == "response"]
+    prompts = [f for f, d in req if d == "session/prompt"]
+    ends = [f for f, d in resp if d == "session/prompt"]
+    out = {"boot": next(f for f, k, d in ev if k == "boot_end"),
+           "turns": [e - p for p, e in zip(prompts, ends)]}
+    init = [(f, d) for f, d in req if d == "initialize"]
+    if init:
+        out["initialize"] = next(f for f, d in resp if d == "initialize") - init[0][0]
+    steps = []
+    opens = [f for f, k, d in ev if k == "stream_open"]
+    closes = [f for f, k, d in ev if k == "stream_close"]
+    calls = [(f, d) for f, k, d in ev if k == "tool_call"]
+    results = [f for f, k, d in ev if k == "tool_result"]
+    marks = sorted([(p, "prompt") for p in prompts] + [(r, "result") for r in results])
+    for i, fo in enumerate(opens):
+        prev = max((m for m, _ in marks if m <= fo), default=fo)
+        fc = closes[i] if i < len(closes) else fo
+        nxt = min([f for f, _ in calls if f >= fc] + [e for e in ends if e >= fc] + [1 << 62])
+        steps.append({"intake_and_request": fo - prev, "stream": fc - fo, "after_stream": nxt - fc})
+    out["steps"] = steps
+    out["tool_in_guest"] = [r - f for (f, _), r in zip(calls, results)]
+    return out
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("dll")
@@ -245,11 +305,16 @@ def main():
     ap.add_argument("imports")
     ap.add_argument("out")
     ap.add_argument("--turns", type=int, default=2)
+    ap.add_argument("--opt", action="append")
+    ap.add_argument("--prof", action="store_true")
+    ap.add_argument("--no-memtrace", action="store_true")
     a = ap.parse_args()
+    H.set_opts(**parse_opts(a.opt))
     dll = ctypes.CDLL(os.path.abspath(a.dll))
-    tmp = tempfile.mkdtemp(prefix="fxrepo-")
+    tmp = H.repo_dir(tempfile.mkdtemp(prefix="fxrepo-"))
     tinyrepo.make_repo(tmp)
-    h = RvHost(dll, a.elf, json.load(open(a.imports)), tmp, a.turns, log=lambda *x: print(*x, file=sys.stderr))
+    h = RvHost(dll, a.elf, json.load(open(a.imports)), tmp, a.turns, log=lambda *x: print(*x, file=sys.stderr),
+               prof=a.prof, memtrace=not a.no_memtrace)
     h.run()
     nops = dll.rv_nops()
     opsv = h.e.rv_ops()
@@ -259,10 +324,39 @@ def main():
            "dynamic_ops": ops, "misaligned_accesses": h.e.rv_misaligned(), "per_function": h.profile(), "misaligned_by_function": h.profile("mis"),
            "final_repo": {r: open(os.path.join(tmp, r), encoding="utf-8").read() for r in h.repo.files()
                           if r.startswith("tinycalc/calc") or r.startswith("tests/test_div")}}
-    res["memory_access"] = memory_stats(h)
+    if not a.no_memtrace:
+        res["memory_access"] = memory_stats(h)
+    res["opts"] = dict(H.OPTS)
+    res["native_calls"] = h.native_calls
+    res["unsupported_imports"] = h.unsupported
+    res["summary"] = turn_summary(h.events)
+    res["linear_base"] = h.lin
+    if a.prof:
+        n = nops
+        pr = h.e.rv_pairs()
+        pd = h.e.rv_pairs_dep()
+        tr = h.e.rv_trips()
+        res["pairs"] = sorted(([MNEMONICS[i // n], MNEMONICS[i % n], pr[i], pd[i]] for i in range(n * n) if pr[i]), key=lambda r: -r[2])[:400]
+        res["triples"] = sorted(([MNEMONICS[i // (n * n)], MNEMONICS[(i // n) % n], MNEMONICS[i % n], tr[i]] for i in range(n * n * n) if tr[i]), key=lambda r: -r[3])[:400]
+        res["bytes_by_function"] = h.profile("bytes")
+        n_ = (h.text_hi - h.text_lo) // 4
+        inc = (ctypes.c_uint64 * n_).from_address(ctypes.addressof(h.e.rv_incl().contents))
+        wc = (ctypes.c_uint32 * n_).from_address(ctypes.addressof(h.e.rv_wcalls().contents))
+        wb = (ctypes.c_uint64 * n_).from_address(ctypes.addressof(h.e.rv_wbytes().contents))
+        callers = {}
+        for i in range(n_):
+            if wc[i]:
+                f = h.sym(h.text_lo + 4 * i)
+                c = callers.setdefault(f, [0, 0])
+                c[0] += wc[i]
+                c[1] += wb[i]
+        res["watched_callers"] = {"function": os.environ.get("RV_WATCH"), "callers": callers}
+        res["inclusive_by_function"] = {name: inc[(addr - h.text_lo) // 4] for addr, size, name in h.funcs
+                                        if h.text_lo <= addr < h.text_hi and inc[(addr - h.text_lo) // 4]}
     json.dump(res, open(a.out, "w"))
     shutil.rmtree(tmp, ignore_errors=True)
     print(json.dumps({k: res[k] for k in ("rv_instructions_total", "peak_linear_memory_bytes", "wall_s", "misaligned_accesses")}))
+    print("turns", res["summary"]["turns"], "messages", h.messages_out)
     for ev in h.events:
         if ev[1] != "deliver":
             print(ev[0], ev[1], str(ev[2])[:200])

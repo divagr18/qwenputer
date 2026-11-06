@@ -1,0 +1,40 @@
+{
+ "p0": {
+  "elf": "rvb/fx--Os-generic_rv32_m_zba_unaligned_scalar_mem.elf",
+  "imports": "rvb/imports.json"
+ },
+ "p0_aligned": {
+  "elf": "rvb/fx--Os-generic_rv32_m_zba.elf",
+  "imports": "rvb/imports.json"
+ },
+ "fast_os_ua": {
+  "elf": "rvbf/fx--Os-generic_rv32_m_zba_unaligned_scalar_mem.elf",
+  "imports": "rvbf/imports.json"
+ },
+ "rs_os_ua": "it/b_os_ua_lto",
+ "rs_o2_ua": "it/b_rs_o2_ua",
+ "rs_os_bytes": "it/b_rs_os_bytes",
+ "fast_o2_ua": "it/b_fast_o2_ua",
+ "fast_o2_ua_b0": "it/b_fast_o2_ua_b0",
+ "fast_o2_check_b0": "it/b_fast_o2_check_b0",
+ "fast_o2_check_b0_fc": {
+  "elf": "it/b_fast_o2_check_b0/fx-fastcopy.elf",
+  "imports": "it/b_fast_o2_check_b0/imports.json"
+ },
+ "fast_o2_check_b0_zbb": "it/b_fast_o2_check_b0_zbb",
+ "fast_o2_check_b0_zbb_fc": {
+  "elf": "it/b_fast_o2_check_b0_zbb/fx-fastcopy.elf",
+  "imports": "it/b_fast_o2_check_b0_zbb/imports.json"
+ },
+ "tools_rs_os_ua": "it/b_tools_os_ua",
+ "tools_fast_o2_check_b0_fc": {
+  "elf": "it/b_tools_fast_o2_check_b0/fx-fastcopy.elf",
+  "imports": "it/b_tools_fast_o2_check_b0/imports.json"
+ },
+ "fast_os_ua_lto": "it/b_fast_os_ua",
+ "fast_o2_bytes_b0": "it/b_fast_o2_bytes_b0",
+ "fast_o3_check_b0_fc": {
+  "elf": "it/b_fast_o3_check_b0/fx-fastcopy.elf",
+  "imports": "it/b_fast_o3_check_b0/imports.json"
+ }
+}

@@ -1,4 +1,4 @@
-/* A small RV32IM + Zba + Zalrsc interpreter, built as a host DLL and driven from
+/* A small RV32IM + Zba + Zbb + Zbs + Zalrsc interpreter, built as a host DLL and driven from
  * Python (rvhost.py). It counts every retired instruction by mnemonic and by PC.
  * rv_run() returns on ecall (1), illegal instruction (2), ebreak (3), the step
  * limit (4) or a memory fault (5); the host handles the ecall and resumes.
@@ -13,13 +13,16 @@
 #define EXPORT __attribute__((visibility("default")))
 #endif
 
-#define MEMSZ 0x04000000u
+#define MEMSZ 0x08000000u
 
 enum {
   LUI, AUIPC, JAL, JALR, BEQ, BNE, BLT, BGE, BLTU, BGEU, LB, LH, LW, LBU, LHU, SB, SH, SW,
   ADDI, SLTI, SLTIU, XORI, ORI, ANDI, SLLI, SRLI, SRAI, ADD, SUB, SLL, SLT, SLTU, XOR, SRL, SRA,
   OR, AND, FENCE, ECALL, EBREAK, MUL, MULH, MULHSU, MULHU, DIV, DIVU, REM, REMU, SH1ADD, SH2ADD,
-  SH3ADD, LRW, SCW, CSR, NOPS
+  SH3ADD, LRW, SCW, CSR,
+  /* Zbb / Zbs (speed-iter: candidate ISA extensions; immediate forms count with their R form) */
+  ANDN, ORN, XNOR, CLZ, CTZ, CPOP, SEXTB, SEXTH, ZEXTH, MAX, MAXU, MIN, MINU, ROL, ROR, ORCB, REV8,
+  BCLR, BEXT, BINV, BSET, NOPS
 };
 
 static uint8_t* M;
@@ -33,6 +36,26 @@ static uint32_t* mpc; /* misaligned accesses by PC */
 static uint32_t text_lo, text_hi;
 static uint32_t resv = 0xffffffffu;
 static uint32_t fault_addr;
+/* Profiling extras (rv_set_prof): mnemonic pairs and triples (all, and pairs where the
+ * second instruction reads the first one's rd), bytes loaded/stored per PC, and
+ * misaligned accesses that would fault on an aligned-only core. */
+static int prof;
+static uint64_t pair[NOPS * NOPS], pair_dep[NOPS * NOPS], trip[NOPS * NOPS * NOPS];
+static int k1 = 0, k2 = 0;
+static uint32_t prev_rd = 0;
+static uint32_t* pcbytes; /* bytes loaded + stored, per PC */
+/* Inclusive cost per function entry (prof): a call (JAL/JALR linking ra) pushes the
+ * target, `ret` pops it; only the outermost activation of a function is counted. */
+static uint64_t* incl;
+static uint32_t* incl_depth;
+#define CSTK 65536
+static uint32_t cs_entry[CSTK];
+static uint64_t cs_start[CSTK];
+static int csp;
+/* Call sites of one watched function (rv_set_watch): calls and the sum of a2 (memcpy's n). */
+static uint32_t watch_pc = 0xffffffffu;
+static uint32_t* wcalls;
+static uint64_t* wbytes;
 #define mt_icount_now icount
 #include "memtrace.h"
 
@@ -47,6 +70,15 @@ EXPORT uint32_t* rv_pccounts(void) { return pcc; }
 EXPORT uint32_t* rv_mispc(void) { return mpc; }
 EXPORT uint32_t rv_fault_addr(void) { return fault_addr; }
 EXPORT int rv_nops(void) { return NOPS; }
+EXPORT void rv_set_prof(int on) { prof = on; }
+EXPORT uint64_t* rv_pairs(void) { return pair; }
+EXPORT uint64_t* rv_pairs_dep(void) { return pair_dep; }
+EXPORT uint64_t* rv_trips(void) { return trip; }
+EXPORT uint32_t* rv_pcbytes(void) { return pcbytes; }
+EXPORT uint64_t* rv_incl(void) { return incl; }
+EXPORT void rv_set_watch(uint32_t pc) { watch_pc = pc; }
+EXPORT uint32_t* rv_wcalls(void) { return wcalls; }
+EXPORT uint64_t* rv_wbytes(void) { return wbytes; }
 
 EXPORT int rv_init(uint32_t lo, uint32_t hi) {
   M = calloc(1, MEMSZ);
@@ -54,10 +86,17 @@ EXPORT int rv_init(uint32_t lo, uint32_t hi) {
   text_hi = hi;
   pcc = calloc((hi - lo) / 4 + 1, sizeof(uint32_t));
   mpc = calloc((hi - lo) / 4 + 1, sizeof(uint32_t));
-  return M && pcc && mpc ? 0 : -1;
+  pcbytes = calloc((hi - lo) / 4 + 1, sizeof(uint32_t));
+  incl = calloc((hi - lo) / 4 + 1, sizeof(uint64_t));
+  incl_depth = calloc((hi - lo) / 4 + 1, sizeof(uint32_t));
+  wcalls = calloc((hi - lo) / 4 + 1, sizeof(uint32_t));
+  wbytes = calloc((hi - lo) / 4 + 1, sizeof(uint64_t));
+  return M && pcc && mpc && pcbytes && incl && incl_depth ? 0 : -1;
 }
 
 static inline int ok(uint32_t a, uint32_t n) { return a < MEMSZ && a + n <= MEMSZ; }
+static inline uint32_t rotl(uint32_t a, uint32_t n) { n &= 31; return n ? (a << n) | (a >> (32 - n)) : a; }
+static inline uint32_t rotr(uint32_t a, uint32_t n) { n &= 31; return n ? (a >> n) | (a << (32 - n)) : a; }
 
 EXPORT int rv_run(uint64_t limit) {
   uint64_t end = icount + limit;
@@ -106,6 +145,7 @@ EXPORT int rv_run(uint64_t limit) {
         if (!ok(ad, n)) { fault_addr = ad; return 5; }
         if (ad & (n - 1)) { misaligned++; if (PC >= text_lo && PC < text_hi) mpc[(PC - text_lo) >> 2]++; }
         mt_load(ad, n);
+        if (prof && PC >= text_lo && PC < text_hi) pcbytes[(PC - text_lo) >> 2] += n;
         switch (f3) {
           case 0: k = LB; v = (uint32_t)(int32_t)(int8_t)M[ad]; break;
           case 1: { int16_t h; memcpy(&h, M + ad, 2); k = LH; v = (uint32_t)(int32_t)h; break; }
@@ -126,6 +166,7 @@ EXPORT int rv_run(uint64_t limit) {
         k = f3 == 0 ? SB : f3 == 1 ? SH : SW;
         memcpy(M + ad, &b, n);
         mt_store(ad, n);
+        if (prof && PC >= text_lo && PC < text_hi) pcbytes[(PC - text_lo) >> 2] += n;
         if ((ad & ~3u) == resv) resv = 0xffffffffu;
         wr = 0;
         break;
@@ -138,10 +179,25 @@ EXPORT int rv_run(uint64_t limit) {
           case 4: k = XORI; v = a ^ immi; break;
           case 6: k = ORI; v = a | immi; break;
           case 7: k = ANDI; v = a & immi; break;
-          case 1: if (f7) return 2; k = SLLI; v = a << rs2; break;
+          case 1:
+            if (f7 == 0) { k = SLLI; v = a << rs2; }
+            else if (f7 == 0x30 && rs2 == 0) { k = CLZ; v = a ? (uint32_t)__builtin_clz(a) : 32; }
+            else if (f7 == 0x30 && rs2 == 1) { k = CTZ; v = a ? (uint32_t)__builtin_ctz(a) : 32; }
+            else if (f7 == 0x30 && rs2 == 2) { k = CPOP; v = (uint32_t)__builtin_popcount(a); }
+            else if (f7 == 0x30 && rs2 == 4) { k = SEXTB; v = (uint32_t)(int32_t)(int8_t)a; }
+            else if (f7 == 0x30 && rs2 == 5) { k = SEXTH; v = (uint32_t)(int32_t)(int16_t)a; }
+            else if (f7 == 0x24) { k = BCLR; v = a & ~(1u << rs2); }
+            else if (f7 == 0x34) { k = BINV; v = a ^ (1u << rs2); }
+            else if (f7 == 0x14) { k = BSET; v = a | (1u << rs2); }
+            else return 2;
+            break;
           case 5:
             if (f7 == 0) { k = SRLI; v = a >> rs2; }
             else if (f7 == 0x20) { k = SRAI; v = (uint32_t)((int32_t)a >> rs2); }
+            else if (f7 == 0x30) { k = ROR; v = rotr(a, rs2); }
+            else if (f7 == 0x14 && rs2 == 7) { k = ORCB; v = 0; for (int i = 0; i < 32; i += 8) if ((a >> i) & 0xff) v |= 0xffu << i; }
+            else if (f7 == 0x34 && rs2 == 24) { k = REV8; v = __builtin_bswap32(a); }
+            else if (f7 == 0x24) { k = BEXT; v = (a >> rs2) & 1; }
             else return 2;
             break;
         }
@@ -161,7 +217,30 @@ EXPORT int rv_run(uint64_t limit) {
         } else if (f7 == 0x20) {
           if (f3 == 0) { k = SUB; v = a - b; }
           else if (f3 == 5) { k = SRA; v = (uint32_t)((int32_t)a >> (b & 31)); }
+          else if (f3 == 7) { k = ANDN; v = a & ~b; }
+          else if (f3 == 6) { k = ORN; v = a | ~b; }
+          else if (f3 == 4) { k = XNOR; v = ~(a ^ b); }
           else return 2;
+        } else if (f7 == 0x05) {
+          if (f3 == 4) { k = MIN; v = (int32_t)a < (int32_t)b ? a : b; }
+          else if (f3 == 5) { k = MINU; v = a < b ? a : b; }
+          else if (f3 == 6) { k = MAX; v = (int32_t)a > (int32_t)b ? a : b; }
+          else if (f3 == 7) { k = MAXU; v = a > b ? a : b; }
+          else return 2;
+        } else if (f7 == 0x30) {
+          if (f3 == 1) { k = ROL; v = rotl(a, b); }
+          else if (f3 == 5) { k = ROR; v = rotr(a, b); }
+          else return 2;
+        } else if (f7 == 0x04 && f3 == 4 && rs2 == 0) {
+          k = ZEXTH; v = a & 0xffff;
+        } else if (f7 == 0x24) {
+          if (f3 == 1) { k = BCLR; v = a & ~(1u << (b & 31)); }
+          else if (f3 == 5) { k = BEXT; v = (a >> (b & 31)) & 1; }
+          else return 2;
+        } else if (f7 == 0x34 && f3 == 1) {
+          k = BINV; v = a ^ (1u << (b & 31));
+        } else if (f7 == 0x14 && f3 == 1) {
+          k = BSET; v = a | (1u << (b & 31));
         } else if (f7 == 1) {
           switch (f3) {
             case 0: k = MUL; v = a * b; break;
@@ -205,6 +284,30 @@ EXPORT int rv_run(uint64_t limit) {
     }
     if (wr && rd) X[rd] = v;
     ops[k]++;
+    if (prof && (k == JAL || k == JALR)) {
+      if (rd == 1 && next >= text_lo && next < text_hi && csp < CSTK) {
+        uint32_t e = (next - text_lo) >> 2;
+        if (next == watch_pc && PC >= text_lo && PC < text_hi) {
+          wcalls[(PC - text_lo) >> 2]++;
+          wbytes[(PC - text_lo) >> 2] += X[12];
+        }
+        cs_entry[csp] = e;
+        cs_start[csp++] = icount;
+        incl_depth[e]++;
+      } else if (k == JALR && rd == 0 && rs1 == 1 && csp > 0) {
+        uint32_t e = cs_entry[--csp];
+        if (incl_depth[e] == 1) incl[e] += icount + 1 - cs_start[csp];
+        incl_depth[e]--;
+      }
+    }
+    if (prof) {
+      pair[k1 * NOPS + k]++;
+      if (prev_rd && op != 0x37 && op != 0x17 && op != 0x6f && (prev_rd == rs1 || (prev_rd == rs2 && (op == 0x33 || op == 0x23 || op == 0x63)))) pair_dep[k1 * NOPS + k]++;
+      trip[(k2 * NOPS + k1) * NOPS + k]++;
+      k2 = k1;
+      k1 = k;
+      prev_rd = (wr && op != 0x63 && op != 0x23) ? rd : 0;
+    }
     if (PC >= text_lo && PC < text_hi) pcc[(PC - text_lo) >> 2]++;
     icount++;
     PC = next;

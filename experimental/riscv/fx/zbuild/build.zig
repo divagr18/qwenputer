@@ -20,6 +20,9 @@ pub fn build(b: *std.Build) void {
     const cpu = b.option([]const u8, "cpu", "rv32 cpu") orelse "generic_rv32+m+zba";
     const strip = b.option(bool, "strip", "strip symbols") orelse true;
     const name = b.option([]const u8, "name", "artifact name") orelse "fx-core";
+    // rv_tools_main.zig exports fxplat_native_tool; a wasm executable keeps an export only
+    // with rdynamic.
+    const rdynamic = b.option(bool, "rdynamic", "export the root's `export fn`s (wasm)") orelse false;
     const optimize = b.standardOptimizeOption(.{});
     const is_wasm = std.mem.eql(u8, arch, "wasm");
 
@@ -57,6 +60,7 @@ pub fn build(b: *std.Build) void {
         }),
     });
     exe.stack_size = 1024 * 1024;
+    if (is_wasm) exe.rdynamic = rdynamic;
     exe.root_module.addImport("build_options", opts.createModule());
 
     const sm_opts = b.addOptions();

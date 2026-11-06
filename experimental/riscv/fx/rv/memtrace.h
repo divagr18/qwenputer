@@ -5,7 +5,7 @@
  * written, sequential store runs, whole-line overwrite episodes, per-word write
  * counts, and the address extremes the host needs for stack/heap high-water marks.
  */
-#define LIN 0x02000000u
+static uint32_t LIN = 0x02000000u; /* wasm linear memory base (rv_set_lin) */
 #define LIN_BYTES 0x02000000u
 #define NW (LIN_BYTES / 4)
 #define NL (LIN_BYTES / 128)
@@ -51,6 +51,7 @@ EXPORT int mt_init(void) {
   return wcount && wflag && lmask && lflag ? 0 : -1;
 }
 
+EXPORT void rv_set_lin(uint32_t base) { LIN = base; }
 EXPORT void mt_set_watch(uint32_t lo, uint32_t hi) { lo_watch = lo; hi_watch = hi; }
 EXPORT void mt_set_boot_phases(int n) { boot_phases = n; }
 
@@ -67,7 +68,7 @@ static void close_line(uint32_t l) {
 }
 
 static inline void mt_load(uint32_t ad, uint32_t n) {
-  if (!mt_on || ad < LIN) return;
+  if (!mt_on || ad < LIN || ad - LIN >= LIN_BYTES) return;
   uint32_t o = ad - LIN;
   phase_t* p = &ph[cur_ph];
   p->loads++;
@@ -83,7 +84,7 @@ static inline void mt_load(uint32_t ad, uint32_t n) {
 }
 
 static inline void mt_store(uint32_t ad, uint32_t n) {
-  if (!mt_on || ad < LIN) return;
+  if (!mt_on || ad < LIN || ad - LIN >= LIN_BYTES) return;
   uint32_t o = ad - LIN;
   phase_t* p = &ph[cur_ph];
   p->stores++;
@@ -112,7 +113,7 @@ static inline void mt_store(uint32_t ad, uint32_t n) {
  * chunks): they define words like a store does, but are not CPU stores. */
 static uint64_t host_bytes;
 EXPORT void mt_host_store(uint32_t ad, uint32_t n) {
-  if (!mt_on || ad < LIN || n == 0) return;
+  if (!mt_on || ad < LIN || ad - LIN >= LIN_BYTES || n == 0) return;
   uint32_t o = ad - LIN;
   host_bytes += n;
   int boot = cur_ph < boot_phases;
@@ -129,6 +130,7 @@ EXPORT void mt_host_store(uint32_t ad, uint32_t n) {
 
 EXPORT void mt_phase(int k) {
   ph[cur_ph].icount_end = mt_icount_now;
+  if (!mt_on) { cur_ph = k < MAXPH ? k : MAXPH - 1; ph[cur_ph].icount_start = mt_icount_now; return; }
   for (uint32_t w = 0; w < NW; w++) wflag[w] &= ~(F_W_STEP | F_R_STEP);
   for (uint32_t l = 0; l < NL; l++) lflag[l] &= ~L_W_STEP;
   cur_ph = k < MAXPH ? k : MAXPH - 1;
