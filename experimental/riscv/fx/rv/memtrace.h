@@ -113,6 +113,7 @@ static inline void mt_store(uint32_t ad, uint32_t n) {
  * chunks): they define words like a store does, but are not CPU stores. */
 static uint64_t host_bytes;
 EXPORT void mt_host_store(uint32_t ad, uint32_t n) {
+  if (nfz) frozen_store_check(ad, n);
   if (!mt_on || ad < LIN || ad - LIN >= LIN_BYTES || n == 0) return;
   uint32_t o = ad - LIN;
   host_bytes += n;

@@ -1,0 +1,1502 @@
+{
+ "status": "2026-11-07, CPU only; see circuits.md",
+ "legend": "unit tokens are estimates (record formats, counted per firing), except the IR-built MMOVE / MEQL; CPU tokens and instructions, host I/O, final repo and all checks are measured",
+ "fx_sources": {
+  "check_src": "fx files checked: 717; changed: 0 (757bdb9)"
+ },
+ "images": {
+  "row11": {
+   "elf": "it/b_fast_o2_check_b0/fx-fastcopy.elf",
+   "sha256": "209f2a87e1549c4107b2e2b8a055ce58d757d4b159b172addd9ff6aa98f06d37"
+  },
+  "row24": {
+   "elf": "it/b_tools_fast_o2_check_b0/fx-fastcopy.elf",
+   "sha256": "282e53d497aa113173bc3ad9aa2ab221b6f43e43360457a093aeda7c1a85cbbd"
+  }
+ },
+ "token_rates_tok_per_s": [
+  2300,
+  15000
+ ],
+ "upper_bound_from_speed_iter": {
+  "saved_share": 0.64,
+  "basis": "five groups at 1 token / 16 B, whole session"
+ },
+ "ir_cost_detail": {
+  "ffn_units_delta": 2516,
+  "heads_delta": 1,
+  "layers_delta": 0,
+  "breakdown": {
+   "streaming adder modes (bn.ea)": 928,
+   "exit target adder": 532,
+   "offset select": 160,
+   "decode / fire / decline": 328,
+   "MMOVE schedule": 370,
+   "MEQL compare": 198
+  },
+  "vocab_rows_delta": 65797,
+  "ram_value_columns": [
+   66,
+   98
+  ]
+ },
+ "ir_cost_estimates_not_built": {
+  "move_full": "3.5-4.5k units, 3 heads, +1 layer",
+  "set": "0.8k",
+  "eql_full": "1.5-2k, 2 heads",
+  "tokest": "1.5k, 1 head",
+  "jscan+jesc+ascii+memchr": "1.5k, 1 head",
+  "maskp": "2k, 1 head",
+  "bcopy": "0.2k",
+  "sha": "5-7k, 3-4 heads, +1 layer",
+  "wyhash": "2-3k, 1-2 heads",
+  "all": "18-23k units, 12-15 heads, +1-2 layers"
+ },
+ "waterfall": {
+  "11": [
+   {
+    "step": "baseline",
+    "turn1_instructions": 4972917,
+    "turn1_tokens": 6981455,
+    "turn2_instructions": 797667,
+    "turn2_tokens": 1086365,
+    "session_instructions": 7012819,
+    "session_tokens": 10013327,
+    "session_tokens_saved": 0.0,
+    "host_io_same": true,
+    "measured": true
+   },
+   {
+    "step": "+move",
+    "turn1_instructions": 4142361,
+    "turn1_tokens": 6056765,
+    "turn2_instructions": 643070,
+    "turn2_tokens": 914040,
+    "session_instructions": 5464391,
+    "session_tokens": 8149798,
+    "session_tokens_saved": 0.18610487802905074,
+    "host_io_same": true,
+    "measured": true
+   },
+   {
+    "step": "+tokest",
+    "turn1_instructions": 3707556,
+    "turn1_tokens": 5608692,
+    "turn2_instructions": 532612,
+    "turn2_tokens": 800228,
+    "session_instructions": 4919128,
+    "session_tokens": 7587913,
+    "session_tokens_saved": 0.24221859527807288,
+    "host_io_same": true,
+    "measured": true
+   },
+   {
+    "step": "+sha",
+    "turn1_instructions": 3554487,
+    "turn1_tokens": 5252768,
+    "turn2_instructions": 532612,
+    "turn2_tokens": 800228,
+    "session_instructions": 4766059,
+    "session_tokens": 7231989,
+    "session_tokens_saved": 0.2777636244177385,
+    "host_io_same": true,
+    "measured": true
+   },
+   {
+    "step": "+jscan",
+    "turn1_instructions": 3372233,
+    "turn1_tokens": 5014629,
+    "turn2_instructions": 514334,
+    "turn2_tokens": 776301,
+    "session_instructions": 4514970,
+    "session_tokens": 6903057,
+    "session_tokens_saved": 0.3106130459936043,
+    "host_io_same": true,
+    "measured": true
+   },
+   {
+    "step": "+maskp",
+    "turn1_instructions": 3100596,
+    "turn1_tokens": 4716700,
+    "turn2_instructions": 514334,
+    "turn2_tokens": 776301,
+    "session_instructions": 4243333,
+    "session_tokens": 6605128,
+    "session_tokens_saved": 0.3403662938401991,
+    "host_io_same": true,
+    "measured": true
+   },
+   {
+    "step": "+wyhash",
+    "turn1_instructions": 3013610,
+    "turn1_tokens": 4573101,
+    "turn2_instructions": 498338,
+    "turn2_tokens": 749945,
+    "session_instructions": 4101891,
+    "session_tokens": 6371432,
+    "session_tokens_saved": 0.3637047906255334,
+    "host_io_same": true,
+    "measured": true
+   },
+   {
+    "step": "+jesc",
+    "turn1_instructions": 2859905,
+    "turn1_tokens": 4410492,
+    "turn2_instructions": 462227,
+    "turn2_tokens": 711545,
+    "session_instructions": 3899487,
+    "session_tokens": 6157144,
+    "session_tokens_saved": 0.38510507047258125,
+    "host_io_same": true,
+    "measured": true
+   },
+   {
+    "step": "+eql",
+    "turn1_instructions": 2754155,
+    "turn1_tokens": 4238821,
+    "turn2_instructions": 454403,
+    "turn2_tokens": 698920,
+    "session_instructions": 3781451,
+    "session_tokens": 5965567,
+    "session_tokens_saved": 0.4042372729862912,
+    "host_io_same": true,
+    "measured": true
+   },
+   {
+    "step": "+ascii",
+    "turn1_instructions": 2667728,
+    "turn1_tokens": 4143058,
+    "turn2_instructions": 432536,
+    "turn2_tokens": 674590,
+    "session_instructions": 3668402,
+    "session_tokens": 5840239,
+    "session_tokens_saved": 0.41675339275347745,
+    "host_io_same": true,
+    "measured": true
+   },
+   {
+    "step": "+bcopy",
+    "turn1_instructions": 2635553,
+    "turn1_tokens": 4082088,
+    "turn2_instructions": 425916,
+    "turn2_tokens": 662055,
+    "session_instructions": 3605567,
+    "session_tokens": 5721136,
+    "session_tokens_saved": 0.4286478410222696,
+    "host_io_same": true,
+    "measured": true
+   },
+   {
+    "step": "+memchr",
+    "turn1_instructions": 2587333,
+    "turn1_tokens": 4026704,
+    "turn2_instructions": 419476,
+    "turn2_tokens": 654661,
+    "session_instructions": 3534817,
+    "session_tokens": 5639872,
+    "session_tokens_saved": 0.43676342538299207,
+    "host_io_same": true,
+    "measured": true
+   },
+   {
+    "step": "+set",
+    "turn1_instructions": 2551822,
+    "turn1_tokens": 3998423,
+    "turn2_instructions": 414140,
+    "turn2_tokens": 650290,
+    "session_instructions": 3479409,
+    "session_tokens": 5597757,
+    "session_tokens_saved": 0.44096932018698676,
+    "host_io_same": true,
+    "measured": true
+   }
+  ],
+  "24": [
+   {
+    "step": "baseline",
+    "turn1_instructions": 5648040,
+    "turn1_tokens": 8301632,
+    "turn2_instructions": 801217,
+    "turn2_tokens": 1090499,
+    "session_instructions": 7701699,
+    "session_tokens": 11355546,
+    "session_tokens_saved": 0.0,
+    "host_io_same": true,
+    "measured": true
+   },
+   {
+    "step": "+move",
+    "turn1_instructions": 4776739,
+    "turn1_tokens": 7320640,
+    "turn2_instructions": 646202,
+    "turn2_tokens": 917608,
+    "session_instructions": 6103602,
+    "session_tokens": 9422678,
+    "session_tokens_saved": 0.17021356789008646,
+    "host_io_same": true,
+    "measured": true
+   },
+   {
+    "step": "+tokest",
+    "turn1_instructions": 4336610,
+    "turn1_tokens": 6867094,
+    "turn2_instructions": 534614,
+    "turn2_tokens": 802635,
+    "session_instructions": 5551885,
+    "session_tokens": 8854159,
+    "session_tokens_saved": 0.2202788839920159,
+    "host_io_same": true,
+    "measured": true
+   },
+   {
+    "step": "+sha",
+    "turn1_instructions": 3831896,
+    "turn1_tokens": 5692087,
+    "turn2_instructions": 534614,
+    "turn2_tokens": 802635,
+    "session_instructions": 5047171,
+    "session_tokens": 7679152,
+    "session_tokens_saved": 0.3237531687159737,
+    "host_io_same": true,
+    "measured": true
+   },
+   {
+    "step": "+jscan",
+    "turn1_instructions": 3642382,
+    "turn1_tokens": 5444472,
+    "turn2_instructions": 516336,
+    "turn2_tokens": 778708,
+    "session_instructions": 4788822,
+    "session_tokens": 7340744,
+    "session_tokens_saved": 0.3535542896836489,
+    "host_io_same": true,
+    "measured": true
+   },
+   {
+    "step": "+maskp",
+    "turn1_instructions": 3370745,
+    "turn1_tokens": 5146543,
+    "turn2_instructions": 516336,
+    "turn2_tokens": 778708,
+    "session_instructions": 4517185,
+    "session_tokens": 7042815,
+    "session_tokens_saved": 0.37979072076322884,
+    "host_io_same": true,
+    "measured": true
+   },
+   {
+    "step": "+wyhash",
+    "turn1_instructions": 3281547,
+    "turn1_tokens": 4999121,
+    "turn2_instructions": 500340,
+    "turn2_tokens": 752333,
+    "session_instructions": 4373405,
+    "session_tokens": 6805097,
+    "session_tokens_saved": 0.40072480882909545,
+    "host_io_same": true,
+    "measured": true
+   },
+   {
+    "step": "+jesc",
+    "turn1_instructions": 3124890,
+    "turn1_tokens": 4833454,
+    "turn2_instructions": 463582,
+    "turn2_tokens": 713270,
+    "session_instructions": 4167402,
+    "session_tokens": 6587088,
+    "session_tokens_saved": 0.4199232692113616,
+    "host_io_same": true,
+    "measured": true
+   },
+   {
+    "step": "+eql",
+    "turn1_instructions": 3011248,
+    "turn1_tokens": 4649873,
+    "turn2_instructions": 455758,
+    "turn2_tokens": 700615,
+    "session_instructions": 4041474,
+    "session_tokens": 6383571,
+    "session_tokens_saved": 0.43784552499721285,
+    "host_io_same": true,
+    "measured": true
+   },
+   {
+    "step": "+ascii",
+    "turn1_instructions": 2922937,
+    "turn1_tokens": 4551980,
+    "turn2_instructions": 433489,
+    "turn2_tokens": 675836,
+    "session_instructions": 3926139,
+    "session_tokens": 6255664,
+    "session_tokens_saved": 0.44910936030728954,
+    "host_io_same": true,
+    "measured": true
+   },
+   {
+    "step": "+bcopy",
+    "turn1_instructions": 2890762,
+    "turn1_tokens": 4491010,
+    "turn2_instructions": 426869,
+    "turn2_tokens": 663301,
+    "session_instructions": 3863304,
+    "session_tokens": 6136561,
+    "session_tokens_saved": 0.45959789163814757,
+    "host_io_same": true,
+    "measured": true
+   },
+   {
+    "step": "+memchr",
+    "turn1_instructions": 2842492,
+    "turn1_tokens": 4435568,
+    "turn2_instructions": 420429,
+    "turn2_tokens": 655907,
+    "session_instructions": 3792504,
+    "session_tokens": 6055239,
+    "session_tokens_saved": 0.4667593262358323,
+    "host_io_same": true,
+    "measured": true
+   },
+   {
+    "step": "+set",
+    "turn1_instructions": 2796993,
+    "turn1_tokens": 4399339,
+    "turn2_instructions": 415119,
+    "turn2_tokens": 651575,
+    "session_instructions": 3727134,
+    "session_tokens": 6005215,
+    "session_tokens_saved": 0.471164574561188,
+    "host_io_same": true,
+    "measured": true
+   }
+  ]
+ },
+ "alone": {
+  "11": [
+   {
+    "unit": "move",
+    "session_tokens": 8149798,
+    "saved": 1863529,
+    "saved_share": 0.18610487802905074
+   },
+   {
+    "unit": "tokest",
+    "session_tokens": 9451442,
+    "saved": 561885,
+    "saved_share": 0.056113717249022255
+   },
+   {
+    "unit": "sha",
+    "session_tokens": 9657403,
+    "saved": 355924,
+    "saved_share": 0.03554502913966562
+   },
+   {
+    "unit": "jscan",
+    "session_tokens": 9684395,
+    "saved": 328932,
+    "saved_share": 0.03284942157586579
+   },
+   {
+    "unit": "maskp",
+    "session_tokens": 9715398,
+    "saved": 297929,
+    "saved_share": 0.029753247846594832
+   },
+   {
+    "unit": "wyhash",
+    "session_tokens": 9779631,
+    "saved": 233696,
+    "saved_share": 0.023338496785334173
+   },
+   {
+    "unit": "jesc",
+    "session_tokens": 9799039,
+    "saved": 214288,
+    "saved_share": 0.021400279847047843
+   },
+   {
+    "unit": "eql",
+    "session_tokens": 9821750,
+    "saved": 191577,
+    "saved_share": 0.01913220251370995
+   },
+   {
+    "unit": "ascii",
+    "session_tokens": 9887999,
+    "saved": 125328,
+    "saved_share": 0.012516119767186251
+   },
+   {
+    "unit": "bcopy",
+    "session_tokens": 9894224,
+    "saved": 119103,
+    "saved_share": 0.011894448268792157
+   },
+   {
+    "unit": "memchr",
+    "session_tokens": 9932063,
+    "saved": 81264,
+    "saved_share": 0.008115584360722461
+   },
+   {
+    "unit": "set",
+    "session_tokens": 9971212,
+    "saved": 42115,
+    "saved_share": 0.004205894803994692
+   }
+  ],
+  "24": [
+   {
+    "unit": "move",
+    "session_tokens": 9422678,
+    "saved": 1932868,
+    "saved_share": 0.17021356789008646
+   },
+   {
+    "unit": "tokest",
+    "session_tokens": 10787027,
+    "saved": 568519,
+    "saved_share": 0.050065316101929436
+   },
+   {
+    "unit": "sha",
+    "session_tokens": 10180539,
+    "saved": 1175007,
+    "saved_share": 0.10347428472395781
+   },
+   {
+    "unit": "jscan",
+    "session_tokens": 11017138,
+    "saved": 338408,
+    "saved_share": 0.029801120967675176
+   },
+   {
+    "unit": "maskp",
+    "session_tokens": 11057617,
+    "saved": 297929,
+    "saved_share": 0.026236431079579958
+   },
+   {
+    "unit": "wyhash",
+    "session_tokens": 11117828,
+    "saved": 237718,
+    "saved_share": 0.02093408806586672
+   },
+   {
+    "unit": "jesc",
+    "session_tokens": 11137537,
+    "saved": 218009,
+    "saved_share": 0.019198460382266025
+   },
+   {
+    "unit": "eql",
+    "session_tokens": 11152029,
+    "saved": 203517,
+    "saved_share": 0.01792225578585127
+   },
+   {
+    "unit": "ascii",
+    "session_tokens": 11227639,
+    "saved": 127907,
+    "saved_share": 0.011263835310076686
+   },
+   {
+    "unit": "bcopy",
+    "session_tokens": 11236443,
+    "saved": 119103,
+    "saved_share": 0.01048853133085803
+   },
+   {
+    "unit": "memchr",
+    "session_tokens": 11274224,
+    "saved": 81322,
+    "saved_share": 0.007161434597684702
+   },
+   {
+    "unit": "set",
+    "session_tokens": 11305522,
+    "saved": 50024,
+    "saved_share": 0.004405248325355715
+   }
+  ]
+ },
+ "verify": {
+  "11": {
+   "turns": [
+    {
+     "instructions": 2551822,
+     "tokens": 3998423
+    },
+    {
+     "instructions": 414140,
+     "tokens": 650290
+    }
+   ],
+   "rv_instructions_total": 3479409,
+   "tokens_total": 5597757,
+   "host_io_sha256": "f598381a48e5faa9dc5b3161d6309740b1c49b3f9f3b5a18dd35cbd931d7a68c",
+   "final_repo_sha256": "7ac750a9eff1eedb1c852e83f1c67350c6d400a1810cb7b75f0887cbbc60786b",
+   "violations": {
+    "reg_reads": 0,
+    "mem_reads": 0,
+    "first_pc": "0x0",
+    "what": 0,
+    "frozen_stores": 0
+   },
+   "check_fail": [
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0
+   ],
+   "unit_stats": [
+    {
+     "unit": "move",
+     "trigger": "memmove",
+     "pc": "0x208f4d8",
+     "fires": 7763,
+     "declines": 0,
+     "unit_tokens": 346288,
+     "replaced_instructions": 983326,
+     "replaced_tokens": 1478021,
+     "bytes": 620668,
+     "check_failures": 0
+    },
+    {
+     "unit": "move",
+     "trigger": "memcpy",
+     "pc": "0x208f2fc",
+     "fires": 558,
+     "declines": 0,
+     "unit_tokens": 215233,
+     "replaced_instructions": 565102,
+     "replaced_tokens": 947029,
+     "bytes": 422268,
+     "check_failures": 0
+    },
+    {
+     "unit": "set",
+     "trigger": "memset",
+     "pc": "0x208f610",
+     "fires": 473,
+     "declines": 0,
+     "unit_tokens": 25560,
+     "replaced_instructions": 55408,
+     "replaced_tokens": 67675,
+     "bytes": 97678,
+     "check_failures": 0
+    },
+    {
+     "unit": "eql",
+     "trigger": "mem.eqlBytes",
+     "pc": "0x266616c",
+     "fires": 2637,
+     "declines": 0,
+     "unit_tokens": 10572,
+     "replaced_instructions": 118036,
+     "replaced_tokens": 202149,
+     "bytes": 6595,
+     "check_failures": 0
+    },
+    {
+     "unit": "sha",
+     "trigger": "crypto.sha2 SHA-256 round (block compression)",
+     "pc": "0x25a8ad4",
+     "fires": 37,
+     "declines": 0,
+     "unit_tokens": 15059,
+     "replaced_instructions": 153069,
+     "replaced_tokens": 370983,
+     "bytes": 2368,
+     "check_failures": 0
+    },
+    {
+     "unit": "wyhash",
+     "trigger": "hash.wyhash.Wyhash.hash",
+     "pc": "0x262b4c0",
+     "fires": 892,
+     "declines": 0,
+     "unit_tokens": 46819,
+     "replaced_instructions": 141442,
+     "replaced_tokens": 280515,
+     "bytes": 6893,
+     "check_failures": 0
+    },
+    {
+     "unit": "tokest",
+     "trigger": "measureProviderRequest whitespace-run loop",
+     "pc": "0x22c4574",
+     "fires": 14,
+     "declines": 0,
+     "unit_tokens": 18326,
+     "replaced_instructions": 545263,
+     "replaced_tokens": 580211,
+     "bytes": 34948,
+     "check_failures": 0
+    },
+    {
+     "unit": "tokest",
+     "trigger": "measureProviderRequest whitespace-run loop (2nd copy)",
+     "pc": "0x22c5318",
+     "fires": 0,
+     "declines": 0,
+     "unit_tokens": 0,
+     "replaced_instructions": 0,
+     "replaced_tokens": 0,
+     "bytes": 0,
+     "check_failures": 0
+    },
+    {
+     "unit": "jscan",
+     "trigger": "json.Scanner.next string loop",
+     "pc": "0x263ffbc",
+     "fires": 1047,
+     "declines": 1133,
+     "unit_tokens": 7393,
+     "replaced_instructions": 251089,
+     "replaced_tokens": 336325,
+     "bytes": 13072,
+     "check_failures": 0
+    },
+    {
+     "unit": "jesc",
+     "trigger": "json.Stringify.encodeJsonString plain-run loop",
+     "pc": "0x263dea4",
+     "fires": 1908,
+     "declines": 1975,
+     "unit_tokens": 11409,
+     "replaced_instructions": 202404,
+     "replaced_tokens": 225697,
+     "bytes": 23293,
+     "check_failures": 0
+    },
+    {
+     "unit": "ascii",
+     "trigger": "json.Stringify.write ASCII-run loop",
+     "pc": "0x263d664",
+     "fires": 907,
+     "declines": 0,
+     "unit_tokens": 6109,
+     "replaced_instructions": 113049,
+     "replaced_tokens": 131437,
+     "bytes": 18388,
+     "check_failures": 0
+    },
+    {
+     "unit": "maskp",
+     "trigger": "text_utils.maskSecrets secret_prefixes probe",
+     "pc": "0x24d9e44",
+     "fires": 1091,
+     "declines": 0,
+     "unit_tokens": 3156,
+     "replaced_instructions": 271637,
+     "replaced_tokens": 301085,
+     "bytes": 2195,
+     "check_failures": 0
+    },
+    {
+     "unit": "memchr",
+     "trigger": "acp.jsonrpc.writeOneLine find-newline loop",
+     "pc": "0x20ce7a8",
+     "fires": 26,
+     "declines": 0,
+     "unit_tokens": 1818,
+     "replaced_instructions": 35375,
+     "replaced_tokens": 42450,
+     "bytes": 7075,
+     "check_failures": 0
+    },
+    {
+     "unit": "memchr",
+     "trigger": "acp.jsonrpc.writeOneLine find-CR loop",
+     "pc": "0x20ce7d0",
+     "fires": 26,
+     "declines": 0,
+     "unit_tokens": 1818,
+     "replaced_instructions": 35375,
+     "replaced_tokens": 42450,
+     "bytes": 7075,
+     "check_failures": 0
+    },
+    {
+     "unit": "bcopy",
+     "trigger": "c.malloc.realloc byte-copy loop",
+     "pc": "0x21e44a0",
+     "fires": 86,
+     "declines": 0,
+     "unit_tokens": 6567,
+     "replaced_instructions": 62835,
+     "replaced_tokens": 125670,
+     "bytes": 12567,
+     "check_failures": 0
+    }
+   ],
+   "trap": [],
+   "host_io_same_as_baseline": true
+  },
+  "24": {
+   "turns": [
+    {
+     "instructions": 2796993,
+     "tokens": 4399339
+    },
+    {
+     "instructions": 415119,
+     "tokens": 651575
+    }
+   ],
+   "rv_instructions_total": 3727134,
+   "tokens_total": 6005215,
+   "host_io_sha256": "0802d383dbcebdba02096850e0c854b1895026e136e0fb92f49e05103c956fd7",
+   "final_repo_sha256": "7ac750a9eff1eedb1c852e83f1c67350c6d400a1810cb7b75f0887cbbc60786b",
+   "violations": {
+    "reg_reads": 0,
+    "mem_reads": 0,
+    "first_pc": "0x0",
+    "what": 0,
+    "frozen_stores": 0
+   },
+   "check_fail": [
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0
+   ],
+   "unit_stats": [
+    {
+     "unit": "move",
+     "trigger": "memmove",
+     "pc": "0x208f918",
+     "fires": 8474,
+     "declines": 0,
+     "unit_tokens": 354743,
+     "replaced_instructions": 1025108,
+     "replaced_tokens": 1543014,
+     "bytes": 632696,
+     "check_failures": 0
+    },
+    {
+     "unit": "move",
+     "trigger": "memcpy",
+     "pc": "0x208f73c",
+     "fires": 571,
+     "declines": 0,
+     "unit_tokens": 217364,
+     "replaced_instructions": 572989,
+     "replaced_tokens": 961961,
+     "bytes": 426440,
+     "check_failures": 0
+    },
+    {
+     "unit": "set",
+     "trigger": "memset",
+     "pc": "0x208fa50",
+     "fires": 567,
+     "declines": 0,
+     "unit_tokens": 29800,
+     "replaced_instructions": 65370,
+     "replaced_tokens": 79824,
+     "bytes": 113961,
+     "check_failures": 0
+    },
+    {
+     "unit": "eql",
+     "trigger": "mem.eqlBytes",
+     "pc": "0x26733d8",
+     "fires": 2844,
+     "declines": 0,
+     "unit_tokens": 11312,
+     "replaced_instructions": 125928,
+     "replaced_tokens": 214829,
+     "bytes": 7313,
+     "check_failures": 0
+    },
+    {
+     "unit": "sha",
+     "trigger": "crypto.sha2 SHA-256 round (block compression)",
+     "pc": "0x25b5d70",
+     "fires": 122,
+     "declines": 0,
+     "unit_tokens": 49654,
+     "replaced_instructions": 504714,
+     "replaced_tokens": 1224661,
+     "bytes": 7808,
+     "check_failures": 0
+    },
+    {
+     "unit": "wyhash",
+     "trigger": "hash.wyhash.Wyhash.hash",
+     "pc": "0x263913c",
+     "fires": 907,
+     "declines": 0,
+     "unit_tokens": 47394,
+     "replaced_instructions": 143780,
+     "replaced_tokens": 285112,
+     "bytes": 6992,
+     "check_failures": 0
+    },
+    {
+     "unit": "tokest",
+     "trigger": "measureProviderRequest whitespace-run loop",
+     "pc": "0x22bf6c0",
+     "fires": 14,
+     "declines": 0,
+     "unit_tokens": 18533,
+     "replaced_instructions": 551717,
+     "replaced_tokens": 587052,
+     "bytes": 35335,
+     "check_failures": 0
+    },
+    {
+     "unit": "tokest",
+     "trigger": "measureProviderRequest whitespace-run loop (2nd copy)",
+     "pc": "0x22c0464",
+     "fires": 0,
+     "declines": 0,
+     "unit_tokens": 0,
+     "replaced_instructions": 0,
+     "replaced_tokens": 0,
+     "bytes": 0,
+     "check_failures": 0
+    },
+    {
+     "unit": "jscan",
+     "trigger": "json.Scanner.next string loop",
+     "pc": "0x264c040",
+     "fires": 1069,
+     "declines": 1156,
+     "unit_tokens": 7575,
+     "replaced_instructions": 258349,
+     "replaced_tokens": 345983,
+     "bytes": 13450,
+     "check_failures": 0
+    },
+    {
+     "unit": "jesc",
+     "trigger": "json.Stringify.encodeJsonString plain-run loop",
+     "pc": "0x264a154",
+     "fires": 1974,
+     "declines": 1987,
+     "unit_tokens": 11650,
+     "replaced_instructions": 206003,
+     "replaced_tokens": 229659,
+     "bytes": 23656,
+     "check_failures": 0
+    },
+    {
+     "unit": "ascii",
+     "trigger": "json.Stringify.write ASCII-run loop",
+     "pc": "0x2649914",
+     "fires": 907,
+     "declines": 0,
+     "unit_tokens": 6197,
+     "replaced_instructions": 115335,
+     "replaced_tokens": 134104,
+     "bytes": 18769,
+     "check_failures": 0
+    },
+    {
+     "unit": "maskp",
+     "trigger": "text_utils.maskSecrets secret_prefixes probe",
+     "pc": "0x24d8958",
+     "fires": 1091,
+     "declines": 0,
+     "unit_tokens": 3156,
+     "replaced_instructions": 271637,
+     "replaced_tokens": 301085,
+     "bytes": 2195,
+     "check_failures": 0
+    },
+    {
+     "unit": "memchr",
+     "trigger": "acp.jsonrpc.writeOneLine find-newline loop",
+     "pc": "0x20cf5e8",
+     "fires": 26,
+     "declines": 0,
+     "unit_tokens": 1819,
+     "replaced_instructions": 35400,
+     "replaced_tokens": 42480,
+     "bytes": 7080,
+     "check_failures": 0
+    },
+    {
+     "unit": "memchr",
+     "trigger": "acp.jsonrpc.writeOneLine find-CR loop",
+     "pc": "0x20cf610",
+     "fires": 26,
+     "declines": 0,
+     "unit_tokens": 1819,
+     "replaced_instructions": 35400,
+     "replaced_tokens": 42480,
+     "bytes": 7080,
+     "check_failures": 0
+    },
+    {
+     "unit": "bcopy",
+     "trigger": "c.malloc.realloc byte-copy loop",
+     "pc": "0x21e3a98",
+     "fires": 86,
+     "declines": 0,
+     "unit_tokens": 6567,
+     "replaced_instructions": 62835,
+     "replaced_tokens": 125670,
+     "bytes": 12567,
+     "check_failures": 0
+    }
+   ],
+   "trap": [],
+   "host_io_same_as_baseline": true
+  }
+ },
+ "ir_built": {
+  "11": {
+   "turns": [
+    {
+     "instructions": 4840806,
+     "tokens": 6793293
+    },
+    {
+     "instructions": 784355,
+     "tokens": 1069541
+    }
+   ],
+   "rv_instructions_total": 6855423,
+   "tokens_total": 9793637,
+   "host_io_sha256": "f598381a48e5faa9dc5b3161d6309740b1c49b3f9f3b5a18dd35cbd931d7a68c",
+   "violations": {
+    "reg_reads": 0,
+    "mem_reads": 0,
+    "first_pc": "0x0",
+    "what": 0,
+    "frozen_stores": 0
+   },
+   "check_fail": [
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0
+   ],
+   "unit_stats": [
+    {
+     "unit": "move_ir",
+     "trigger": "memmove (circuit built in the core IR)",
+     "pc": "0x208f4d8",
+     "fires": 677,
+     "declines": 7086,
+     "unit_tokens": 23557,
+     "replaced_instructions": 53069,
+     "replaced_tokens": 72907,
+     "bytes": 29604,
+     "check_failures": 0
+    },
+    {
+     "unit": "eql_ir",
+     "trigger": "mem.eqlBytes (circuit built in the core IR)",
+     "pc": "0x2666178",
+     "fires": 962,
+     "declines": 662,
+     "unit_tokens": 14662,
+     "replaced_instructions": 104327,
+     "replaced_tokens": 185002,
+     "bytes": 5888,
+     "check_failures": 0
+    }
+   ]
+  },
+  "24": {
+   "turns": [
+    {
+     "instructions": 5507458,
+     "tokens": 8102571
+    },
+    {
+     "instructions": 787502,
+     "tokens": 1073192
+    }
+   ],
+   "rv_instructions_total": 7535429,
+   "tokens_total": 11124474,
+   "host_io_sha256": "0802d383dbcebdba02096850e0c854b1895026e136e0fb92f49e05103c956fd7",
+   "violations": {
+    "reg_reads": 0,
+    "mem_reads": 0,
+    "first_pc": "0x0",
+    "what": 0,
+    "frozen_stores": 0
+   },
+   "check_fail": [
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0
+   ],
+   "unit_stats": [
+    {
+     "unit": "move_ir",
+     "trigger": "memmove (circuit built in the core IR)",
+     "pc": "0x208f918",
+     "fires": 714,
+     "declines": 7760,
+     "unit_tokens": 24843,
+     "replaced_instructions": 56054,
+     "replaced_tokens": 77157,
+     "bytes": 31220,
+     "check_failures": 0
+    },
+    {
+     "unit": "eql_ir",
+     "trigger": "mem.eqlBytes (circuit built in the core IR)",
+     "pc": "0x26733e4",
+     "fires": 1037,
+     "declines": 693,
+     "unit_tokens": 15999,
+     "replaced_instructions": 110216,
+     "replaced_tokens": 194757,
+     "bytes": 6444,
+     "check_failures": 0
+    }
+   ]
+  }
+ },
+ "fuzz": [
+  {
+   "elf": "C:\\Users\\kesha\\AppData\\Local\\Temp\\claude\\8450bc6024565175\\d1310d09-a8d6-4b26-affc-4f555296c2cb\\scratchpad\\it\\b_fast_o2_check_b0\\fx-fastcopy.elf",
+   "unit": "memmove",
+   "cases": 100000,
+   "fired": 100000,
+   "declined": 0,
+   "errors": 0,
+   "first_errors": [],
+   "orig_instructions": 18578946,
+   "orig_tokens": 34944136,
+   "unit_tokens": 4680849,
+   "seconds": 10.6
+  },
+  {
+   "elf": "C:\\Users\\kesha\\AppData\\Local\\Temp\\claude\\8450bc6024565175\\d1310d09-a8d6-4b26-affc-4f555296c2cb\\scratchpad\\it\\b_fast_o2_check_b0\\fx-fastcopy.elf",
+   "unit": "memcpy",
+   "cases": 100000,
+   "fired": 87890,
+   "declined": 12110,
+   "errors": 0,
+   "first_errors": [],
+   "orig_instructions": 13976710,
+   "orig_tokens": 26235035,
+   "unit_tokens": 3684710,
+   "seconds": 9.1
+  },
+  {
+   "elf": "C:\\Users\\kesha\\AppData\\Local\\Temp\\claude\\8450bc6024565175\\d1310d09-a8d6-4b26-affc-4f555296c2cb\\scratchpad\\it\\b_fast_o2_check_b0\\fx-fastcopy.elf",
+   "unit": "memset",
+   "cases": 100000,
+   "fired": 100000,
+   "declined": 0,
+   "errors": 0,
+   "first_errors": [],
+   "orig_instructions": 8045273,
+   "orig_tokens": 11178179,
+   "unit_tokens": 2515989,
+   "seconds": 9.1
+  },
+  {
+   "elf": "C:\\Users\\kesha\\AppData\\Local\\Temp\\claude\\8450bc6024565175\\d1310d09-a8d6-4b26-affc-4f555296c2cb\\scratchpad\\it\\b_fast_o2_check_b0\\fx-fastcopy.elf",
+   "unit": "mem.eqlBytes",
+   "cases": 100000,
+   "fired": 100000,
+   "declined": 0,
+   "errors": 0,
+   "first_errors": [],
+   "orig_instructions": 18807482,
+   "orig_tokens": 31567717,
+   "unit_tokens": 1647684,
+   "seconds": 5.6
+  },
+  {
+   "elf": "C:\\Users\\kesha\\AppData\\Local\\Temp\\claude\\8450bc6024565175\\d1310d09-a8d6-4b26-affc-4f555296c2cb\\scratchpad\\it\\b_fast_o2_check_b0\\fx-fastcopy.elf",
+   "unit": "crypto.sha2 SHA-256 round (block compression)",
+   "cases": 100000,
+   "fired": 100000,
+   "declined": 0,
+   "errors": 0,
+   "first_errors": [],
+   "orig_instructions": 413700000,
+   "orig_tokens": 1016909433,
+   "unit_tokens": 40700000,
+   "seconds": 46.6
+  },
+  {
+   "elf": "C:\\Users\\kesha\\AppData\\Local\\Temp\\claude\\8450bc6024565175\\d1310d09-a8d6-4b26-affc-4f555296c2cb\\scratchpad\\it\\b_fast_o2_check_b0\\fx-fastcopy.elf",
+   "unit": "hash.wyhash.Wyhash.hash",
+   "cases": 100000,
+   "fired": 100000,
+   "declined": 0,
+   "errors": 0,
+   "first_errors": [],
+   "orig_instructions": 43329183,
+   "orig_tokens": 86134317,
+   "unit_tokens": 16939259,
+   "seconds": 12.3
+  },
+  {
+   "elf": "C:\\Users\\kesha\\AppData\\Local\\Temp\\claude\\8450bc6024565175\\d1310d09-a8d6-4b26-affc-4f555296c2cb\\scratchpad\\it\\b_fast_o2_check_b0\\fx-fastcopy.elf",
+   "unit": "measureProviderRequest whitespace-run loop",
+   "cases": 100000,
+   "fired": 75246,
+   "declined": 24754,
+   "errors": 0,
+   "first_errors": [],
+   "orig_instructions": 198443266,
+   "orig_tokens": 209631091,
+   "unit_tokens": 6120551,
+   "seconds": 151.6
+  },
+  {
+   "elf": "C:\\Users\\kesha\\AppData\\Local\\Temp\\claude\\8450bc6024565175\\d1310d09-a8d6-4b26-affc-4f555296c2cb\\scratchpad\\it\\b_fast_o2_check_b0\\fx-fastcopy.elf",
+   "unit": "json.Scanner.next string loop",
+   "cases": 100000,
+   "fired": 62759,
+   "declined": 37241,
+   "errors": 1,
+   "first_errors": [
+    "reference writes outside the windows: 0x3ffffc"
+   ],
+   "orig_instructions": 14138360,
+   "orig_tokens": 18461400,
+   "unit_tokens": 402986,
+   "seconds": 230.8
+  },
+  {
+   "elf": "C:\\Users\\kesha\\AppData\\Local\\Temp\\claude\\8450bc6024565175\\d1310d09-a8d6-4b26-affc-4f555296c2cb\\scratchpad\\it\\b_fast_o2_check_b0\\fx-fastcopy.elf",
+   "unit": "json.Stringify.encodeJsonString plain-run loop",
+   "cases": 100000,
+   "fired": 74939,
+   "declined": 25061,
+   "errors": 0,
+   "first_errors": [],
+   "orig_instructions": 8500804,
+   "orig_tokens": 9339092,
+   "unit_tokens": 474835,
+   "seconds": 222.7
+  },
+  {
+   "elf": "C:\\Users\\kesha\\AppData\\Local\\Temp\\claude\\8450bc6024565175\\d1310d09-a8d6-4b26-affc-4f555296c2cb\\scratchpad\\it\\b_fast_o2_check_b0\\fx-fastcopy.elf",
+   "unit": "json.Stringify.write ASCII-run loop",
+   "cases": 100000,
+   "fired": 100000,
+   "declined": 0,
+   "errors": 0,
+   "first_errors": [],
+   "orig_instructions": 31415088,
+   "orig_tokens": 36623172,
+   "unit_tokens": 1656703,
+   "seconds": 204.0
+  },
+  {
+   "elf": "C:\\Users\\kesha\\AppData\\Local\\Temp\\claude\\8450bc6024565175\\d1310d09-a8d6-4b26-affc-4f555296c2cb\\scratchpad\\it\\b_fast_o2_check_b0\\fx-fastcopy.elf",
+   "unit": "text_utils.maskSecrets secret_prefixes probe",
+   "cases": 100000,
+   "fired": 93282,
+   "declined": 6718,
+   "errors": 0,
+   "first_errors": [],
+   "orig_instructions": 23344970,
+   "orig_tokens": 26334961,
+   "unit_tokens": 408643,
+   "seconds": 17.6
+  },
+  {
+   "elf": "C:\\Users\\kesha\\AppData\\Local\\Temp\\claude\\8450bc6024565175\\d1310d09-a8d6-4b26-affc-4f555296c2cb\\scratchpad\\it\\b_fast_o2_check_b0\\fx-fastcopy.elf",
+   "unit": "acp.jsonrpc.writeOneLine find-newline loop",
+   "cases": 100000,
+   "fired": 99016,
+   "declined": 984,
+   "errors": 0,
+   "first_errors": [],
+   "orig_instructions": 24732632,
+   "orig_tokens": 29654794,
+   "unit_tokens": 1491603,
+   "seconds": 81.3
+  },
+  {
+   "elf": "C:\\Users\\kesha\\AppData\\Local\\Temp\\claude\\8450bc6024565175\\d1310d09-a8d6-4b26-affc-4f555296c2cb\\scratchpad\\it\\b_fast_o2_check_b0\\fx-fastcopy.elf",
+   "unit": "acp.jsonrpc.writeOneLine find-CR loop",
+   "cases": 100000,
+   "fired": 99009,
+   "declined": 991,
+   "errors": 0,
+   "first_errors": [],
+   "orig_instructions": 24722580,
+   "orig_tokens": 29642870,
+   "unit_tokens": 1490784,
+   "seconds": 81.3
+  },
+  {
+   "elf": "C:\\Users\\kesha\\AppData\\Local\\Temp\\claude\\8450bc6024565175\\d1310d09-a8d6-4b26-affc-4f555296c2cb\\scratchpad\\it\\b_fast_o2_check_b0\\fx-fastcopy.elf",
+   "unit": "c.malloc.realloc byte-copy loop",
+   "cases": 100000,
+   "fired": 84087,
+   "declined": 15913,
+   "errors": 0,
+   "first_errors": [],
+   "orig_instructions": 33343985,
+   "orig_tokens": 66687970,
+   "unit_tokens": 3776133,
+   "seconds": 9.5
+  },
+  {
+   "elf": "C:\\Users\\kesha\\AppData\\Local\\Temp\\claude\\8450bc6024565175\\d1310d09-a8d6-4b26-affc-4f555296c2cb\\scratchpad\\it\\b_fast_o2_check_b0\\fx-fastcopy.elf",
+   "unit": "memmove (circuit built in the core IR)",
+   "cases": 100000,
+   "fired": 33259,
+   "declined": 66741,
+   "errors": 0,
+   "first_errors": [],
+   "orig_instructions": 2514697,
+   "orig_tokens": 3964581,
+   "unit_tokens": 1130690,
+   "seconds": 5.8
+  },
+  {
+   "elf": "C:\\Users\\kesha\\AppData\\Local\\Temp\\claude\\8450bc6024565175\\d1310d09-a8d6-4b26-affc-4f555296c2cb\\scratchpad\\it\\b_fast_o2_check_b0\\fx-fastcopy.elf",
+   "unit": "mem.eqlBytes (circuit built in the core IR)",
+   "cases": 100000,
+   "fired": 66945,
+   "declined": 33055,
+   "errors": 0,
+   "first_errors": [],
+   "orig_instructions": 6161250,
+   "orig_tokens": 10385946,
+   "unit_tokens": 1111683,
+   "seconds": 5.3
+  },
+  {
+   "elf": "C:\\Users\\kesha\\AppData\\Local\\Temp\\claude\\8450bc6024565175\\d1310d09-a8d6-4b26-affc-4f555296c2cb\\scratchpad\\it\\b_fast_o2_check_b0\\fx-fastcopy.elf",
+   "unit": "json.Scanner.next string loop",
+   "cases": 100000,
+   "fired": 63565,
+   "declined": 36435,
+   "errors": 0,
+   "first_errors": [],
+   "orig_instructions": 14436184,
+   "orig_tokens": 18848957,
+   "unit_tokens": 409281,
+   "seconds": 261.0
+  },
+  {
+   "elf": "C:\\Users\\kesha\\AppData\\Local\\Temp\\claude\\8450bc6024565175\\d1310d09-a8d6-4b26-affc-4f555296c2cb\\scratchpad\\it\\b_tools_fast_o2_check_b0\\fx-fastcopy.elf",
+   "unit": "memmove",
+   "cases": 20000,
+   "fired": 20000,
+   "declined": 0,
+   "errors": 0,
+   "first_errors": [],
+   "orig_instructions": 3710075,
+   "orig_tokens": 6982317,
+   "unit_tokens": 934214,
+   "seconds": 2.4
+  },
+  {
+   "elf": "C:\\Users\\kesha\\AppData\\Local\\Temp\\claude\\8450bc6024565175\\d1310d09-a8d6-4b26-affc-4f555296c2cb\\scratchpad\\it\\b_tools_fast_o2_check_b0\\fx-fastcopy.elf",
+   "unit": "memcpy",
+   "cases": 20000,
+   "fired": 17534,
+   "declined": 2466,
+   "errors": 0,
+   "first_errors": [],
+   "orig_instructions": 2748320,
+   "orig_tokens": 5150505,
+   "unit_tokens": 719316,
+   "seconds": 2.1
+  },
+  {
+   "elf": "C:\\Users\\kesha\\AppData\\Local\\Temp\\claude\\8450bc6024565175\\d1310d09-a8d6-4b26-affc-4f555296c2cb\\scratchpad\\it\\b_tools_fast_o2_check_b0\\fx-fastcopy.elf",
+   "unit": "memset",
+   "cases": 20000,
+   "fired": 20000,
+   "declined": 0,
+   "errors": 0,
+   "first_errors": [],
+   "orig_instructions": 1612936,
+   "orig_tokens": 2240465,
+   "unit_tokens": 505691,
+   "seconds": 2.4
+  },
+  {
+   "elf": "C:\\Users\\kesha\\AppData\\Local\\Temp\\claude\\8450bc6024565175\\d1310d09-a8d6-4b26-affc-4f555296c2cb\\scratchpad\\it\\b_tools_fast_o2_check_b0\\fx-fastcopy.elf",
+   "unit": "mem.eqlBytes",
+   "cases": 20000,
+   "fired": 20000,
+   "declined": 0,
+   "errors": 0,
+   "first_errors": [],
+   "orig_instructions": 3792960,
+   "orig_tokens": 6367162,
+   "unit_tokens": 332290,
+   "seconds": 1.4
+  },
+  {
+   "elf": "C:\\Users\\kesha\\AppData\\Local\\Temp\\claude\\8450bc6024565175\\d1310d09-a8d6-4b26-affc-4f555296c2cb\\scratchpad\\it\\b_tools_fast_o2_check_b0\\fx-fastcopy.elf",
+   "unit": "crypto.sha2 SHA-256 round (block compression)",
+   "cases": 20000,
+   "fired": 20000,
+   "declined": 0,
+   "errors": 0,
+   "first_errors": [],
+   "orig_instructions": 82740000,
+   "orig_tokens": 203370137,
+   "unit_tokens": 8140000,
+   "seconds": 10.7
+  },
+  {
+   "elf": "C:\\Users\\kesha\\AppData\\Local\\Temp\\claude\\8450bc6024565175\\d1310d09-a8d6-4b26-affc-4f555296c2cb\\scratchpad\\it\\b_tools_fast_o2_check_b0\\fx-fastcopy.elf",
+   "unit": "hash.wyhash.Wyhash.hash",
+   "cases": 20000,
+   "fired": 20000,
+   "declined": 0,
+   "errors": 0,
+   "first_errors": [],
+   "orig_instructions": 8653342,
+   "orig_tokens": 17202420,
+   "unit_tokens": 3383013,
+   "seconds": 2.8
+  },
+  {
+   "elf": "C:\\Users\\kesha\\AppData\\Local\\Temp\\claude\\8450bc6024565175\\d1310d09-a8d6-4b26-affc-4f555296c2cb\\scratchpad\\it\\b_tools_fast_o2_check_b0\\fx-fastcopy.elf",
+   "unit": "measureProviderRequest whitespace-run loop",
+   "cases": 20000,
+   "fired": 15063,
+   "declined": 4937,
+   "errors": 0,
+   "first_errors": [],
+   "orig_instructions": 38815876,
+   "orig_tokens": 41009779,
+   "unit_tokens": 1201367,
+   "seconds": 33.6
+  },
+  {
+   "elf": "C:\\Users\\kesha\\AppData\\Local\\Temp\\claude\\8450bc6024565175\\d1310d09-a8d6-4b26-affc-4f555296c2cb\\scratchpad\\it\\b_tools_fast_o2_check_b0\\fx-fastcopy.elf",
+   "unit": "json.Scanner.next string loop",
+   "cases": 20000,
+   "fired": 12653,
+   "declined": 7347,
+   "errors": 0,
+   "first_errors": [],
+   "orig_instructions": 2941462,
+   "orig_tokens": 3840911,
+   "unit_tokens": 82198,
+   "seconds": 51.8
+  },
+  {
+   "elf": "C:\\Users\\kesha\\AppData\\Local\\Temp\\claude\\8450bc6024565175\\d1310d09-a8d6-4b26-affc-4f555296c2cb\\scratchpad\\it\\b_tools_fast_o2_check_b0\\fx-fastcopy.elf",
+   "unit": "json.Stringify.encodeJsonString plain-run loop",
+   "cases": 20000,
+   "fired": 14929,
+   "declined": 5071,
+   "errors": 0,
+   "first_errors": [],
+   "orig_instructions": 1730107,
+   "orig_tokens": 1900245,
+   "unit_tokens": 95446,
+   "seconds": 51.3
+  },
+  {
+   "elf": "C:\\Users\\kesha\\AppData\\Local\\Temp\\claude\\8450bc6024565175\\d1310d09-a8d6-4b26-affc-4f555296c2cb\\scratchpad\\it\\b_tools_fast_o2_check_b0\\fx-fastcopy.elf",
+   "unit": "json.Stringify.write ASCII-run loop",
+   "cases": 20000,
+   "fired": 20000,
+   "declined": 0,
+   "errors": 0,
+   "first_errors": [],
+   "orig_instructions": 6447993,
+   "orig_tokens": 7517115,
+   "unit_tokens": 338375,
+   "seconds": 45.8
+  },
+  {
+   "elf": "C:\\Users\\kesha\\AppData\\Local\\Temp\\claude\\8450bc6024565175\\d1310d09-a8d6-4b26-affc-4f555296c2cb\\scratchpad\\it\\b_tools_fast_o2_check_b0\\fx-fastcopy.elf",
+   "unit": "text_utils.maskSecrets secret_prefixes probe",
+   "cases": 20000,
+   "fired": 18665,
+   "declined": 1335,
+   "errors": 0,
+   "first_errors": [],
+   "orig_instructions": 4664616,
+   "orig_tokens": 5260931,
+   "unit_tokens": 81308,
+   "seconds": 4.1
+  },
+  {
+   "elf": "C:\\Users\\kesha\\AppData\\Local\\Temp\\claude\\8450bc6024565175\\d1310d09-a8d6-4b26-affc-4f555296c2cb\\scratchpad\\it\\b_tools_fast_o2_check_b0\\fx-fastcopy.elf",
+   "unit": "acp.jsonrpc.writeOneLine find-newline loop",
+   "cases": 20000,
+   "fired": 19792,
+   "declined": 208,
+   "errors": 0,
+   "first_errors": [],
+   "orig_instructions": 4849711,
+   "orig_tokens": 5814824,
+   "unit_tokens": 293342,
+   "seconds": 18.5
+  },
+  {
+   "elf": "C:\\Users\\kesha\\AppData\\Local\\Temp\\claude\\8450bc6024565175\\d1310d09-a8d6-4b26-affc-4f555296c2cb\\scratchpad\\it\\b_tools_fast_o2_check_b0\\fx-fastcopy.elf",
+   "unit": "acp.jsonrpc.writeOneLine find-CR loop",
+   "cases": 20000,
+   "fired": 19817,
+   "declined": 183,
+   "errors": 0,
+   "first_errors": [],
+   "orig_instructions": 4969480,
+   "orig_tokens": 5958510,
+   "unit_tokens": 299520,
+   "seconds": 18.5
+  },
+  {
+   "elf": "C:\\Users\\kesha\\AppData\\Local\\Temp\\claude\\8450bc6024565175\\d1310d09-a8d6-4b26-affc-4f555296c2cb\\scratchpad\\it\\b_tools_fast_o2_check_b0\\fx-fastcopy.elf",
+   "unit": "c.malloc.realloc byte-copy loop",
+   "cases": 20000,
+   "fired": 16897,
+   "declined": 3103,
+   "errors": 0,
+   "first_errors": [],
+   "orig_instructions": 6664470,
+   "orig_tokens": 13328940,
+   "unit_tokens": 754034,
+   "seconds": 2.2
+  }
+ ],
+ "ir_cost": {
+  "base": {
+   "layers": 11,
+   "dims": 2679,
+   "heads": 99,
+   "ffn_units": 42014,
+   "max_units": 8149,
+   "max_heads": 16
+  },
+  "with_macros": {
+   "layers": 11,
+   "dims": 2816,
+   "heads": 100,
+   "ffn_units": 44530,
+   "max_units": 9214,
+   "max_heads": 16
+  }
+ }
+}

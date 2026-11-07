@@ -62,10 +62,13 @@ UOPS = ["ILLEGAL", "LUI", "AUIPC", "MISA",
         "SH1ADD", "SH2ADD", "SH3ADD"]
 CUSTOM = {"BMAC": 64, "BMSB": 65, "BLD": 66, "BGET": 67, "BPRD": 68,
           "BSCAN": 69}  # uops 64..127: custom
+MACROS = {"MMOVE": 70, "MEQL": 71}  # fx circuits: macro uops on a beq (spec.py, ref.Machine)
+MACRO_MAX = {"MMOVE": 84, "MEQL": 31}  # the largest a2 a macro takes in one record
+MACRO_LIMIT = 0x7F80  # both buffers below this (RAM is 32 KB)
 CSR_STUBS = {0xC00: 0, 0xC01: 0, 0xC02: 0, 0xC80: 0, 0xC81: 0, 0xC82: 0, 0xF14: 0,
              0x301: S.MISA}  # cycle, time, instret (+h), mhartid, misa
-U = {n: i for i, n in enumerate(UOPS)} | CUSTOM
-UOPS = UOPS + list(CUSTOM)
+U = {n: i for i, n in enumerate(UOPS)} | CUSTOM | MACROS
+UOPS = UOPS + list(CUSTOM) + list(MACROS)
 BN_ROW = {"BMAC", "BMSB", "BLD"}
 WRITES_RD = {"LUI", "AUIPC", "MISA", "ADDI", "SLTI", "SLTIU", "XORI", "ORI", "ANDI", "SLLI",
              "SRLI", "SRAI", "ADD", "SUB", "SLL", "SLT", "SLTU", "XOR", "SRL", "SRA", "OR", "AND",
@@ -341,10 +344,16 @@ def pack(uop: str, rd: int = 0, rs1: int = 0, rs2: int = 0, spare: int = 0) -> i
     return b0 | b1 << 8 | b2 << 16 | b3 << 24
 
 
-def rom_word(w: int, pc: int) -> int:
-    """The pre-decoded ROM word of the instruction word w at pc (format in the module doc)."""
+def rom_word(w: int, pc: int, macro: str | None = None) -> int:
+    """The pre-decoded ROM word of the instruction word w at pc (format in the module doc). With
+    macro (MMOVE / MEQL), w must be a forward beq: the word is the macro uop with the beq's
+    registers, RD = a2 and the word offset in S0..S9."""
     ins = decode(w)
     op, imm = ins.op, ins.imm
+    if macro:
+        assert op == "BEQ" and 0 < imm < 4 << 10 and imm % 4 == 0, (macro, op, imm)
+        assert in_rom((pc + imm) & M32)
+        return pack(macro, 12, ins.rs1, ins.rs2, imm >> 2)
     if op.startswith("CSR"):
         v = csr_read(ins)
         if v is None:
@@ -396,9 +405,10 @@ class Machine:
     steps: int = 0  # instructions executed
     drom: bytes = b""  # read-only data from DROM_BASE
     bn: list = field(default_factory=lambda: [[0] * 128 for _ in range(8)])  # the digit file
+    macros: dict = field(default_factory=dict)  # ROM word index -> "MMOVE" / "MEQL"
 
     @classmethod
-    def from_program(cls, prog, entry: int | None = None) -> "Machine":
+    def from_program(cls, prog, entry: int | None = None, macros: dict | None = None) -> "Machine":
         ram = [0] * S.RAM_WORDS
         off = prog.data_base - S.RAM_BASE
         data = bytes(off) + prog.data
@@ -411,7 +421,7 @@ class Machine:
         e = prog.entry if entry is None else entry
         rodata = getattr(prog, "rodata", b"")
         assert len(rodata) <= 4 * S.DROM_WORDS, "rodata does not fit the DROM"
-        return cls(rom, ram, x, (e - S.ROM_BASE) >> 2, drom=bytes(rodata))
+        return cls(rom, ram, x, (e - S.ROM_BASE) >> 2, drom=bytes(rodata), macros=dict(macros or {}))
 
     out: bytearray = field(default_factory=bytearray)  # putchar output
     fault: tuple[int, int] | None = None  # (cause, pc) of the fault that halted the run
@@ -452,6 +462,11 @@ class Machine:
         word = self.rom[(pc - S.ROM_BASE) >> 2]
         ins = decode(word)
         op, x = ins.op, self.x
+        macro = self.macros.get((pc - S.ROM_BASE) >> 2)
+        if macro:
+            toks = self.macro_record(macro, ins, pc)
+            if toks is not None:
+                return toks
         a, b = x[ins.rs1], x[ins.rs2]
         self.steps += 1
 
@@ -546,6 +561,39 @@ class Machine:
         if op in IMM_OPS:
             return commit_rd(alu(op, a, ins.imm & M32))
         return commit_rd(alu(op, a, b))
+
+    def macro_fires(self, macro: str, a: int, b: int, n: int) -> bool:
+        """The condition the circuit checks at a macro's beq (spec.py)."""
+        if a == b or not (a < MACRO_LIMIT and b < MACRO_LIMIT):
+            return False
+        if macro == "MMOVE":
+            return (a | b | n) & 3 == 0 and 4 <= n <= MACRO_MAX[macro] and (a < b or a - b >= n)
+        return 1 <= n <= MACRO_MAX[macro]
+
+    def macro_record(self, macro: str, ins: Inst, pc: int) -> list[int] | None:
+        """A fired macro's record (spec.py), committed; None when the beq runs instead."""
+        x = self.x
+        a, b, n = x[ins.rs1], x[ins.rs2], x[12]
+        if not self.macro_fires(macro, a, b, n):
+            return None
+        self.steps += 1
+        toks = [S.tok("MP")]
+        if macro == "MMOVE":
+            for i in range(n // 4):
+                v = self.ram[(b >> 2) + i]
+                toks += [S.tok("CW", v & 0xFFFF), S.tok("CW", v >> 16), S.tok(f"CWW{(a + 4 * i) >> 6 & 1}")]
+                self.ram[(a >> 2) + i] = v
+        else:
+            match = 1
+            for k in range(n):
+                ca, cb = self.ram_byte(a + k), self.ram_byte(b + k)
+                toks += [S.tok("EB", ca), S.tok("EC1" if ca == cb else "EC0")]
+                if ca != cb:
+                    match = 0
+                    break
+            x[10] = match
+        self.anchor, self.n = (pc + ins.imm - S.ROM_BASE) >> 2, 0
+        return toks + [S.tok("J", self.anchor)]
 
     def ram_byte(self, ea: int) -> int:
         """A byte of RAM at ea mod 32 KB (the digit-file ops' addressing)."""

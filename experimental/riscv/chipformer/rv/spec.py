@@ -22,6 +22,9 @@ Token families (chip vocabulary ids from 0):
   NT, ST0, ST1, SS0, SS1, HALT   final controls (ST/SS: the RAM value head, address bit 6)
   GO    not final: the start of a run (after a state snapshot)
   SC    not final: BSCAN found one more ASCII digit
+  CW    not final; a macro's 16-bit data token (half of a RAM word it streams)
+  EB    not final; the compare macro's byte of operand a
+  MP, CWW0, CWW1, EC0, EC1   not final controls of the macro records (fx circuits, below)
 
 Records:
 
@@ -40,6 +43,19 @@ Records:
   a fault                                                        FLT(cause) HEX x 8 HALT
   before the instruction, when n == 63                           R
 
+Macro records (fx/circuits.md: exact units specialized to fx's ROM). A macro sits on a `beq`
+whose taken target is its function's `ret`; the ROM word is the macro uop MMOVE / MEQL with the
+beq's registers, RD = a2, and the forward word offset in S0..S9 (ref.rom_word). When its
+condition holds the record is the macro's; otherwise the beq runs (J / NT).
+
+  MMOVE (memmove's entry, beq a0, a1): a0, a1, a2 4-aligned, 4 <= a2 <= 84, a0 != a1,
+        a0 < a1 or a0 - a1 >= a2, both buffers below 0x7F80:
+        MP, then for each word i: CW(src_i & 0xFFFF) CW(src_i >> 16) CWW0/1 (the destination
+        word i is written, from the two payloads; 0/1 = address bit 6), then J(target)
+  MEQL  (mem.eqlBytes' beq a1, a3): a1 != a3, 1 <= a2 <= 31, both below 0x7F80:
+        MP, then for each byte k: EB(a[k]) EC1 (b[k] == a[k]) or EC0 (and the compare stops),
+        then J(target), which also commits a0 = 1 if every byte matched, else 0
+
 Memory (P2):
 
   RAM   0x0000_0000 + 32 KB   words; data / bss / heap from 0x100, the stack below 0x8000
@@ -57,14 +73,14 @@ be 0 from the operands' sizes (see ref.div_start), so small quotients take few t
 
 FAMILY_SIZES = [("V", 1 << 15), ("F0", 1 << 15), ("F1", 1 << 15), ("F2", 4), ("J", 1 << 16),
                 ("R", 1 << 16), ("BYTE", 512), ("FLT", 8), ("HEX", 16), ("QS", 16), ("QD", 128),
-                ("BD", 256)]
+                ("BD", 256), ("CW", 1 << 16), ("EB", 256)]
 FAMILIES = {}
 _base = 0
 for _n, _s in FAMILY_SIZES:
     FAMILIES[_n] = (_base, _s)
     _base += _s
 CTRL = _base
-CONTROL_NAMES = ["NT", "ST0", "ST1", "SS0", "SS1", "HALT", "GO", "SC"]
+CONTROL_NAMES = ["NT", "ST0", "ST1", "SS0", "SS1", "HALT", "GO", "SC", "MP", "CWW0", "CWW1", "EC0", "EC1"]
 CONTROLS = {n: CTRL + i for i, n in enumerate(CONTROL_NAMES)}
 VOCAB = CTRL + len(CONTROL_NAMES)
 FINAL = {"F0", "F1", "F2", "J", "R", "BYTE", "NT", "ST0", "ST1", "SS0", "SS1", "HALT"}
