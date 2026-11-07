@@ -53,6 +53,7 @@ def prog_lines(calls, readback=()):
     src += ["fx_js:", "    addi a3, a3, 1", "    sw a3, 36(a2)", "    beq a4, a3, js_x", "    add a1, a0, a3", "    lbu a1, 0(a1)",
             "    li a5, 32", "    bltu a1, a5, js_x", "    li a5, 128", "    bgeu a1, a5, js_x", "    li a5, 34", "    beq a1, a5, js_x",
             "    li a5, 92", "    bne a1, a5, fx_js", "js_x:", "    ret"]
+    src += ["fx_sha:", "    ret", "fx_sha_ret:", "    ret"]
     src += ["main:", f"    li sp, {BASE.sp:#x}"]
     k = 0
     for cc in calls:
@@ -60,6 +61,10 @@ def prog_lines(calls, readback=()):
             d, s, n = cc[1:4]
             lbl = {"move": "fx_memmove", "cpy": "fx_memcpy"}[cc[0]]
             src += [f"    li a0, {d:#x}", f"    li a1, {s:#x}", f"    li a2, {n}", f"    call {lbl}"]
+        elif cc[0] == "sha":
+            inst, st, blk, wsp = cc[1:5]
+            src += [f"    li t0, {inst:#x}", f"    li t1, {wsp:#x}", "    sw t1, 8(t0)", f"    li a0, {inst:#x}",
+                    f"    li a1, {st:#x}", f"    li a2, {blk:#x}", "    call fx_sha"]
         elif cc[0] == "tok":
             p_, n, run = cc[1:4]
             src += [f"    li s5, {p_:#x}", f"    li a6, {n}", f"    li a2, {run}", "    li a1, 0", "    li a4, 5", "    li a5, 32",
@@ -121,7 +126,8 @@ def machine(calls, units=True, seed=0, readback=()):
               hot.Unit("eql", p.labels["fx_eql"] + eq["trigger"], p.labels["fx_eql"] + eq["ret"]),
               hot.Unit("tok", p.labels["fx_tok"], p.labels["fx_tok"]), hot.Unit("chr", p.labels["fx_chr"], p.labels["fx_chr"]),
               hot.Unit("ascii", p.labels["fx_ascii"], p.labels["fx_ascii"]),
-              hot.Unit("jscan", p.labels["fx_js"], p.labels["fx_js"])]
+              hot.Unit("jscan", p.labels["fx_js"], p.labels["fx_js"]),
+              hot.Unit("sha", p.labels["fx_sha"], p.labels["fx_sha_ret"])]
         for k in range(len(calls)):
             if f"bloop_{k}" in p.labels:
                 us.append(hot.Unit("bcopy", p.labels[f"bloop_{k}"], p.labels[f"bexit_{k}"]))
@@ -275,3 +281,16 @@ def test_ir_random(circ4, seed):
     c = circ4
     rng = random.Random(100 + seed)
     check_ir(c, random_calls(rng, 5, ("move", "cpy", "set", "eql", "scan", "scan")), seed, kernel=False)
+
+
+def test_ir_sha():
+    """The compression, circuit against reference against hashlib's state after one block."""
+    calls = [("sha", 0x11000, 0x12000, 0x10040, 0x12000), ("sha", 0x11000, 0x13440, 0x10080, 0x13440),
+             ("sha", 0x11000, 0x14480, 0x10080, 0x14460)]
+    m = machine(calls)[0]
+    toks = m.run(10**7)
+    assert sum(S.tok("CW") <= t < S.tok("CW") + 65536 for t in toks) > 1200
+    h = [hot.K256[0]]
+    assert h
+    c = core.build(cfg=machine(calls)[1])
+    check_ir(c, calls, kernel=False)

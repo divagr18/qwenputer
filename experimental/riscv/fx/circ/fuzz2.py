@@ -238,7 +238,44 @@ def gen_scan(kind):
     return gen
 
 
-GEN = {"move": gen_move, "cpy": gen_move, "set": gen_set, "bcopy": gen_bcopy, "eql": gen_eql, "tok": gen_scan("tok"),
+def gen_sha(rng, cfg, m):
+    """a0 = instance (word at +8 = the wasm stack pointer), a1 = state, a2 = block. The state may sit
+    on the frame's edge as in fx, the block in the image or on a page edge."""
+    base = rng.choice([0xB0000, 0x100000, 0x200000])
+    wsp = base + rng.randrange(0x400) * 16
+    r = rng.random()
+    st = (wsp + rng.choice([0, 16, 128, 304]) if r < 0.6 else base + 0x4000 + rng.randrange(0x400) * 4) & ~3
+    img = [w << S.WIN_BITS for w in cfg.image if w << S.WIN_BITS < 1 << 22]
+    blk = rng.choice([st + 40, st + 64, rng.choice(img) + rng.randrange(0x2000) * 4, wsp + 0x1000 + rng.randrange(0x800) * 4])
+    r = rng.random()
+    if r < 0.04:
+        blk += rng.randint(1, 3)
+    elif r < 0.08:
+        st += rng.randint(1, 3)
+    elif r < 0.12:
+        wsp = st + rng.randint(-40, 40) * 4  # an overlap with the frame
+    elif r < 0.16:
+        blk = st + rng.randint(-20, 20) * 4
+    elif r < 0.2:
+        wsp = rng.choice([0x10, 0x07FF0000, wsp + 2])
+    inst = 0x90000 + rng.randrange(0x100) * 4
+    pages = {a >> 9 for a in (wsp - 256, wsp - 4, st, st + 31, blk, blk + 63, inst)}
+    wr, pt, nf = random_pages(rng, pages, cfg, rng.choice([0, 1]), m)
+    wr[(inst + 8) >> 2] = wsp
+    pt.setdefault((inst + 8) >> 9, 1)
+    for a in list(range(st & ~3, st + 32, 4)) + list(range(blk & ~3, blk + 64, 4)):
+        if cfg.rw_window(a) is not None and rng.random() < 0.9:
+            wr[a >> 2] = rng.getrandbits(32)
+            pt.setdefault(a >> 9, 1)
+    x = [rng.getrandbits(32) for _ in range(32)]
+    x[0] = 0
+    x[10], x[11], x[12] = inst, st, blk
+    x[2] = SP
+    x[1] = SENT
+    return x, wr, pt, min(nf, rng.choice([nf, 0, cfg.frames - 40]))
+
+
+GEN = {"sha": gen_sha, "move": gen_move, "cpy": gen_move, "set": gen_set, "bcopy": gen_bcopy, "eql": gen_eql, "tok": gen_scan("tok"),
        "chr": gen_scan("chr"), "ascii": gen_scan("ascii"), "jscan": gen_scan("jscan")}
 INDUCTION = {"tok": 16, "chr": 12, "ascii": 10, "jscan": 13}
 DEAD = {"tok": {5, 17}, "chr": {13}, "ascii": {29, 30}, "jscan": {11, 15, 16}}

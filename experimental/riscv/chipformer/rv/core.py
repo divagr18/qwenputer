@@ -837,7 +837,8 @@ def build(target: Target | None = None, text=None, cfg=None) -> RvCore:
           "SUBI": any_of("SLTI", "SLTIU") + (hot.sub_k if hot else 0)}
     bsrc = {"ADD": (B, False, 0), "ADDI": (imm, False, 0), "SUB": (B, True, 1),
             "SUBI": (imm, True, 1)}
-    sums = [[(nib(A, k) + nib(bsrc[m][0], k, bsrc[m][1]) + (bsrc[m][2] if k == 0 else 0), [lit])
+    sums = [[(nib(A, k) + (nib(hot.xa, k) if hot and m == "ADDI" else 0) + nib(bsrc[m][0], k, bsrc[m][1])
+              + (bsrc[m][2] if k == 0 else 0), [lit])
              for m, lit in md.items()] for k in range(8)]
     g, p_, d = stage1_digits(c, sums, "add", 31)
     r, c32 = adder_stage2(c, g, p_, d, 8, "add")

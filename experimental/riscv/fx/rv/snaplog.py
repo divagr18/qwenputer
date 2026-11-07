@@ -101,6 +101,9 @@ def main():
         h.unit_specs, skipped = CU.specs_for(a.elf, ",".join(n for n in names if n not in CU.TWINS))
         assert not skipped, skipped
         h.unit_specs += CU.twin_specs(names)
+        for sp in h.unit_specs:
+            if sp["name"] == "sha":  # as built: message words aligned
+                sp["kind"] = CU.TWIN_KIND["U_SHA2"]
         CR.setup_dll(dll)
         CR.install(dll, h.unit_specs)
         dll.rv_units_mode(0)

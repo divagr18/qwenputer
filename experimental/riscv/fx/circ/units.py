@@ -356,7 +356,7 @@ _SIGS = os.path.join(os.path.dirname(os.path.abspath(__file__)), "signatures.jso
 # row 24's byte loops as built in the circuit (their exit is their own head; chipformer/rv/hot.py)
 TWINS = {"tok2": (0x22BF6C0, "U_TOK2"), "chr2a": (0x20CF5E8, "U_CHR2"), "chr2b": (0x20CF610, "U_CHR2"),
          "asc2": (0x2649914, "U_ASC2")}
-TWIN_KIND = {"U_TOK2": 16, "U_CHR2": 17, "U_ASC2": 18}
+TWIN_KIND = {"U_TOK2": 16, "U_CHR2": 17, "U_ASC2": 18, "U_SHA2": 19}
 
 
 def twin_specs(names):
