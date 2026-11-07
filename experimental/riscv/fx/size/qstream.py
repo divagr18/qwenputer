@@ -146,11 +146,18 @@ def fetch(t) -> torch.Tensor:
     n = t["b"] - t["a"]
     step = 6 << 20  # the link here limits each stream, up to about 16 of them
     parts = [(i, min(i + step, n)) for i in range(0, n, step)]
+    # streams write straight into the tensor: no joined copy (this machine is short of commit)
+    dt, it = {"BF16": (DT, torch.uint16), "F32": (torch.float32, torch.uint32)}[t["dtype"]]
+    out = torch.empty(n // (2 if t["dtype"] == "BF16" else 4), dtype=it)
+    buf = memoryview(out.numpy()).cast("B")
+
+    def get(p):
+        buf[p[0]:p[1]] = hub.read(t, *p)
+
     with ThreadPoolExecutor(16) as ex:
-        chunks = list(ex.map(lambda p: hub.read(t, *p), parts))
-    b = bytearray().join(chunks)
-    dt = {"BF16": DT, "F32": torch.float32}[t["dtype"]]
-    return torch.frombuffer(b, dtype=dt).reshape(t["shape"]).clone()
+        list(ex.map(get, parts))
+    del buf
+    return out.view(dt).reshape(t["shape"])
 
 
 def build_layer(cfg, i, sd):
