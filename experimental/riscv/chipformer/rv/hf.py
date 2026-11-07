@@ -65,10 +65,13 @@ def inject(c, cache) -> None:
         st = cache.layers[L].recurrent_states[0]
         init = c.nodes[ni].init or []
         for x in range(len(c.nodes[ni].vheads())):
-            S = st[0, j * r + x]
+            S = st[j * r + x]
             S.zero_()
             for row, vec in (init[x] if x < len(init) else {}).items():
-                S[row] = torch.tensor(vec, dtype=S.dtype, device=S.device)
+                v = np.asarray(vec)
+                if v.size == 0 or v.ndim != 1 or v.shape[0] != S.shape[0]:
+                    continue
+                S[row].copy_(torch.tensor(v.tolist(), dtype=S.dtype, device=S.device))
 
 
 def check(c, model, lay, ids, toks: list[int], mode: str = "prefill", tokens: bool = False):

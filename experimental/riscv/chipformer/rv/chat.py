@@ -98,7 +98,7 @@ class ExecRow:
 
 class RvChat:
     def __init__(self, path, device: str | None = None, fast: bool = True,
-                 executor: bool = False) -> None:
+                 executor: bool = False, device_map: str | dict | None = None) -> None:
         from transformers import AutoTokenizer, Qwen3_5ForCausalLM
 
         from chipformer.q35.fast import exact_matmuls
@@ -107,9 +107,30 @@ class RvChat:
         exact_matmuls()
         self.path = Path(path)
         self.meta = json.loads((self.path / "chipformer.json").read_text())
-        self.dev = device or ("cuda" if torch.cuda.is_available() else "cpu")
-        self.model = Qwen3_5ForCausalLM.from_pretrained(self.path, dtype=torch.bfloat16)
-        self.model = self.model.to(self.dev).eval()
+        # GPU+CPU offloading: when device_map is set (or device == "auto") we let
+        # accelerate place the layers, possibly across GPU and CPU. The Triton
+        # executor and the CUDA-graph fast path are CUDA-only, so they are
+        # disabled in that mode.
+        if device == "auto":
+            device_map = device_map or "auto"
+        self.offload = device_map is not None
+        if self.offload:
+            self.model = Qwen3_5ForCausalLM.from_pretrained(
+                self.path, dtype=torch.bfloat16, device_map=device_map)
+            self.model = self.model.eval()
+        else:
+            self.dev = device or ("cuda" if torch.cuda.is_available() else "cpu")
+            self.model = Qwen3_5ForCausalLM.from_pretrained(self.path, dtype=torch.bfloat16)
+            self.model = self.model.to(self.dev).eval()
+        # Pick a working device for our own buffers: prefer CUDA when any part of
+        # the model lives there, otherwise CPU.
+        devs = {p.device for p in self.model.parameters()}
+        if any(d.type == "cuda" for d in devs):
+            self.dev = torch.device("cuda")
+        else:
+            self.dev = torch.device("cpu")
+        if not self.offload:
+            self.dev = torch.device(device or ("cuda" if torch.cuda.is_available() else "cpu"))
         self.lm = self.model.model
         self.tok = AutoTokenizer.from_pretrained(self.path)
         self.T = BR.Text(self.path / "tokenizer.json")
@@ -119,9 +140,9 @@ class RvChat:
         self.n_chip, self.v0 = self.meta["chip_layers"], self.meta["chip_token_offset"]
         self.code_dims = torch.tensor(self.meta["code_dims"], device=self.dev)
         self.eos = {248046, 248044}
-        self.fast = fast and self.dev == "cuda"
-        # executor "verify": both chip paths, the HF view's hc checked against the executor's
-        self.executor = executor if self.dev == "cuda" else False
+        # Fast/executor paths need the whole model on a single CUDA device.
+        self.fast = (fast and self.dev.type == "cuda" and not self.offload)
+        self.executor = (executor if (self.dev.type == "cuda" and not self.offload) else False)
         self.verify = self.executor == "verify"
         if self.executor:
             self._build_exec()
@@ -279,7 +300,7 @@ class RvChat:
     def _qwen_step(self, hc, cache, pos: int):
         """Qwen's layers on a text token whose residual after the chip layers is hc."""
         h = hc.view(1, 1, -1)
-        p4 = torch.full((4, 1, 1), pos, device=self.dev, dtype=torch.long)
+        p4 = torch.full((4, 1, 1), pos, device=h.device, dtype=torch.long)
         pe = self.lm.rotary_emb(h, p4[1:])
         for i in range(self.n_chip, len(self.lm.layers)):
             h = self.lm.layers[i](h, position_embeddings=pe, attention_mask=None,
@@ -291,10 +312,11 @@ class RvChat:
     def _layers(self, ids, cache, pos: int | None):
         """Run one token through the chip layers (pos None) or the whole stack (text at RoPE
         position pos); returns (residual after the chip layers, logits or None)."""
-        h = self.lm.embed_tokens(torch.tensor([[ids]], device=self.dev))
+        dev = self.lm.embed_tokens.weight.device
+        h = self.lm.embed_tokens(torch.tensor([[ids]], device=dev))
         pe = tp = None
         if pos is not None:
-            p4 = torch.full((4, 1, 1), pos, device=self.dev, dtype=torch.long)
+            p4 = torch.full((4, 1, 1), pos, device=dev, dtype=torch.long)
             tp = p4[0]
             pe = self.lm.rotary_emb(h, p4[1:])
         hc = None
@@ -327,7 +349,7 @@ class RvChat:
         """Greedy decoding after the prompt ``ids`` with the parked ``machine`` loaded.
         ``lock`` (a Session on a copy of the machine): stop at the first token that differs from
         the reference's. ``on_token(id)`` is called with every generated model id as it comes."""
-        x = torch.tensor([ids], device=self.dev)
+        x = torch.tensor([ids], device=self.lm.embed_tokens.weight.device)
         out = self.model(input_ids=x, use_cache=True)
         cache = out.past_key_values  # (fast: Qwen's layers only)
         core.snapshot(self.c, machine)
@@ -496,8 +518,12 @@ def main() -> None:
     ap.add_argument("--max-new", type=int, default=600)
     ap.add_argument("--check", action="store_true")
     ap.add_argument("--slow", action="store_true", help="every layer through the HF modules")
+    ap.add_argument("--device", default=None, help="cuda, cpu or auto (offload across devices)")
+    ap.add_argument("--device-map", default=None,
+                    help="accelerate device_map for GPU+CPU offloading, e.g. 'auto' or 'balanced'")
     args = ap.parse_args()
-    chat = RvChat(args.model, fast=not args.slow)
+    chat = RvChat(args.model, device=args.device, fast=not args.slow,
+                  device_map=args.device_map)
     m = ref.Machine.from_program(elf.program(args.firmware))
     BR.park(m)
     ids = chat.prompt_ids([{"role": "user", "content": args.ask}])
