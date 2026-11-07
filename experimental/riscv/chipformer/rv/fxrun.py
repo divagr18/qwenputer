@@ -29,6 +29,7 @@ ROM_BIT, WBITS = 25, 21  # the row-11 / row-24 images: code at 0x02000000
 ROM_KH = 224  # 224 << 13 = 1.835M words (row 24: 1.743M)
 FRAMES = 1024  # the measured session maps 704 pages (docs/fx/memory.md)
 RW = ((0, 22), (0x07FC0000, 18), (0x026C0000, 18), (0x02700000, 18))  # linear, C stack, .bss
+TEXT_FX = 0x04000000  # the text buffer: fx's map has nothing there (spec.TEXT_ADDR is inside linear memory)
 
 
 def windows(ad_words: np.ndarray, data_segs, code_end: int) -> tuple:
@@ -44,7 +45,7 @@ def windows(ad_words: np.ndarray, data_segs, code_end: int) -> tuple:
 
 
 def fx_cfg(image, frames=FRAMES, rom_kh=ROM_KH, units=()) -> S.MemCfg:
-    return S.MemCfg("fx", ROM_BIT, WBITS, rom_kh, RW, frames, image, units=tuple(units))
+    return S.MemCfg("fx", ROM_BIT, WBITS, rom_kh, RW, frames, image, units=tuple(units), text_addr=TEXT_FX)
 
 
 def load(log_path, elf_path, from_reset=False, frames=FRAMES, units=()):

@@ -1269,10 +1269,14 @@ def build(target: Target | None = None, text=None, cfg=None) -> RvCore:
 
     # ---------------------------------------------------------------- P3: the text buffer
     # row i = the i-th captured token's bytes (2 value heads of 8 bytes), read as memory at
-    # TEXT_ADDR + 16 i: row EA[10:4], value head EA[3], word EA[2]
+    # TEXT_ADDR + 16 i: row EA[10:4], value head EA[3], word EA[2]. On the paged map the buffer has
+    # its own base (cfg.text_addr), outside every window: EA[31:11] selects it
     if text:
         tmem = c.zeros(32, "tmem")
-        tsel = [EA[15]] + [1 - EA[b] for b in range(11, 15)]
+        thi = c.cfg.text_base >> 11 if cfg else S.TEXT_ADDR >> 11
+        tsel = [EA[b] for b in range(11, 32) if thi >> (b - 11) & 1]
+        if not cfg:
+            tsel = [EA[15]] + [1 - EA[b] for b in range(11, 15)]
         q = {i: andpre(lits_of(EA[4:11], i) + tsel) for i in caprow}
         keys = {i: Chan(e) for i, e in caprow.items()}
         vhs = []
@@ -1302,7 +1306,10 @@ def build(target: Target | None = None, text=None, cfg=None) -> RvCore:
     else:
         in_ram = in_rw = c.and_([1 - b for b in EA[15:32]], "in_ram")
         in_drom = c.and_([1 - b for b in EA[18:32]] + [EA[17]], "in_drom")
-    in_text = (c.and_(tsel + [1 - b for b in EA[16:32]], "in_text") if text else None)
+    if text and cfg:
+        in_text = c.and_(lits_of(EA[11:32], thi), "in_text")
+    else:
+        in_text = (c.and_(tsel + [1 - b for b in EA[16:32]], "in_text") if text else None)
     ld = []
     for i in range(32):
         terms = c.t_and([uops["LW"], mem[i], in_ram] + lits_of(lane, 0))

@@ -26,6 +26,7 @@ def main():
     ap.add_argument("log")
     ap.add_argument("elf")
     ap.add_argument("--frames", type=int, default=1024)
+    ap.add_argument("--units", default="")
     ap.add_argument("--out", default="")
     ap.add_argument("--tf", type=int, default=20000)
     a = ap.parse_args()
@@ -33,7 +34,8 @@ def main():
     z = np.load(a.log)
     bios = FL.Bios(FL.FX_IO_BASE)
     b = {"ad": z["boot_ad"], "val": z["boot_val"], "x": z["boot_x"], "pc": int(z["boot_pc"])}
-    mk = lambda: FL.machine_at(a.elf, b["ad"], b["val"], b["x"], b["pc"], a.frames, bios)
+    units = [u for u in a.units.split(",") if u]
+    mk = lambda: FL.machine_at(a.elf, b["ad"], b["val"], b["x"], b["pc"], a.frames, bios, units)
     cfg, m = mk()
     c = core.build(cfg=cfg)
     print("built", c.stats(), round(time.time() - t0, 1), flush=True)
@@ -49,7 +51,8 @@ def main():
     assert bool((be.rows(sample) == ex.embed(sample)).all())
     ex.reset()
     cpu = FL.LiveCPU(be, bios, cfg, full_regs=True)
-    res = {"frames": a.frames}
+    res = {"frames": a.frames, "units": units, "phases": ex.NPH, "slots": int(ex.n_slots), "layers": c.n_layers(),
+           "state_bytes": int(ex.S.numel() * 4), "gpu_bytes": torch.cuda.memory_allocated()}
     chip, stop = cpu.go()
     kind, pc = cpu.parse_stop(chip, stop)
     regs = cpu.enter()

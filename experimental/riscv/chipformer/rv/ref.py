@@ -476,10 +476,11 @@ class Machine:
         return (ea - S.RAM_BASE) >> 2 if 0 <= ea - S.RAM_BASE < 4 * S.RAM_WORDS else None
 
     text: list[bytes] | None = None  # the P3 text buffer rows (TEXT_ROW bytes each), if any
+    text_base = S.TEXT_ADDR
 
     def text_word(self, ea: int) -> int | None:
         """The word of the text buffer at ea (0 for unwritten rows), None outside it."""
-        o = ea - S.TEXT_ADDR
+        o = ea - self.text_base
         if self.text is None or not 0 <= o < S.TEXT_ROW * S.TEXT_ROWS:
             return None
         row = self.text[o // S.TEXT_ROW]
@@ -724,6 +725,7 @@ class PagedMachine(Machine):
             xs[2] = cfg.sp if sp is None else sp
         m = cls(rom=rom, ram=[], x=xs, anchor=(entry - cfg.rom_base) >> 2, cfg=cfg, image=image)
         m.rom_base = cfg.rom_base
+        m.text_base = cfg.text_base
         m.macros = {(u.pc - cfg.rom_base) >> 2: u for u in cfg.units}
         return m
 

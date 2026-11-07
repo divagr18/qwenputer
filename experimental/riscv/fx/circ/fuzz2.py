@@ -275,12 +275,105 @@ def gen_sha(rng, cfg, m):
     return x, wr, pt, min(nf, rng.choice([nf, 0, cfg.frames - 40]))
 
 
-GEN = {"sha": gen_sha, "move": gen_move, "cpy": gen_move, "set": gen_set, "bcopy": gen_bcopy, "eql": gen_eql, "tok": gen_scan("tok"),
+def gen_jesc(rng, cfg, m):
+    """s5 = text, s8 = index before the run, the bound in its stack slot at s0 - 60."""
+    img = [w << S.WIN_BITS for w in cfg.image if w << S.WIN_BITS < 1 << 22]
+    base = rng.choice(img + [0x100000, 0x200000])
+    p = addr_near_page(rng, base, base + 0x8000)
+    n = rng.choice([1, 2, 3, 4, 8, 20, 30, 31, 32, 33, 61, 62, 63, 64, 65, 100, 130, 200, 700])
+    p_stop = rng.choice([0.0, 0.01, 0.05, 0.3])
+    p_cls = rng.choice([0.0, 0.02, 0.1, 0.5, 1.0])
+    txt = []
+    for _ in range(n + 8):
+        r = rng.random()
+        if r < p_stop:
+            txt.append(rng.choice([0x22, 0x5C, 0, 0x1F, 0x19]))
+        elif rng.random() < p_cls:
+            txt.append(rng.choice([0x20, 0x21, 0x23, 0x30, 0x41, 0x5B]))
+        else:
+            txt.append(rng.choice([0x5D, 0x61, 0x7A, 0x7F, 0x80, 0xFF, rng.randrange(0x5D, 0x100)]))
+    pages = set(range(p >> 9, (p + n + 16 >> 9) + 1))
+    wr, pt, nf = random_pages(rng, pages, cfg, rng.choice([0, 1]), m)
+    for k, b in enumerate(txt):
+        ea = p + k
+        w = wr.get(ea >> 2, m.image.get(ea >> 2, 0))
+        wr[ea >> 2] = w & ~(0xFF << 8 * (ea & 3)) & 0xFFFFFFFF | b << 8 * (ea & 3)
+        pt.setdefault(ea >> S.PAGE_BITS, 1)
+    i = rng.randrange(0, 20)
+    fr = 0x300000 + rng.randrange(0x400) * 4
+    bound = rng.choice([i + 1 + n, i + 2, i + 1, i + 3, 0x10002, 0xFFFFFFFF])
+    wr[fr >> 2] = bound
+    pt.setdefault(fr >> S.PAGE_BITS, 1)
+    x = [rng.getrandbits(32) for _ in range(32)]
+    x[0] = 0
+    x[2], x[1] = SP, SENT
+    x[21] = (p - rng.randrange(1)) & 0xFFFFFFFF
+    x[24] = i
+    x[8] = fr + 60
+    r = rng.random()
+    if r < 0.03:
+        x[8] += rng.randint(1, 3)  # a misaligned slot: the original faults
+    elif r < 0.05:
+        x[8] = 0x05000000  # outside every load region
+    x[19], x[23] = (0x22, 0x5C)
+    r = rng.random()
+    if r < 0.05:
+        x[19], x[23] = 0x5C, 0x22  # the other order: a decline
+    elif r < 0.07:
+        x[23] = rng.getrandbits(8)
+    x[13] = rng.choice([0, 32, 56, 110, rng.getrandbits(32)])
+    if rng.random() < 0.02:
+        x[24] = rng.choice([0xFFFF, 0xFFFE, 0x10000, 0xFFFFFFFF])
+    return x, wr, pt, nf
+
+
+MASK_TEXT = [b"OPENAI_API_KEY=", b"anthropic_api_key=", b"TOKEN=", b"password=", b"SECRET_KEY=", b"PRIVATE_KEY=",
+             b"API_KEY=", b"DATABASE_URL=", b"AWS_SECRET_ACCESS_KEY="]
+
+
+def gen_maskp(rng, cfg, m):
+    """s10: the position in the text, s8 its index, s3 the text's length, s6 the probe's flag."""
+    base = rng.choice([0x100000, 0x200000])
+    p = addr_near_page(rng, base, base + 0x8000) + 8
+    r = rng.random()
+    txt = rng.choice(MASK_TEXT) if r < 0.3 else bytes(rng.choice(b"abcdefgopstv_0159XYZ=- \n\xc3") for _ in range(40))
+    txt = bytes(rng.choice(b"ab_09Z= -\x80") for _ in range(8)) + txt + bytes(rng.getrandbits(8) for _ in range(30))
+    pages = set(range(p >> 9, (p + len(txt) >> 9) + 1)) | {(p - 16) >> 9}
+    wr, pt, nf = random_pages(rng, pages, cfg, rng.choice([0, 1]), m)
+    for k, b in enumerate(txt):
+        ea = p + k - 8
+        w = wr.get(ea >> 2, m.image.get(ea >> 2, 0))
+        wr[ea >> 2] = w & ~(0xFF << 8 * (ea & 3)) & 0xFFFFFFFF | b << 8 * (ea & 3)
+        pt.setdefault(ea >> S.PAGE_BITS, 1)
+    x = [rng.getrandbits(32) for _ in range(32)]
+    x[0] = 0
+    x[2], x[1] = SP, SENT
+    tab = cfg.units[0].arg
+    x[26], x[21], x[20], x[17] = p, tab, 0x5F, 10
+    x[24] = rng.randrange(0, 200)
+    x[19] = x[24] + rng.choice([1, 5, 12, 22, 23, 100, 1000])
+    x[22] = rng.choice([0, 0, 0, 0, 1, 1, rng.getrandbits(32)])
+    r = rng.random()
+    if r < 0.04:
+        x[21] = tab + rng.choice([8, 16, 4])
+    elif r < 0.06:
+        x[20] = rng.getrandbits(8)
+    elif r < 0.08:
+        x[17] = rng.randrange(20)
+    elif r < 0.1:
+        x[26] = rng.choice([0x05000000, 1])  # the byte before is outside every load region
+    return x, wr, pt, nf
+
+
+GEN = {"jesc": gen_jesc, "maskp": gen_maskp, "sha": gen_sha, "move": gen_move, "cpy": gen_move, "set": gen_set, "bcopy": gen_bcopy, "eql": gen_eql, "tok": gen_scan("tok"),
        "chr": gen_scan("chr"), "ascii": gen_scan("ascii"), "jscan": gen_scan("jscan")}
-INDUCTION = {"tok": 16, "chr": 12, "ascii": 10, "jscan": 13}
-DEAD = {"tok": {5, 17}, "chr": {13}, "ascii": {29, 30}, "jscan": {11, 15, 16}}
+INDUCTION = {"tok": 16, "chr": 12, "ascii": 10, "jscan": 13, "jesc": 24}
+DEAD = {"tok": {5, 17}, "chr": {13}, "ascii": {29, 30}, "jscan": {11, 15, 16},
+        "jesc": {1, 5, 6, 7, 11, 12, 26, 27, 28, 29, 30, 31}}
 ALLR = set(range(1, 32))
-LIVE = {"bcopy": sorted(ALLR - {1, 5, 6, 7, 8, 10 + 1, 12, 13, 14, 15, 16, 17, 19, 23, 27, 28, 29, 30, 31})}
+LIVE = {"bcopy": sorted(ALLR - {1, 5, 6, 7, 8, 10 + 1, 12, 13, 14, 15, 16, 17, 19, 23, 27, 28, 29, 30, 31}),
+        "maskp": sorted(ALLR - {10, 11, 12, 13, 27})}  # (units.py's liveness at the exit: a0-a3, s11)
+MASKP_MATCH = 0x24D89CC  # the probe's other exit: a prefix matched
 
 
 def main():
@@ -348,7 +441,7 @@ def main():
             if k % 10000 == 9999:
                 print(k + 1, st, round(time.time() - t0), flush=True)
             continue
-        stops = {SENT} if u.kind != "bcopy" else {u.ret}
+        stops = {SENT} if u.kind not in ("bcopy", "maskp") else {u.ret, MASKP_MATCH}
         live = LIVE.get(u.kind, (*CALLEE, 10))
         ta = run_until(m, stops)
         tb = run_until(plain, stops)
