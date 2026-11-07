@@ -66,8 +66,7 @@ def main() -> None:
             with open(args.dump, "a", encoding="utf-8") as f:
                 for r in recs:
                     f.write(json.dumps({"exec": args.exec, "batch": B, "id": r["id"],
-                                        "tokens": res[r["id"]]["tokens"]}) + "
-")
+                                        "tokens": res[r["id"]]["tokens"]}) + "\n")
         for r in recs:
             got, want = res[r["id"]]["tokens"], r["gen_ids"]
             first = next((i for i, (a, b) in enumerate(zip(got, want)) if a != b),

@@ -1,4 +1,4 @@
-"""Executor v4: the whole circuit step as one persistent CUDA kernel, the chip-token loop on the GPU.
+"""Executor v4: the circuit step as one persistent CUDA kernel, the token loop on the GPU.
 
 Same arithmetic as tritonexec.Executor2 (the IR's semantics in fp32 over the circuit's weights,
 every value exact), organized for latency instead of launches:
@@ -303,11 +303,15 @@ __device__ __forceinline__ void heads(const int* d, const int* blob, const float
             const bool p2 = (__float_as_uint(norm) & 0x7fffffu) == 0u;
             const float inv = __frcp_rn(norm);
             const float ov[4] = {o.x, o.y, o.z, o.w};
-            const int4 w4 = *(const int4*)(blob + r[8] + c0), d4 = *(const int4*)(blob + r[9] + c0);
-            const int wa[4] = {w4.x, w4.y, w4.z, w4.w}, da[4] = {d4.x, d4.y, d4.z, d4.w};
+            // an output column: out dim | the weight's bf16 << 16
+            const int4 w4 = *(const int4*)(blob + r[8] + c0);
+            const int wa[4] = {w4.x, w4.y, w4.z, w4.w};
+            int da[4];
+#pragma unroll
+            for (int c = 0; c < 4; c++) da[c] = wa[c] & 0xffff;
 #pragma unroll
             for (int c = 0; c < 4; c++) {
-                const float wv = __int_as_float(wa[c]);
+                const float wv = __uint_as_float((unsigned)wa[c] & 0xffff0000u);
                 if (wv != 0.0f && z4[c] != 0.0f) {  // (else the output is 0: nothing to add)
                     const float cc = (p2 ? ov[c] * inv : __fdiv_rn(ov[c], norm)) * z4[c] * wv;
                     if (cc != 0.0f) atomicAdd(Ycur + da[c], cc);
@@ -462,7 +466,8 @@ PHASE = r"""
                 const int A = dn[0];
                 const int2* sp = slots + dn[1] + t;
 #pragma unroll
-                for (int j = 0; j < @JN@; j++) U[j] = t < A ? __ldg(sp + j * A) : make_int2(DUMMY, 0);
+                for (int j = 0; j < @JN@; j++)
+                    U[j] = t < A ? __ldg(sp + j * A) : make_int2(DUMMY, 0);
             }
             if (t == 0) {
                 while (ld_acquire(bar) < target) { }
@@ -476,7 +481,10 @@ YADD = r"""
             {   // phase @P1@'s outputs (the dims this block reads) into the residual
                 const float* Yp = Y + @P1@ * DP;
                 const int* yl = blob + d[12];
-                for (int i = t; i < d[11]; i += NT) { const int dm = yl[i]; sx[dm] += __ldcg(Yp + dm); }
+                for (int i = t; i < d[11]; i += NT) {
+                    const int dm = yl[i];
+                    sx[dm] += __ldcg(Yp + dm);
+                }
                 __syncthreads();
             }"""
 
@@ -517,11 +525,14 @@ UNITS = r"""
                 const int hw = min(d[4], NT / 32 - 1) * 32;  // the first warps take the heads
                 for (int u = t - hw; u < d[2]; u += NT - hw) {
                     if (u < 0) break;
-                    const int4 e = *(const int4*)(un + 4 * u);
-                    const float a = pc[e.x < 0 ? ZB : e.x];
-                    const float bb = pc[e.y < 0 ? ZB : e.y];
-                    const float val = __int_as_float(e.w) * a * fmaxf(bb, 0.0f);
-                    if (val != 0.0f) atomicAdd(Ycur + e.z, val);
+                    // (a row | b row << 16; 0xffff: empty), (out dim | the coef's bf16 << 16)
+                    const int2 e = *(const int2*)(un + 2 * u);
+                    const int ra = e.x & 0xffff, rb = (unsigned)e.x >> 16;
+                    const float a = pc[ra == 0xffff ? ZB : ra];
+                    const float bb = pc[rb == 0xffff ? ZB : rb];
+                    const float coef = __uint_as_float((unsigned)e.y & 0xffff0000u);
+                    const float val = coef * a * fmaxf(bb, 0.0f);
+                    if (val != 0.0f) atomicAdd(Ycur + (e.y & 0xffff), val);
                 }
             }"""
 
@@ -653,7 +664,6 @@ class Exec4:
                   "JM": self.JM, "QM": QM, "NKEEP": self.NKEEP, "NCODE": self.NCODE,
                   "NFAM": self.NFAM, "V0": v0}
         self.src = gen_src(consts, self.phases)
-        G = NT // 128
         self.smem = 4 * (self.DP + self.HMAX + self.PARTMAX + self.BLOBMAX)
         self.kern = _Kernel(self.src, self.smem)
         occ = self.kern.occupancy(NT)
@@ -706,6 +716,12 @@ class Exec4:
         D, NB, DP, NPH = self.D, self.NB, self.DP, self.NPH
         f32 = np.float32
         fbits = lambda x: int(np.float32(x).view(np.int32))
+
+        def bf16(x):
+            """x's bf16 bits << 16 (asserted lossless)."""
+            b = int(np.float32(x).view(np.uint32))
+            assert b & 0xffff == 0, f"{x} is not bf16-exact"
+            return b & 0xffff0000
 
         def lagged(ch):
             return {lag * D + d: float(cf) * tw for lag, tw in enumerate(ch.taps) if tw
@@ -837,18 +853,20 @@ class Exec4:
                 bp_pieces[p, bi] = pieces
                 # this block-phase's tables
                 bl = blobs[bi]
-                bl += [0] * (-len(bl) % 4)  # units are read as int4
+                bl += [0] * (-len(bl) % 2)  # units are read as int2
                 units_at = len(bl)
                 for ra, rb, out, coef in units:
-                    bl += [ra, rb, out, fbits(coef)]
+                    assert -1 <= ra < 0xffff and -1 <= rb < 0xffff and 0 <= out < 1 << 16
+                    w0 = (ra & 0xffff) | ((rb & 0xffff) << 16)
+                    bl += [int(np.uint32(w0).view(np.int32)), int(np.uint32(out | bf16(coef))
+                                                                  .view(np.int32))]
                 vh_at = len(bl)
                 bl += [0] * (16 * len(vhr))
                 for x, (q0, k0, v0_, z0, ar, br, vh) in enumerate(vhr):
                     bl += [0] * (-len(bl) % 4)
-                    ow_at = len(bl)
-                    bl += [fbits(w) for w in vh["ow"]]
-                    od_at = len(bl)
-                    bl += [int(dd) for dd in vh["od"]]
+                    ow_at = od_at = len(bl)  # one word a column: out dim | bf16 weight << 16
+                    bl += [int(np.uint32(int(dd) | bf16(w)).view(np.int32))
+                           for dd, w in zip(vh["od"], vh["ow"])]
                     bl[vh_at + 16 * x: vh_at + 16 * x + 12] = [
                         q0, k0, v0_, z0, ar, br, vh["nrows"], vh["sofs"], ow_at, od_at,
                         vh["qhot"], fbits(vh["bconst"])]

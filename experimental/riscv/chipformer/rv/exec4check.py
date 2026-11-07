@@ -222,7 +222,9 @@ def time_check(c, T, v0, progs, cache, reps: int = 3, v2: bool = True, **kw) -> 
              "v4_same_as_reference": got == stream[1:] + [-1],
              "v4_us_per_step": round(best / len(stream) * 1e6, 2),
              "v4_tok_per_s": round(len(stream) / best),
-             "v4_instr_per_s": round(st["instructions"] / best)}
+             "v4_instr_per_s": round(st["instructions"] / best),
+             "phases": ex.NPH, "smem": ex.smem, "slots": ex.n_slots,
+             "value_heads": len(ex.vheads)}
         if v2:
             n = min(3000, len(stream) - 25)
             core.snapshot(c, ref.Machine.from_program(prog))
@@ -274,8 +276,8 @@ def main() -> None:
     elif args.what == "plan":
         core.snapshot(c, ref.Machine.from_program(elf.program(DATA / f"{args.progs[0]}.elf")))
         ex = make_exec(c, T, v0, cache)
-        print(json.dumps({"phases": ex.NPH, "JM": ex.JM, "NB": ex.NB, "smem": ex.smem, "HMAX": ex.HMAX,
-                          "PARTMAX": ex.PARTMAX, "slots": ex.n_slots,
+        print(json.dumps({"phases": ex.NPH, "JM": ex.JM, "NB": ex.NB, "smem": ex.smem,
+                          "HMAX": ex.HMAX, "PARTMAX": ex.PARTMAX, "slots": ex.n_slots,
                           "phase_stats": ex.phase_stats}), flush=True)
     elif args.what == "tf":
         tf_check(c, T, v0, args.progs, args.n, cache)
