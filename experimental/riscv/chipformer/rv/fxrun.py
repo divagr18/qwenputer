@@ -251,15 +251,32 @@ def main():
     if a.mode == "ref":
         n = seg = 0
         last = None
+        fams: dict = {}
+        cum = []  # (rv32emu instructions at each ecall, tokens so far, instructions so far)
+        li = 0
         for toks, t in segments(m, log, a.max_tokens or None, not a.from_reset):
             if toks is not None:
                 n += len(toks)
                 seg += 1
                 last = toks
-        fams = {}
+                arr = np.asarray(toks)
+                u, k = np.unique(arr, return_counts=True)
+                for tok, cnt in zip(u.tolist(), k.tolist()):
+                    f = S.family(tok)[0]
+                    fams[f] = fams.get(f, 0) + cnt
+                cum.append((n, m.steps))
         print("segments", seg, "tokens", n, "instr", m.steps, "pages", len(m.pt), "frames used", m.nf,
               "words", len(m.wr), "s", round(time.time() - t0, 1))
-        print("last", [S.name(t) for t in last[-3:]], "end", end_check(m, z) if not a.max_tokens else "")
+        res.update(segments=seg, tokens=n, instructions=m.steps, pages=len(m.pt), frames_used=m.nf,
+                   words=len(m.wr), families=fams, cum=cum,
+                   image_words=len(m.image), rom_words=len(m.rom))
+        print("last", [S.name(t) for t in last[-3:]])
+        if not a.max_tokens:
+            res["end"] = end_check(m, z)
+            print(res["end"])
+        print(json.dumps(dict(sorted(fams.items(), key=lambda kv: -kv[1]))))
+        if a.out:
+            json.dump(res, open(a.out, "w"))
         return
     c = core.build(cfg=cfg)
     print("built", c.stats(), round(time.time() - t0, 1), flush=True)
