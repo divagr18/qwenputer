@@ -11,7 +11,7 @@ import json
 import sys
 from pathlib import Path
 
-STEPS = ["no units (pruned: no)", "+ memmove, memcpy", "+ token estimate", "+ JSON string scan", "+ eqlBytes",
+STEPS = ["baseline, no units", "+ memmove, memcpy", "+ token estimate", "+ JSON string scan", "+ eqlBytes",
          "+ ASCII run", "+ realloc copy", "+ writeOneLine (2 loops)", "+ memset", "+ SHA-256"]
 # row 24's emulator estimate of each step's saving (tokens, whole run from reset), docs/fx/circuits.md
 EST = [0, 1932868, 568519, 338408, 203517, 127907, 119103, 81322, 50024, 1175007]
