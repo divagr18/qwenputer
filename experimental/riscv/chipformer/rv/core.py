@@ -1151,14 +1151,14 @@ def build(target: Target | None = None, text=None) -> RvCore:
     c_hi7 = c.and_([1 - b for b in C[7:32]], "mc.c7")
     c_hi5 = c.and_([1 - b for b in C[5:32]], "mc.c5")
     mv_n = c.node(c.t_in(from_bits(C[0:7]), 4, RF.MACRO_MAX["MMOVE"] + 1, 0, 127, lits=[c_hi7]), "mv.n")
-    eq_n = c.node(c.t_in(from_bits(C[0:5]), 1, RF.MACRO_MAX["MEQL"] + 1, 0, 31, lits=[c_hi5]), "eq.n")
+    meq_n = c.node(c.t_in(from_bits(C[0:5]), 1, RF.MACRO_MAX["MEQL"] + 1, 0, 31, lits=[c_hi5]), "eq.n")
     r_hi0 = c.and_([1 - b for b in r[7:32]], "mv.rhi0")
     r_ge = c.node(c.t_and([1 - r_hi0])
                   + c.t_ge(from_bits(r[0:7]) - from_bits(C[0:7]), 0, -127, 127, lits=[r_hi0]), "mv.rge")
     fwd = c.node(c.t_and([sltu]) + c.t_and([1 - sltu, r_ge]), "mv.fwd")  # a < b or a - b >= n
     fire = c.node(c.t_and([mmove, 1 - A[0], 1 - A[1], 1 - B[0], 1 - B[1], 1 - C[0], 1 - C[1], mv_n,
                            in_a, in_b, 1 - eq, fwd])
-                  + c.t_and([meql, eq_n, in_a, in_b, 1 - eq]), "macro.fire")
+                  + c.t_and([meql, meq_n, in_a, in_b, 1 - eq]), "macro.fire")
     mtgt = add_nibbles(c, w, moff + [Expr()] * 6, 4, [macro], "mtgt")
     case(nr + [macro, fire], "MP")
     case(nr + [macro, 1 - fire, eq], "J", mtgt)
@@ -1215,6 +1215,7 @@ def build(target: Target | None = None, text=None) -> RvCore:
         owner = c.node(c.t_and([running]) + c.t_and([fam["HALT"]])
                        + c.t_and([c.isTCC, one - running]), "owner")
     c.owner = owner
+    c.cases = cases  # (for debugging: literals, family, payload)
     own = [owner] if text else []
     fam_cases = [(l_, FAM_ID[fn]) for l_, fn, _ in cases]
     pay_cases = [(l_, pl) for l_, _, pl in cases if not isinstance(pl, int)]
