@@ -204,6 +204,8 @@ counts neither the host's time at ecalls nor Qwen's text. This is row 24 with no
    every position, and the residual checks compare every dim.
 
 ## Blockers
+`live.md` replaces blocker 1: real I/O through the token stream, no pokes after the snapshot.
+
 1. Real I/O: imports are served from a recorded log, and each resume pokes registers and memory into
    the state. That is the bridge's work. Every number above is the CPU's, with no host time.
 2. The frame budget is 1.45x one short session; a longer one faults when frames run out.

@@ -48,7 +48,7 @@ class Recorder:
             return wr(p, b)
 
         def hc2(ident, argp, nwords):
-            words = ctypes.string_at(h.base + argp, 4 * nwords) if nwords else b""
+            words = h.arg_bytes(argp, nwords) if nwords else b""
             r = hc(ident, argp, nwords)
             self.sha.update(b"C%d:" % ident + words + b"=%d;" % r)
             self.calls += 1

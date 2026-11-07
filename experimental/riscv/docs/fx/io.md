@@ -452,6 +452,9 @@ No chip that runs fx on the circuit exists yet, so `fx_session` still runs again
 
 ## Blockers
 
+`live.md` takes these up on the chip: the capture window (1), snapshots on the real path (5) and a
+small-scale loaded-machine check (7). `fx_session` below is superseded by `fx/fxio/live_chip.py`.
+
 1. **Capture window.** Qwen to the CPU is 80 tokens in the circuit. Real Qwen needed 795 tokens and
    3,314 bytes in one call (M), so a `write_file` is well past it. speedups §13's 4-8k-token
    buffer is required before any of this runs in weights.
