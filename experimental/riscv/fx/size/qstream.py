@@ -261,6 +261,8 @@ def main():
 
             lay = build_layer(cfg, i, dict(sd))
             for sname, s in SCHEMES.items():
+                if sname.startswith("bnb_"):
+                    var.clear()  # each bnb scheme alone uses its method: hold one at a time
                 sub = dict(sd)
                 for name in sd:
                     fam = family(name)
