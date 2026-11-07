@@ -96,9 +96,49 @@ class ExecRow:
         return self.kbuf
 
 
+class ExecRow4:
+    """One conversation's circuit on executor v4 (exec4.py: one persistent kernel per launch).
+    ExecRow's interface plus burst(): the chip-token loop on the GPU."""
+
+    def __init__(self, chat: "RvChat", base=None) -> None:
+        from chipformer.rv import exec4
+
+        self.chat = chat
+        if base is None:
+            self.ex = exec4.Exec4(chat.c, chat.dev, text=chat.T, v0=chat.v0,
+                                  tables=exec4.cached_tables(chat.c, chat.T, chat.v0))
+        else:
+            self.ex = base.ex.fork()
+
+    @torch.no_grad()
+    def start(self, ids: list[int]) -> None:
+        """As ExecRow.start: the prompt from zero states (one launch), then every head's state
+        set to its init, the lag history kept."""
+        self.ex.zero_state()
+        self.ex.reset()
+        if ids:
+            self.ex.run(self.chat._exec_emb(ids), mode=self.ex.FORCED, max_steps=len(ids))
+        self.ex.load_init()
+
+    @torch.no_grad()
+    def step(self, ids: int) -> torch.Tensor:
+        """One token through the circuit; returns the kept values (fp32, the code first)."""
+        _, _, keep = self.ex.run(self.chat._exec_emb([ids]), mode=self.ex.FORCED, max_steps=1)
+        return keep
+
+    @torch.no_grad()
+    def burst(self, ids: int, limit: int) -> list[int]:
+        """A chip token, then the circuit's predictions fed back while they are chip tokens, at
+        most ``limit`` steps: the prediction after every step (model ids; -1: the circuit owns
+        no next token; -2: its code names no token)."""
+        toks = self.ex.run(self.chat._exec_emb([ids]), mode=self.ex.CHIP,
+                           max_steps=max(1, limit), keep=False)
+        return toks.tolist()
+
+
 class RvChat:
     def __init__(self, path, device: str | None = None, fast: bool = True,
-                 executor: bool = False) -> None:
+                 executor: bool = False, exec_kind: str = "v4") -> None:
         from transformers import AutoTokenizer, Qwen3_5ForCausalLM
 
         from chipformer.q35.fast import exact_matmuls
@@ -123,6 +163,8 @@ class RvChat:
         # executor "verify": both chip paths, the HF view's hc checked against the executor's
         self.executor = executor if self.dev == "cuda" else False
         self.verify = self.executor == "verify"
+        # the executor: "v4" (exec4.py, the chip-token loop on the GPU) or "v2" (tritonexec)
+        self.exec_kind = exec_kind
         if self.executor:
             self._build_exec()
         if self.fast and (not self.executor or self.verify):
@@ -143,7 +185,11 @@ class RvChat:
         self.keep_cols = torch.tensor(cols, device=self.dev)
         self.d0 = self.meta["chip_dims_offset"]
         self.emb_cache: dict[int, torch.Tensor] = {}
-        self.erow = ExecRow(self)
+        self.erow = ExecRow4(self) if self.exec_kind == "v4" else ExecRow(self)
+
+    def new_erow(self):
+        """A further conversation row's executor (RvBatch)."""
+        return ExecRow4(self, self.erow) if self.exec_kind == "v4" else ExecRow(self)
 
     def _exec_emb(self, ids: list[int]) -> torch.Tensor:
         """Executor input rows for model ids (cached per id; shared by every ExecRow)."""
@@ -327,6 +373,9 @@ class RvChat:
         """Greedy decoding after the prompt ``ids`` with the parked ``machine`` loaded.
         ``lock`` (a Session on a copy of the machine): stop at the first token that differs from
         the reference's. ``on_token(id)`` is called with every generated model id as it comes."""
+        if self.executor and not self.verify and self.exec_kind == "v4":
+            return self._generate_v4(ids, machine, max_new, max_chip, check_head, verbose, lock,
+                                     on_token)
         x = torch.tensor([ids], device=self.dev)
         out = self.model(input_ids=x, use_cache=True)
         cache = out.past_key_values  # (fast: Qwen's layers only)
@@ -430,6 +479,108 @@ class RvChat:
                 "seconds": dt, "head_mismatch": mismatch, "lock_error": lock_error,
                 "verify_mismatch": n_verify_bad if self.verify else None,
                 "chip_seconds": round(t_chip, 2), "text_seconds": round(t_text, 2)}
+
+    @torch.no_grad()
+    def _generate_v4(self, ids, machine, max_new, max_chip, check_head, verbose, lock,
+                     on_token) -> dict:
+        """generate on executor v4: the same tokens and result; a chip token starts a burst
+        (ExecRow4.burst: the circuit runs on the GPU until it predicts a token that is not a
+        chip token), whose predictions are then taken one by one as generate takes them."""
+        x = torch.tensor([ids], device=self.dev)
+        out = self.model(input_ids=x, use_cache=True)
+        cache = out.past_key_values
+        core.snapshot(self.c, machine)
+        self._exec_start(ids)
+        logits = out.logits[0, -1]
+        pos = len(ids)
+        gen, n_text, n_chip_tok = [], 0, 0
+        nxt = int(torch.argmax(logits[: self.v0]))
+        t0 = time.time()
+        mismatch = 0
+        t_chip = t_text = 0.0
+        expect, lock_error = [], None
+        pending: list[int] = []  # the current burst's predictions not taken yet (reversed)
+        n_bursts = 0
+        while n_text < max_new and n_chip_tok < max_chip:
+            gen.append(nxt)
+            if on_token is not None:
+                on_token(nxt)
+            if lock is not None:  # check against the reference as we go
+                st = nxt - self.v0 if nxt >= self.v0 else BR.text_token(nxt)
+                if expect:
+                    e = expect.pop(0)
+                    if st != e:
+                        lock_error = {"at": len(gen) - 1, "got": S.name(st) if st < S.VOCAB
+                                      else self.tok.decode([nxt]),
+                                      "want": S.name(e) if e < S.VOCAB
+                                      else self.tok.decode([e - S.TEXT_TOKEN]),
+                                      "recent": [S.name(t - self.v0) if t >= self.v0 else
+                                                 self.tok.decode([t]) for t in gen[-12:]]}
+                        break
+                elif st < S.VOCAB:
+                    lock_error = {"at": len(gen) - 1, "got": S.name(st), "want": "text"}
+                    break
+                else:
+                    k = len(lock.toks)
+                    try:
+                        lock.qwen([nxt])
+                    except RuntimeError as e:  # the reference run did not halt
+                        lock_error = {"at": len(gen) - 1, "got": str(e), "want": "a halt"}
+                        break
+                    expect = list(lock.toks[k + 1:])
+            if nxt in self.eos:
+                break
+            if verbose and len(gen) % 500 == 0:
+                tail = [S.name(t - self.v0) if t >= self.v0 else repr(self.tok.decode([t]))
+                        for t in gen[-8:]]
+                print(f"  {len(gen)} tokens ({n_text} text, {n_chip_tok} chip) "
+                      f"{time.time() - t0:.0f}s: {' '.join(tail)}", flush=True)
+            ts = time.time()
+            if nxt >= self.v0 and not pending and lock is None and on_token is None \
+                    and not verbose:
+                # a burst taken whole: the loop would append its chip predictions one by one
+                # and only the last can be a text token (or -1 / -2) or reach max_chip
+                toks = self.erow.burst(nxt, max_chip - n_chip_tok)
+                n_bursts += 1
+                gen.extend(toks[:-1])
+                n_chip_tok += len(toks)
+                nxt = toks[-1]
+                t_chip += time.time() - ts
+                if nxt == -1:
+                    raise RuntimeError("the circuit gave up a chip position")
+                if nxt == -2:
+                    raise RuntimeError("the circuit predicts no token")
+                continue
+            if nxt >= self.v0:  # a chip token
+                if not pending:
+                    pending = self.erow.burst(nxt, max_chip - n_chip_tok)
+                    pending.reverse()
+                    n_bursts += 1
+                n_chip_tok += 1
+                nxt = pending.pop()
+                t_chip += time.time() - ts
+                if nxt == -1:
+                    raise RuntimeError("the circuit gave up a chip position")
+                if nxt == -2:
+                    raise RuntimeError("the circuit predicts no token")
+            else:
+                assert not pending
+                n_text += 1
+                keep = self._exec_step(nxt)
+                hc = self._exec_hc(nxt, keep)
+                logits = self._qwen_step(hc, cache, pos)
+                pos += 1
+                ct = self.circuit_token(hc)
+                q = int(torch.argmax(logits))
+                if ct is not None and check_head and q != ct:
+                    mismatch += 1
+                nxt = ct if ct is not None else int(torch.argmax(logits[: self.v0]))
+                t_text += time.time() - ts
+        dt = time.time() - t0
+        return {"tokens": gen, "text_tokens": n_text, "chip_tokens": n_chip_tok,
+                "seconds": dt, "head_mismatch": mismatch, "lock_error": lock_error,
+                "verify_mismatch": None, "chip_seconds": round(t_chip, 2),
+                "text_seconds": round(t_text, 2), "bursts": n_bursts}
 
     def to_stream(self, ids: list[int]) -> list[int]:
         """Model ids -> the circuit's token stream (chip tokens, TEXT_TOKEN | qwen id)."""

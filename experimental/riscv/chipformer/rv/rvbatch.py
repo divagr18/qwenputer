@@ -38,12 +38,10 @@ class Job:
 
 class RvBatch:
     def __init__(self, chat, batch: int = 8, max_len: int = 8192) -> None:
-        from chipformer.rv.chat import ExecRow
-
         assert chat.executor and not chat.verify
         self.chat, self.B, self.max_len = chat, batch, max_len
         self.dev = chat.dev
-        self.rows = [chat.erow] + [ExecRow(chat) for _ in range(batch - 1)]
+        self.rows = [chat.erow] + [chat.new_erow() for _ in range(batch - 1)]
         self.pos = torch.zeros(batch, dtype=torch.long, device=self.dev)
         self.slots = torch.arange(max_len, device=self.dev)
         self.cache = None  # _Rows, built from the first prefill's cache (its shapes)
@@ -96,6 +94,8 @@ class RvBatch:
         mismatch = 0
         t_chip = 0.0
         expect, lock_error = [], None
+        burst = getattr(erow, "burst", None)  # executor v4: the chip-token loop on the GPU
+        pending: list[int] = []
         while n_text < budget and n_chip_tok < max_chip:
             gen.append(nxt)
             if lock is not None:
@@ -122,6 +122,18 @@ class RvBatch:
             if nxt in chat.eos:
                 break
             ts = time.time()
+            if burst is not None and nxt >= chat.v0:  # as RvChat._generate_v4
+                if not pending:
+                    pending = burst(nxt, max_chip - n_chip_tok)
+                    pending.reverse()
+                n_chip_tok += 1
+                nxt = pending.pop()
+                t_chip += time.time() - ts
+                if nxt == -1:
+                    raise RuntimeError("the circuit gave up a chip position")
+                if nxt == -2:
+                    raise RuntimeError("the circuit predicts no token")
+                continue
             keep = erow.step(nxt)
             if nxt >= chat.v0:  # a chip token
                 n_chip_tok += 1
