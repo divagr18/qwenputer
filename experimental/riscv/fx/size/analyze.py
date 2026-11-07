@@ -28,6 +28,20 @@ if which == "fx":
     cfg = fxrun.fx_cfg(image)
 c = core.build(core.T4B, T, cfg=cfg) if cfg else core.build(core.T4B, T)
 print("stats", c.stats())
+import numpy as np
+from chipformer.q35.ir import Head as _H
+# taps of every channel: a single positive lag can be gated, a mixed one cannot
+from collections import Counter as _C
+tp = _C()
+for n in c.nodes:
+    if isinstance(n, _H):
+        chs = list(n.q.values()) + list(n.k.values())
+        for vh in n.vheads():
+            chs += list(vh.v.values())
+        for ch in chs:
+            nz = tuple(i for i, x in enumerate(ch.taps) if x)
+            tp[(nz, all(x >= 0 for x in ch.taps))] += 1
+print("taps (lags, all >= 0)", dict(tp))
 keep = set(c.keep)
 al = allocate(c, None, keep, core.T4B.intermediate)
 h, m = pick_hidden(2560, 1 + al.n_slots)
@@ -67,5 +81,5 @@ print("token features nonzero on text", len(Tinit), "dims active on text", len(T
 print("peak live: chip-only", pk, "all", SP.peak(c, range(1, len(c.dims)), keep, top))
 pickle.dump(dict(stats=c.stats(), slots=al.n_slots, hidden=h, m=m, nnz=dict(nnz),
                  per={L: dict(v) for L, v in per.items()}, zero_mlp=zero_mlp, Tinit=len(Tinit),
-                 Tset=len(Tset), C=len(C), why=dict(why), peakC=pk, vocab=c.vocab, total=total,
+                 Tset=len(Tset), C=len(C), why=dict(why), peakC=pk, vocab=getattr(c, "vocab", S.VOCAB), total=total,
                  distinct=len(values)), open(out, "wb"))

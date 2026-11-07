@@ -7,7 +7,6 @@ q4p2: emit the chip layers sparse (rv-q4p2's circuit, hidden 3968, m 62), expand
 chunk and compare it with the bytes on the Hub: nothing is stored, nothing is held but one chunk.
 Both modes also write the sparse chip to disk and report its size (raw and compressed).
 """
-import hashlib
 import json
 import os
 import pickle
@@ -115,8 +114,11 @@ def main():
     assert all(k in H for k in names), [k for k in names if k not in H][:5]
     t0 = time.time()
     ok = bad = 0
-    sha = hashlib.sha256()
     first_bad = []
+    donef = f"{scratch}/verify_{which}.done.json"
+    done = json.load(open(donef)) if os.path.exists(donef) else {}
+    names = [k for k in names if k not in done]
+    print("already verified", len(done), "left", len(names), flush=True)
 
     def one(k):
         t = H[k]
@@ -141,6 +143,10 @@ def main():
     with ThreadPoolExecutor(3) as ex:
         for k, same, nb, where in ex.map(one, names):
             total += nb
+            done[k] = dict(same=same, bytes=nb)
+            with open(donef + ".tmp", "w") as f:
+                json.dump(done, f)
+            os.replace(donef + ".tmp", donef)
             if same:
                 ok += 1
             else:
@@ -149,7 +155,9 @@ def main():
                 print("DIFF", k, where, flush=True)
             if (ok + bad) % 14 == 0:
                 print(ok, bad, total / 1e9, round(time.time() - t0), flush=True)
-    res.update(tensors_identical=ok, tensors_different=bad, bytes_compared=total, first_bad=first_bad[:20])
+    res.update(tensors_identical=sum(v["same"] for v in done.values()),
+               tensors_different=sum(not v["same"] for v in done.values()),
+               bytes_compared=sum(v["bytes"] for v in done.values()), first_bad=first_bad[:20])
     print(res, flush=True)
     json.dump(res, open(f"{scratch}/verify_{which}.json", "w"), indent=1)
 

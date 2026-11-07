@@ -42,7 +42,7 @@ def stats(raw):
                 h0_split_bits=(H0(lo) + H0(hi)) / 2 / 8)
 
 
-def sample(t, windows=6, rows=8):
+def sample(t, windows=4, rows=8):
     """Evenly spaced windows of whole rows."""
     n = t["shape"][0]
     rowb = (t["b"] - t["a"]) // n
@@ -73,8 +73,9 @@ fams = ["linear_attn.in_proj_qkv", "linear_attn.in_proj_z", "linear_attn.out_pro
 chip_keys = [(f"chip {f}", f"model.layers.{L}.{f}.weight") for L in (1, 3, 6, 7, 10) for f in fams]
 qwen_keys = [(f"qwen {f}", f"model.layers.{L}.{f}.weight") for L in (11, 20, 41) for f in fams]
 emb = H["qp"]["model.embed_tokens.weight"]
-out["qp_chip"] = run("qp", chip_keys)
-out["qp_qwen"] = run("qp", qwen_keys)
+if "--base-only" not in sys.argv:
+    out["qp_chip"] = run("qp", chip_keys)
+    out["qp_qwen"] = run("qp", qwen_keys)
 base_keys = [(f"base {f}", f"model.language_model.layers.{L}.{f}.weight") for L in (0, 9, 30) for f in fams]
 base_keys += [("base embed", "model.language_model.embed_tokens.weight")]
 out["base"] = run("base", base_keys)
@@ -101,4 +102,4 @@ for f, cols in (("linear_attn.in_proj_z", 3968), ("linear_attn.in_proj_b", 3968)
     P[f] = dict(chip_cols_nonzero=[int(x) for x in nz[:8]], n=len(nz))
     print("padding", f, P[f], flush=True)
 out["padding"] = P
-json.dump(out, open(sp + "/sample.json", "w"), indent=1)
+json.dump(out, open(sp + ("/sample_base.json" if "--base-only" in sys.argv else "/sample.json"), "w"), indent=1)

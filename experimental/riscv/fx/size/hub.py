@@ -13,7 +13,7 @@ if _t:
 
 def rng(url, a, b):
     """bytes a..b-1"""
-    for i in range(6):
+    for i in range(12):  # a laptop's network drops for minutes, not seconds
         try:
             r = S.get(url, headers={"Range": f"bytes={a}-{b-1}"}, timeout=120, allow_redirects=True)
             if r.status_code in (200, 206):
@@ -23,7 +23,7 @@ def rng(url, a, b):
             print("status", r.status_code, file=sys.stderr)
         except Exception as e:
             print("retry", e, file=sys.stderr)
-        time.sleep(2 ** i)
+        time.sleep(min(2 ** i, 60))
     raise RuntimeError("range read failed")
 
 def shards(repo, rev="main"):
