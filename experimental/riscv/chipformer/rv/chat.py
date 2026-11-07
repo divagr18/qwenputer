@@ -17,6 +17,7 @@ circuit-owned token must equal the IR's prediction and the reference's next toke
 import argparse
 import json
 import time
+from copy import deepcopy
 from pathlib import Path
 
 import numpy as np
@@ -332,6 +333,40 @@ class RvChat:
                                   position_ids=p4[0], past_key_values=cache)
         return self.model.lm_head(self.lm.norm(h))[0, -1]
 
+    @torch.no_grad()
+    def _qwen_prefill(self, hcs, cache, pos: int):
+        """_qwen_step on a run of text tokens as one chunk (speedups.md §4): Qwen predicts nothing
+        inside a run of circuit-emitted text and Qwen's layers never feed the chip layers, so its
+        positions need not go one at a time. hcs: (n, hidden). Returns the last position's logits.
+        Text numerics move at bf16 rounding against _qwen_step, as prefill does against decode."""
+        from transformers.masking_utils import create_causal_mask, create_recurrent_attention_mask
+
+        h = hcs.unsqueeze(0)
+        ids = torch.arange(pos, pos + h.shape[1], device=self.dev).view(1, -1)
+        p4 = ids.unsqueeze(0).expand(4, 1, -1)
+        kw = {"config": self.lm.config, "inputs_embeds": h, "attention_mask": None,
+              "past_key_values": cache, "position_ids": p4[0]}
+        masks = {"full_attention": create_causal_mask(**kw),
+                 "linear_attention": create_recurrent_attention_mask(**kw)}
+        pe = self.lm.rotary_emb(h, p4[1:])
+        for i in range(self.n_chip, len(self.lm.layers)):
+            h = self.lm.layers[i](h, position_embeddings=pe, position_ids=p4[0], past_key_values=cache,
+                                  attention_mask=masks[self.lm.config.layer_types[i]])
+        return self.model.lm_head(self.lm.norm(h))[0, -1]
+
+    def _text_hc(self, ids: list[int]):
+        """Residuals after the chip layers for text the chip does not run: the embedding rows,
+        and with the executor the kept dims as they stand at the park (fx_keep)."""
+        x = self.lm.embed_tokens(torch.tensor(ids, device=self.dev))
+        if not self.executor:
+            return x
+        h = torch.zeros_like(x)
+        h[:, : self.d0] = x[:, : self.d0]
+        keep = getattr(self, "fx_keep", None)
+        if keep is not None:
+            h[:, self.keep_cols] = keep.to(x.dtype)
+        return h
+
     # --- one position ----------------------------------------------------------------------
     @torch.no_grad()
     def _layers(self, ids, cache, pos: int | None):
@@ -588,6 +623,80 @@ class RvChat:
 
     def text_of(self, ids: list[int]) -> str:
         return self.tok.decode([i for i in ids if i < self.v0], skip_special_tokens=False)
+
+
+class FxQwen:
+    """RvChat's Qwen as a fx/fxio DeltaLink backend (docs/fx/io.md): text fx has rendered goes in
+    as one chunked prefill, not a token at a time, and Qwen's state keeps what it already read.
+    The prefill does not touch the chip layers: with fx parked in fx_http_stream_open there is
+    no run for that text to belong to. Snapshots are host-side copies of Qwen's state.
+    ``forced``: generations to replay instead of predicting (a test's teacher forcing)."""
+
+    def __init__(self, chat: RvChat, forced=None, chunk: int = 2048) -> None:
+        self.chat, self.forced, self.chunk = chat, forced, chunk
+        self.reset()
+
+    def reset(self) -> None:
+        from transformers import DynamicCache
+
+        self.cache = DynamicCache(config=self.chat.model.config)
+        self.pos, self.logits = 0, None
+        self.snaps: dict[int, tuple] = {}
+
+    def feed(self, ids: list[int]) -> None:
+        for a in range(0, len(ids), self.chunk):
+            part = ids[a:a + self.chunk]
+            self.logits = self.chat._qwen_prefill(self.chat._text_hc(part), self.cache, self.pos)
+            self.pos += len(part)
+
+    def snapshot(self, n: int) -> None:
+        assert n == self.pos
+        self.snaps[n] = (deepcopy(self.cache), self.logits.clone())
+
+    def restore(self, n: int) -> None:
+        cache, logits = self.snaps[n]
+        self.cache, self.logits, self.pos = deepcopy(cache), logits.clone(), n
+        for k in [k for k in self.snaps if k > n]:
+            del self.snaps[k]
+
+    def _hc(self, t: int):
+        c = self.chat
+        if c.executor:  # the chip reads what Qwen writes, as in generate
+            c.fx_keep = c._exec_step(t)
+            return c._exec_hc(t, c.fx_keep)
+        return c._text_hc([t])[0]
+
+    @torch.no_grad()
+    def generate(self, max_new: int, stop_ids) -> list[int]:
+        c = self.chat
+        forced = self.forced.pop(0) if self.forced else None
+        out: list[int] = []
+        while len(out) < max_new:
+            t = forced[len(out)] if forced is not None else int(torch.argmax(self.logits[: c.v0]))
+            out.append(t)
+            if t in stop_ids:
+                break
+            self.logits = c._qwen_step(self._hc(t), self.cache, self.pos)
+            self.pos += 1
+        return out
+
+
+def fx_session(chat: RvChat, chip, template, max_new: int = 8192, forced=None) -> list[dict]:
+    """The packet path: fx's chip runs until it wants the model, Qwen answers, repeat.
+    ``chip``: next_request() -> a REQUEST packet or None; deliver(a REPLY packet).
+    No chip that runs fx on the circuit exists yet (the memory map is separate work); the tests
+    use one that replays recorded packets."""
+    import sys
+
+    sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "fx" / "fxio"))
+    import delta as D
+    import protocol as P
+
+    link = D.DeltaLink(template, FxQwen(chat, forced), max_new=max_new)
+    while (pkt := chip.next_request()) is not None:
+        chunks, _ = link.call(P.parse_request(pkt)[2])
+        chip.deliver(P.reply(pkt.seq, chunks))
+    return link.records
 
 
 def replay(chat: RvChat, prompt: list[int], gen: list[int], firmware) -> dict:

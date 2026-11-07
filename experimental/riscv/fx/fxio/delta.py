@@ -353,7 +353,8 @@ class DeltaLink:
 
     - exact: the render starts with ctx. Only the rest is fed.
     - rollback: it does not. The backend goes back to the longest snapshot that is a prefix of
-      the render (snapshots are taken where generation starts) and the rest is fed from there.
+      the render (snapshots are taken at message boundaries and where generation starts) and
+      the rest is fed from there.
     - rebuild: no snapshot fits: the state is reset and the whole render is fed.
 
     So after feed Qwen's state is the state a stateless server would build from this request,
@@ -385,6 +386,21 @@ class DeltaLink:
         self.snaps, self.ctx = [], []
         return "rebuild", 0
 
+    def _feed(self, ids: list[int], keep: int) -> None:
+        """Feeds ids[keep:] with a snapshot at each message boundary and where generation
+        starts. A new fx turn rewrites history (io.md), so the snapshot it needs is a boundary
+        inside an earlier prefill, not a generation start."""
+        start = self.t.tok.token_to_id("<|im_start|>")
+        cuts = [i for i in range(keep + 1, len(ids)) if ids[i] == start] + [len(ids)]
+        pos = keep
+        for c in cuts:
+            self.b.feed(ids[pos:c])
+            pos = c
+            if c not in self.snaps:
+                self.b.snapshot(c)
+                self.snaps.append(c)
+        self.ctx = list(ids)
+
     def call(self, raw: bytes) -> tuple[list[bytes], dict]:
         """One model call: request bytes in, the bytes of one SSE read out."""
         proto, msgs, tools = request_messages(json.loads(raw))
@@ -394,11 +410,7 @@ class DeltaLink:
         ctx_text = self.t.decode(self.ctx) if self.ctx else ""
         kind, keep = self._align(ids)
         suffix = ids[keep:]
-        self.b.feed(suffix)
-        self.ctx = list(ids)
-        if not self.snaps or self.snaps[-1] != len(self.ctx):
-            self.b.snapshot(len(self.ctx))
-            self.snaps.append(len(self.ctx))
+        self._feed(ids, keep)
         gen = self.b.generate(self.max_new, self.t.stop_ids)
         stopped = bool(gen) and gen[-1] in self.t.stop_ids
         body_ids = gen[:-1] if stopped else gen

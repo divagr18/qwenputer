@@ -98,9 +98,10 @@ def raw_step(reasoning: str, text: str, call) -> str:
 class ScriptedBackend:
     """DeltaLink's backend interface with no model behind it."""
 
-    def __init__(self, template, task: str, pad: bool = True) -> None:
+    def __init__(self, template, task: str, pad: bool = True, extra: int = 0) -> None:
         self.t = template
-        self.per_step, self.steps = PLANS[task]
+        self.per_step, steps = PLANS[task]
+        self.steps = steps + [("In short: the change is made and verified.", None)] * extra
         self.pad = pad
         self.i = 0
         self.pos = 0

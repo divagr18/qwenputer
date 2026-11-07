@@ -1,6 +1,6 @@
 """Qwen3.5 in HF transformers as a DeltaLink backend: one cache that only ever grows by what is
 fed, with snapshots where generation starts. DeltaNet states cannot be rolled back, so going
-back means restoring a snapshot.
+back means restoring a snapshot. None is evicted: the oldest are the ones a new turn needs.
 
 A snapshot is a host-side copy of the state, what a prefix cache is to a model server.
 """
@@ -13,12 +13,11 @@ import torch
 
 
 class HfBackend:
-    def __init__(self, model, device=None, temperature=0.0, top_k=0, top_p=1.0, seed=0, keep=24) -> None:
+    def __init__(self, model, device=None, temperature=0.0, top_k=0, top_p=1.0, seed=0) -> None:
         self.m = model.eval()
         self.dev = device or next(model.parameters()).device
         self.temperature, self.top_k, self.top_p = temperature, top_k, top_p
         self.gen = torch.Generator(device=self.dev).manual_seed(seed)
-        self.keep = keep
         self.seconds = {"feed": 0.0, "generate": 0.0}
         self.reset()
 
@@ -37,8 +36,7 @@ class HfBackend:
     @torch.no_grad()
     def _run(self, ids: list[int]) -> None:
         x = torch.tensor([ids], device=self.dev)
-        cp = torch.arange(self.pos, self.pos + len(ids), device=self.dev)
-        out = self.m(input_ids=x, past_key_values=self.cache, use_cache=True, cache_position=cp)
+        out = self.m(input_ids=x, past_key_values=self.cache, use_cache=True)
         self.cache = out.past_key_values
         self.logits = out.logits[0, -1]
         self.pos += len(ids)
@@ -53,8 +51,6 @@ class HfBackend:
     def snapshot(self, n: int) -> None:
         assert n == self.pos
         self.snaps[n] = (copy.deepcopy(self.cache), self.logits.clone())
-        while len(self.snaps) > self.keep:
-            del self.snaps[min(self.snaps)]
 
     def restore(self, n: int) -> None:
         cache, logits = self.snaps[n]

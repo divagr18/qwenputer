@@ -4,6 +4,8 @@
         --backend scripted | hf:NAME | replay:RUN_JSON  [--native] [--units all] [--seed N]
 
 `--native` is speed-iter's row 24 (fx's own read / edit / write on the CPU); without it, row 11.
+`--provider chat` is fx's configured Chat Completions route instead of its gateway route.
+`--turns 2` adds a second prompt (fx rewrites history at a new turn: io.md).
 `replay:RUN_JSON` answers from a recorded run's packets, and fails if fx's request differs from
 the recording by a byte. It re-measures a run with units on or off without the model: the
 units' contract is identical host I/O, and this run's hash chain checks it.
@@ -41,6 +43,8 @@ import units as U  # noqa: E402
 import wasifs  # noqa: E402
 
 GW = ["provider=gateway", "env=AI_GATEWAY_API_KEY=placeholder", "stream=event_chunk", "clock=frozen"]
+CHAT = ["provider=configured", "stream=event_chunk", "clock=frozen"]
+SECOND_PROMPT = "Thanks. Now summarize in two sentences what you changed."
 MAX_CALLS = 40
 
 
@@ -114,7 +118,7 @@ def make_link(args, template):
     if kind == "scripted":
         import scripted as SC
 
-        return D.DeltaLink(template, SC.ScriptedBackend(template, args.task)), None
+        return D.DeltaLink(template, SC.ScriptedBackend(template, args.task, extra=args.turns - 1)), None
     if kind == "replay":
         return ReplayLink(arg), None
     if kind == "hf":
@@ -126,13 +130,13 @@ def make_link(args, template):
 
 
 def session(args, template) -> dict:
-    opts = list(GW) + (["native=1", "fs=repo"] if args.native else [])
+    opts = list(GW if args.provider == "gateway" else CHAT) + (["native=1", "fs=repo"] if args.native else [])
     H.set_opts(**RH.parse_opts(opts))
-    H.PROMPTS[:] = [TK.TASKS[args.task]["prompt"]]
+    H.PROMPTS[:] = [TK.TASKS[args.task]["prompt"], SECOND_PROMPT][:args.turns]
     dll = RUN.setup_dll(ctypes.CDLL(os.path.abspath(args.dll)))
     tmp = H.repo_dir(tempfile.mkdtemp(prefix="fxio-"))
     write_repo(tmp)
-    h = IoHost(dll, args.elf, json.load(open(args.imports)), tmp, 1, log=lambda *x: None, prof=False, memtrace=False)
+    h = IoHost(dll, args.elf, json.load(open(args.imports)), tmp, args.turns, log=lambda *x: None, prof=False, memtrace=False)
     if h.fs is not None:  # a deterministic inode, as circ/run.py
         root = os.path.dirname(os.path.abspath(tmp))
 
@@ -168,12 +172,16 @@ def session(args, template) -> dict:
     start = next(((i, t) for i, t, k, d in marks if k == "request" and d == "session/prompt"), None)
     end = next(((i, t) for i, t, k, d in marks if k == "response" and d == "session/prompt"), None)
     ok, why = solved(tmp, args.task)
+    starts = [(i, t) for i, t, k, d in marks if k == "request" and d == "session/prompt"]
+    ends = [(i, t) for i, t, k, d in marks if k == "response" and d == "session/prompt"]
     repo = {r: open(os.path.join(tmp, r), encoding="utf-8").read() for r in h.repo.files() if "__pycache__" not in r}
     res = {
         "task": args.task, "backend": args.backend, "units": args.units, "native": args.native, "elf": os.path.basename(args.elf),
         "elf_sha256": hashlib.sha256(open(args.elf, "rb").read()).hexdigest(),
         "solved": ok, "check": why, "model_calls": h.calls_log, "steps": len(h.calls_log),
         "turn": {"instructions": end[0] - start[0], "tokens": end[1] - start[1]} if start and end else None,
+        "turns": [{"instructions": e[0] - s[0], "tokens": e[1] - s[1]} for s, e in zip(starts, ends)],
+        "provider": args.provider,
         "boot": next(({"instructions": i, "tokens": t} for i, t, k, d in marks if k == "boot_end"), None),
         "session_end": {"instructions": h.fuel(), "tokens": dll.rv_tokens()}, "emulator_wall_s": wall,
         "host_calls": rec.calls, "host_io_sha256": rec.sha.hexdigest(), "import_calls": h.import_calls,
@@ -201,6 +209,8 @@ def main():
     ap.add_argument("--native", action="store_true")
     ap.add_argument("--units", default="none")
     ap.add_argument("--seed", type=int, default=0)
+    ap.add_argument("--provider", default="gateway", choices=("gateway", "chat"))
+    ap.add_argument("--turns", type=int, default=1, choices=(1, 2))
     ap.add_argument("--temperature", type=float, default=0.6)
     ap.add_argument("--top-k", type=int, default=20)
     ap.add_argument("--top-p", type=float, default=0.95)
