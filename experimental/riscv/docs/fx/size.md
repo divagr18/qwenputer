@@ -17,10 +17,12 @@ L4 or A10G as a stock model. Almost all the rest is zeros: the chip is 6.48M non
 | fx, as designed | 37.25 GB (E) | 37.25 GB | exact | exact | stock, if it fits |
 | fx, best stock, all lossless steps | 24.9 GB (E) | 35.0 GB | exact | exact | stock |
 | **fx, chip split out, exact** | **8.42 GB (E)**, 5.5 GB on the wire | **8.5 GB (E)** | **exact, base's own bytes** | **exact** | executor, or `trust_remote_code` |
-| fx, split + mixed quantisation | see Quantising Qwen | | changed | exact | same |
+| **fx, split + int8 Qwen** | **4.22 GB (E)**, 3.8 GB on the wire | **4.3 GB (E)** | **changed: KL 2.7x the floor, 97.75% top-1 (M)** | exact | same |
 
 The smallest size that stays honest and exact is **8.42 GB**: base Qwen3.5-4B's text weights, unchanged,
-plus about 8 MB of chip. Below that, Qwen's weights have to change. See [Quantising Qwen](#quantising-qwen).
+plus about 8 MB of chip. Below that, Qwen's weights have to change. Per-row int8 is the cheap way to do
+that, at **4.22 GB**. Int4 reaches 2.4 GB but moves Qwen 149x past the noise floor, so I would not take it.
+See [Quantising Qwen](#quantising-qwen).
 
 ## What the file is made of
 
@@ -118,7 +120,8 @@ the weights are gone and a generator replaces them. **C** Qwen's weights change.
 | Executor frees chip layers and slices Qwen after load | 0 | -28.7 GB (E) | slower | X | none on the file | **do it first** |
 | Base Qwen by reference, not re-uploaded | 0 to -8.4 GB download | 0 | | T or X | F | do it; see Honesty |
 | Lossless compression of Qwen (byte split + entropy) | -2.9 GB on the wire, 0.67 (M, sampled) | 0 | decode cost | wire only | L | optional |
-| Quantise Qwen | see below | | | T, X or S | C | ranked below |
+| Quantise Qwen, per-row int8 | -4.2 GB (M KL, E size) | -4.2 GB | | T, X or S | C | **do it if a 2x smaller model is worth a 2.7x-floor change** |
+| Quantise Qwen, int4 or mixed | -5 to -6 GB | same | | T, X or S | C | no: 25x to 150x the floor (M) |
 | Drop CW and EB rows | -0.54 GB (E) | -0.54 GB | | S | L | **do it**: 0 uses in fx (M) |
 | `R` as a 2-token record | -0.54 GB (E) | -0.54 GB | | S | L | stock path only, +0.08% tokens (M) |
 | `J` as `V JF` | -0.54 GB (E) | -0.54 GB | | S | L | no: +6.2% tokens (M) |
@@ -188,7 +191,95 @@ already proven at scale by rv-tiny (R).
 
 The user allowed this. Chip weights stay bf16 and bit-exact in every scheme.
 
-__QUANT__
+**Per-row int8 is the one to take.** It halves Qwen to 4.21 GB at 2.7x the noise floor. Everything using
+int4 is 25x to 150x above the floor, and the FFN is why.
+
+**How this was measured.** Real stock `Qwen3_5DecoderLayer`s, all 32, range-read from the Hub one at a
+time and run on every scheme's activations (`fx/size/qstream.py`), then the real 248,320-row output head.
+bf16 on the CPU, 16 prompts plus fixed continuations, 911 positions, teacher-forced. The noise floor,
+KL(base sdpa || base eager), came out at **4.82e-4**, which agrees with the repo's 5e-4, so the harness can
+be trusted. It differs from `textcheck.py` in one way: the continuations are fixed text, not base's
+greedy output, so there is **no greedy-identical figure** here.
+
+Sizes are Qwen's text model (E: arithmetic on real weight counts), behaviour is M. Base is 8.41 GB.
+
+| scheme | what | size | KL | x floor | top-1 agrees | worst position KL |
+|---|---|---|---|---|---|---|
+| noise floor | base, eager vs sdpa | 8.41 GB | 4.82e-4 | 1 | 99.03% | 0.029 |
+| **`i8_all`** | **int8 per row: FFN, GDN, attention, embedding + `lm_head`** | **4.21 GB** | **1.28e-3** | **2.7** | **97.75%** | **0.045** |
+| `i8_noemb` | the same, embedding stays bf16 | 4.85 GB | 1.17e-3 | 2.4 | 97.91% | 0.039 |
+| `mix_c` | int4 FFN, int8 the rest, first and last 2 layers' FFN int8 | 3.35 GB | 2.68e-2 | 56 | 93.45% | 1.19 |
+| `mix_a` | int4 FFN, int8 the rest | 3.22 GB | 3.17e-2 | 66 | 91.74% | 1.18 |
+| `mix_b` | as `mix_a`, embedding stays bf16 | 3.86 GB | 3.15e-2 | 65 | 91.75% | 1.22 |
+| `bnb_nf4` | NF4 in blocks of 64, embedding bf16 (as bitsandbytes) | 3.24 GB | 4.25e-2 | 88 | 91.28% | 1.14 |
+| `i4_noemb` | int4 in groups of 32, embedding bf16 | 3.29 GB | 5.88e-2 | 122 | 91.20% | 3.26 |
+| `i4_all` | int4 in groups of 32, everything | 2.37 GB | 7.19e-2 | 149 | 88.56% | 5.13 |
+
+Community GGUF builds of the same model, for scale: Q8_0 4.3-4.61 GB, Q4_K_M 2.78-2.81 GB. Not checked here.
+
+One family at a time (M). "head" and "embedding in" are one tied tensor; they are separated to see which
+side matters.
+
+| family | size in base | int8 KL | int4 KL |
+|---|---|---|---|
+| FFN | 4.53 GB | 7.74e-4 | **3.13e-2** |
+| GDN (`in_proj_qkv`, `z`, `out_proj`) | 2.01 GB | 6.88e-4 | 1.76e-2 |
+| full attention | 0.59 GB | 5.64e-4 | 7.75e-3 |
+| embedding, input side | 1.27 GB (tied) | 4.84e-4 | 1.47e-3 |
+| `lm_head`, output side | (tied) | 3.09e-4 | 8.56e-3 |
+
+- At int8 every family is within 1.6x of the floor. At int4 the FFN alone costs more than every other
+  family together, and it is 54% of the weights, so no mix built on int4 FFN gets near the floor.
+- A mix that spares the FFN would be 3.64 GB at best (int8 FFN, int4 GDN and attention) and would inherit
+  about 2.5e-2 from GDN and attention (E, by adding). That is not worth 0.57 GB.
+- Protecting the first and last two layers took 15% off the KL for 0.12 GB (`mix_a` to `mix_c`).
+- One whole-tensor int8 scale, `bnb_i8` in `size.json`, scored 2.76e-2: per-row scales matter by 20x. It is
+  a proxy for a scale choice, not a measurement of real bitsandbytes int8, whose scales I did not check.
+- Better int4 exists: AWQ-style calibration and Q4_K_M's mixed format. Neither was tried here.
+
+**Chip weights and mixed tensors.** The chip stayed bit-identical under int8 and int4 in every prototype
+(M, P3 and the torchao run below). Chip layers come first and nothing in them reads Qwen's layers, but two
+kinds of tensor mix the two:
+
+| mixed tensor | the problem | handling |
+|---|---|---|
+| Embedding / `lm_head` | one tensor: Qwen's columns approximate, chip columns exact | the split: separate tensors. In a merged file it stays bf16 |
+| `in_proj_a/b/z`, `q_proj`, `k_proj` | the mute weight, -57 in the prototype against rms 0.02 | **a per-row scale rounds 100% of that row's Qwen weights to zero (M).** After the split there is no mute column. In a merged file they stay bf16 |
+
+**Paths.**
+
+| path | works? | size for fx | speed |
+|---|---|---|---|
+| Stock HF + torchao, merged file | **yes**: `from_pretrained` with `FqnToConfig` naming Qwen's Linears, chip bit-identical, saved and reloaded by `save_pretrained` (M, small model, CPU) | about 32 GB (E): padding and `z` stay wide, and chip layers do not shrink. Does not fit | decode per forward |
+| Same on rv-q4p2 | yes (same) | about 13.9 GB (E) | decode per forward |
+| Split, int8 | yes on stock Linears; needs `_exec_hc` changed | **4.2 GB** (E) | decode per forward, or a native kernel |
+| Executor v4's Qwen path | `_qwen_step` calls stock layers, so quantised modules slot in (read, not run). `_exec_hc` and `rvbatch.py` read `embed_tokens.weight` directly and must change for a quantised embedding. The chip never reads Qwen's weights | same | same |
+
+torchao's general int4 (`IntxWeightOnlyConfig`, `IntxUnpackedToInt8Tensor`) stores **a byte per weight**: it
+was no smaller than int8 (M, 9.08 MB against 8.96 MB). Packed int4 is `Int4WeightOnlyConfig`, whose
+layout is tied to the device it was quantised on (docs). bitsandbytes leaves embeddings alone (docs).
+
+**Speed is the real cost.** Stock quantised Linears decode the weights on every forward. One layer, one
+token, 4 CPU threads (M, `bench.py`):
+
+| | ms | x |
+|---|---|---|
+| bf16, width 2560 | 9.0 | 1 |
+| bf16 padded to 3968 | 11.7 | 1.3 |
+| bf16 padded to 4096 | 13.4 | 1.5 |
+| int8, decoded per forward | 188 | **21** |
+| int4, decoded per forward | 307 | **34** |
+
+A CPU ratio is not a GPU ratio. Decoding is single-threaded here and parallel on a GPU, so I would expect
+1.5x to 3x there (E, unmeasured). The way out is a kernel that reads int8 directly in the matmul, which
+reads half the bytes of bf16 and needs no decoded copy. It would fit how `exec4.py` already generates
+kernels, and it would have to be built. Chip tokens are not affected: they never touch Qwen's layers.
+
+**Should it still be called Qwen3.5-4B?** With int8, no: not as base. It is a quantised derivative: KL 2.7x
+the floor, and top-1 agrees with base on 97.75% of positions, against 99.03% between two attention
+implementations of base itself. "Qwen3.5-4B, int8 weights" is accurate; "base Qwen3.5-4B" is not. Whether
+it still solves fx's tasks is not known: P0c's 15 of 15 was on bf16 and needs a rerun. The chip's exactness
+claim is unchanged, and base's exact text claim goes.
 
 ## The recommended stack
 
@@ -211,19 +302,19 @@ base (the widened gains do not invert exactly). Nothing there reads the rest: `E
 - A `trust_remote_code` class for the HF path, from P1's Linear swap, with chip and Qwen on separate
   residuals. Not built.
 
-**Step 3, quantise Qwen,** with the native kernel below. __STEP3__
+**Step 3, quantise Qwen,** with the native kernel below. Per-row int8 on everything: FFN, GDN, attention and the tied embedding. Optional, and the first step that changes Qwen. Do not use int4. Qwen's weights can no longer be taken by reference, so the repo holds its own 4.2 GB.
 
 | | fx, stock | step 1 | step 2 | step 3 |
 |---|---|---|---|---|
-| disk | 37.25 GB (E) | 37.25 GB | **8.42 GB** | __S3DISK__ |
-| wire | not measured | same | 5.5 GB (E, byte split) | __S3WIRE__ |
-| VRAM | 37.25 GB, over 24 GB | **8.5 GB** | 8.5 GB | __S3VRAM__ |
+| disk | 37.25 GB (E) | 37.25 GB | **8.42 GB** | **4.22 GB** (E) |
+| wire | not measured | same | 5.5 GB (E, byte split) | 3.8 GB (E, int8 codes zstd 0.90, M on samples) |
+| VRAM | 37.25 GB, over 24 GB | **8.5 GB** | 8.5 GB | **4.3 GB** (E) |
 | Qwen | exact | exact | exact, base's bytes | changed |
 | chip | exact | exact | exact | exact |
 | RAM to build | about 58 GB (R) | | under 2 GB (M, emission on this machine) | |
-| effort | | half a day | 3 to 5 days | __S3EFFORT__ |
-| risk | | low | low: byte-checked | __S3RISK__ |
-| speed | | Qwen matmuls 1.3-1.5x faster (M on CPU, E on GPU) | same | __S3SPEED__ |
+| effort | | half a day | 3 to 5 days | half a day with stock decode; about a week with a native kernel (E) |
+| risk | | low | low: byte-checked | medium: behaviour changes, fx not yet rerun on it |
+| speed | | Qwen matmuls 1.3-1.5x faster (M on CPU, E on GPU) | same | text tokens only: decode per forward 21x on CPU (M), 1.5-3x on GPU (E); native kernel about 1x (E) |
 
 The waterfall in GB of disk (E past the first row of each):
 
@@ -264,8 +355,13 @@ positions in Qwen's full-attention cache. Text following a chip run can therefor
 by the fixed boundary effect `q35/mute.py` describes. The split takes the executor's behaviour, which is
 closer to base.
 
-**Not measured here.** Anything on a GPU. Any full-size build of the split or the overlay. Greedy
-continuations under quantisation. Hub-side stored size.
+**Not measured here.**
+- Anything on a GPU, including quantised speed and `textcheck.py` itself.
+- Greedy continuations under quantisation, and fx's P0c tasks on int8.
+- Any full-size build of the split, the overlay or four-square ballast.
+- Hub-side stored size.
+- Real bitsandbytes or packed-int4 modules on real weights: the KL table uses my own reconstructions of
+  those formats, on bf16 compute.
 
 ## Sources
 
