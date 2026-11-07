@@ -103,17 +103,37 @@ take frames: 704 instead of 1,458.
 
 ## Results
 
-**The whole session has not run on the GPU.** The GPU runs stopped before the two whole-session
-runs finished. The longest fx runs on Executor v4 are below; everything past them is the reference.
+**fx's whole session runs on Executor v4 with 0 differences**, both from the boot snapshot and from
+reset (M, NVIDIA L4). The GPU generates every token between ecalls, and each is compared with the
+reference machine's; a wrong token stops the run. The reference's registers are compared with
+rv32emu's at every ecall, and its memory on all nonzero words at the end. rv32emu's memory is not
+read back from the GPU: the GPU is tied to it through the token stream.
 
-| | result | |
+| whole session | from the boot snapshot | from reset (no snapshot) |
 |---|---|---|
-| fx from reset, GPU alone, to the first ecall (2,048 frames, 90 layers) | 820,276 tokens, 457,978 instructions, 0 differences, 601 pages. Boot itself is 526,882 instructions, so **boot did not finish on the GPU** | M |
-| fx from the boot snapshot, first segment (past `initialize`) | 902,180 tokens, 617,726 instructions, 0 differences, at every frame count below | M |
+| layers | 59 | 90 |
+| frames provisioned / pages mapped | 1,024 / 704 | 2,048 / 1,458 |
+| tokens the GPU generated | 10,508,989 | 11,415,547 |
+| instructions | 7,174,817 | 7,701,699 (rv32emu's count) |
+| segments (between ecalls) | 400 | 412 |
+| wrong tokens | 0 | 0 |
+| final memory differing from rv32emu | 0 of 1,897,586 words | 0 of 1,897,586 words |
+| final registers | equal | equal |
+| GPU time | 405.91 s | 442.25 s |
+| us / step | 38.63 | 38.74 |
+| **tok/s** | **25,890** | **25,812** |
+| **instr/s** | **17,676** | **17,415** |
+
+GPU time counts the launches only. It leaves out the reference machine beside it (34.94 s /
+37.1 s of Python, only there for the comparison) and the state pokes at ecalls. The
+from-reset run includes boot: fx boots in the weights with no snapshot, on the larger config. The
+snapshot run is the production config. Its starting state is rv32emu's at boot's end, not the GPU's
+own: the two runs were not compared with each other at that point.
+
+| other checks | result | |
+|---|---|---|
 | fx residual against `ir.evaluate`, 59 layers | 2,987 dims, 4,000 positions, 0 differing | M |
-| whole session (turns 1 and 2) on the reference machine | 7,174,817 instructions, 10,509,389 tokens, 400 segments, 704 pages. Registers equal rv32emu at every ecall; memory equal on all 1,897,586 nonzero words at the end | M, CPU only |
-| whole session on the GPU, ecall resumes beyond the first | not run | - |
-| fx in the IR beyond the 4,000 positions | not finished (out of memory locally; stopped with the box) | - |
+| fx in the IR, teacher-forced, 59 layers | 57,344 positions predicted, 0 wrong, exactness asserts on the first 4,000 (first segment only: about 55 tok/s, so the session would take about 53 h, E) | M |
 | existing programs, residual (paged circuit, 14 layers) | 63 programs, 64,690 positions, 0 differing | M |
 | existing programs, free-running | 63 / 63 identical, 6,424,294 tokens, 5,626,517 instructions (MicroPython s1, s5 included) | M |
 | big map: far jumps, windows, bank edges | 2 programs, residual and free-running exact | M |
@@ -131,8 +151,7 @@ runs finished. The longest fx runs on Executor v4 are below; everything past the
 | 1024 | 59 | 38.95 | 25,674 | 0 |
 | 2048 | 91 | 38.86 | 25,732 | 0 |
 
-Flat from 31 to 91 layers. `exec-v4.md` estimated 54-67 us for fx's memory. Instructions:
-617,726 in 35.1 s, 17,580 instr/s (M, this segment, 1.46 tokens per instruction).
+Flat from 31 to 91 layers. `exec-v4.md` estimated 54-67 us for fx's memory.
 
 **Banks on and off** (M, c-sieve, 20,000 tokens, best of 3):
 
@@ -169,12 +188,14 @@ The same plan at full size, 59 layers (M, plan sizes, no timing):
 | checkpoint | about 35 GB, +16.5 GB: 48 layers at about 0.34 GB, scaled from rv-tiny's 244 MB a layer at hidden 2816 | E |
 | HF merge RAM | about 58 GB against the box's 60 GB, scaled from 31 GB | E |
 
-**Tokens** (M, reference, whole session): 1.465 tokens per instruction. `JF` 55,364 (7.9% of jumps,
-0.5% of tokens), `PA` 692, `RF` 0.
+**Tokens** (M, whole session from the snapshot): 1.465 tokens per instruction. `JF` 55,364 (7.9% of
+jumps, 0.5% of tokens), `PA` 692, `RF` 0.
 
-**fx turn 1** (E): 5.65M instructions x 1.465 = 8.27M tokens; at 25,700 tok/s (M) that is **5.4 min**.
-The whole session is 10.51M tokens (M, reference), 6.8 min (E). Neither counts the host's time at
-ecalls or Qwen's text.
+**fx turn 1** (M): 5,649,313 instructions and 8,350,275 tokens, counted on
+the reference at segment boundaries (rv32emu: 5,648,040 instructions), 1.478 tokens per instruction.
+At the session's 25,890 tok/s that is **323 s, 5.4 min**. The
+time is tokens / measured rate, because the GPU run did not log a clock at the turn's edges. It
+counts neither the host's time at ecalls nor Qwen's text. This is row 24 with no macro units.
 
 ## Exact zeros added to `exec-v4.md`'s list
 7. A bank head that the address does not select has an all-zero key and query: it neither writes nor
@@ -183,10 +204,12 @@ ecalls or Qwen's text.
    every position, and the residual checks compare every dim.
 
 ## Blockers
-1. The whole session needs its GPU run: `fxrun LOG ELF run` and `run --from-reset --frames 2048`. They
-   take about 7 and 8 min (E). Only the first resume after an ecall has run on the GPU.
-2. Real I/O: imports are served from a recorded log. That is the bridge's work.
-3. The frame budget is 1.45x one short session; a longer one faults when frames run out.
-4. HF: the paged circuit has not been merged or run on the HF kernels at fx size. The IR's kernel
-   emulation covers the small and big test configs only on traces under 1,500 tokens.
+1. Real I/O: imports are served from a recorded log, and each resume pokes registers and memory into
+   the state. That is the bridge's work. Every number above is the CPU's, with no host time.
+2. The frame budget is 1.45x one short session; a longer one faults when frames run out.
+3. HF: the paged circuit has not been merged or run on the HF kernels at fx size. The IR's kernel
+   emulation covers the small and big test configs only on traces under 1,500 tokens. The results
+   above are Executor v4's, the IR-equivalent path.
+4. The IR has checked fx over only the positions above; the rest of the session is checked by
+   the reference.
 5. MMOVE / MEQL do not run on this map.
