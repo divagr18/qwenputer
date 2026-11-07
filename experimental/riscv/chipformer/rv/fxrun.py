@@ -100,9 +100,10 @@ def segments(m, log, max_tokens=None, boot_stands_on_ecall=True):
     total = 0
     if boot_stands_on_ecall and log and m.pc == log[0]["pc"]:
         assert m.x == log[0]["x"], "boot registers"
-        yield None, serve(m, log[0])
-        m.n += 1
+        t = serve(m, log[0])
+        m.n += 1  # (before the yield: the consumer pokes the resumed state)
         i = 1
+        yield None, t
     while True:
         toks = [S.tok("GO")]
         while not m.halted:

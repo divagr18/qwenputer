@@ -1,0 +1,337 @@
+{
+ "status": "whole session NOT run on the GPU: stopped before those runs finished",
+ "reference_session_M": {
+  "frames": 1024,
+  "from_reset": false,
+  "image_windows": 35,
+  "segments": 400,
+  "tokens": 10509389,
+  "instructions": 7174817,
+  "pages": 704,
+  "frames_used": 704,
+  "words": 63225,
+  "families": {
+   "V": 3317928,
+   "F0": 2470533,
+   "F1": 1983660,
+   "F2": 505946,
+   "J": 648826,
+   "R": 8556,
+   "FLT": 399,
+   "HEX": 3192,
+   "NT": 494746,
+   "ST0": 670490,
+   "ST1": 255848,
+   "SS0": 47822,
+   "SS1": 41182,
+   "HALT": 400,
+   "GO": 400,
+   "PA": 692,
+   "JF": 55364,
+   "QS": 662,
+   "QD": 2743
+  },
+  "image_words": 125441,
+  "rom_words": 1743407,
+  "end": {
+   "end_words": 1897586,
+   "end_diff": 0,
+   "extra": 0,
+   "end_x_equal": true
+  }
+ },
+ "exec4_plan_full_fx_circuit_M": {
+  "banks": {
+   "banks": true,
+   "phases": 14,
+   "slots": 707848,
+   "smem": 61152,
+   "D": 2987,
+   "value_heads_state": 1684,
+   "state_bytes": 110362624,
+   "terms": 702768,
+   "head_records": 62
+  },
+  "no_banks": {
+   "banks": false,
+   "phases": 14,
+   "slots": 6185702,
+   "smem": 175760,
+   "D": 2987,
+   "value_heads_state": 1684,
+   "state_bytes": 110362624,
+   "terms": 6142509,
+   "head_records": 1684
+  }
+ },
+ "fx_on_exec4_M": {
+  "speed_vs_layers": [
+   {
+    "frames": 128,
+    "tokens": 902180,
+    "instructions": 617726,
+    "segments": 1,
+    "us_step": 39.04,
+    "tok_s": 25616,
+    "wrong": null,
+    "pages": 96,
+    "layers": 31
+   },
+   {
+    "frames": 256,
+    "tokens": 902180,
+    "instructions": 617726,
+    "segments": 1,
+    "us_step": 38.92,
+    "tok_s": 25696,
+    "wrong": null,
+    "pages": 96,
+    "layers": 35
+   },
+   {
+    "frames": 512,
+    "tokens": 902180,
+    "instructions": 617726,
+    "segments": 1,
+    "us_step": 38.9,
+    "tok_s": 25709,
+    "wrong": null,
+    "pages": 96,
+    "layers": 43
+   },
+   {
+    "frames": 1024,
+    "tokens": 902180,
+    "instructions": 617726,
+    "segments": 1,
+    "us_step": 38.95,
+    "tok_s": 25674,
+    "wrong": null,
+    "pages": 96,
+    "layers": 59
+   },
+   {
+    "frames": 2048,
+    "tokens": 902180,
+    "instructions": 617726,
+    "segments": 1,
+    "us_step": 38.86,
+    "tok_s": 25732,
+    "wrong": null,
+    "pages": 96,
+    "layers": 91
+   }
+  ],
+  "from_reset_to_first_ecall": {
+   "frames": 2048,
+   "tokens": 820276,
+   "instructions": 457978,
+   "us_step": 38.97,
+   "tok_s": 25660,
+   "wrong": null,
+   "pages": 601
+  },
+  "residual_vs_ir": {
+   "positions": 4000,
+   "dims": 2987,
+   "differing": 0
+  }
+ },
+ "programs_on_paged_circuit_M": {
+  "tf": {
+   "programs": 63,
+   "positions": 64690,
+   "differing": 0
+  },
+  "free": {
+   "programs": 63,
+   "tokens": 6424294,
+   "instructions": 5626517,
+   "not_identical": 0
+  },
+  "big_map": [
+   {
+    "prog": "far",
+    "tf": {
+     "positions": 76,
+     "differing": 0,
+     "first": null
+    },
+    "free": {
+     "tokens": 75,
+     "instructions": 61,
+     "same": true,
+     "at": null,
+     "us_step": 40.29766666652298,
+     "tok_s": 24815.332566903766
+    }
+   },
+   {
+    "prog": "ram",
+    "tf": {
+     "positions": 118,
+     "differing": 0,
+     "first": null
+    },
+    "free": {
+     "tokens": 117,
+     "instructions": 51,
+     "same": true,
+     "at": null,
+     "us_step": 40.04072649579037,
+     "tok_s": 24974.571830137338
+    }
+   }
+  ]
+ },
+ "banks_on_off_M": [
+  {
+   "frames": 8,
+   "banks": true,
+   "layers": 11,
+   "phases": 14,
+   "slots": 667588,
+   "smem": 56944,
+   "tokens": 20000,
+   "instructions": 31704,
+   "same": true,
+   "at": null,
+   "us_step": 39.49054460000525,
+   "tok_s": 25322.51732987919
+  },
+  {
+   "frames": 8,
+   "banks": false,
+   "layers": 11,
+   "phases": 14,
+   "slots": 748891,
+   "smem": 64432,
+   "tokens": 20000,
+   "instructions": 31704,
+   "same": true,
+   "at": null,
+   "us_step": 40.64464544999282,
+   "tok_s": 24603.486853645973
+  },
+  {
+   "frames": 16,
+   "banks": true,
+   "layers": 11,
+   "phases": 14,
+   "slots": 667636,
+   "smem": 56944,
+   "tokens": 20000,
+   "instructions": 31704,
+   "same": true,
+   "at": null,
+   "us_step": 39.11540829999467,
+   "tok_s": 25565.37291725359
+  },
+  {
+   "frames": 16,
+   "banks": false,
+   "layers": 11,
+   "phases": 14,
+   "slots": 774555,
+   "smem": 64448,
+   "tokens": 20000,
+   "instructions": 31704,
+   "same": true,
+   "at": null,
+   "us_step": 40.41058190000513,
+   "tok_s": 24745.99357352667
+  },
+  {
+   "frames": 32,
+   "banks": true,
+   "layers": 11,
+   "phases": 14,
+   "slots": 667644,
+   "smem": 56960,
+   "tokens": 20000,
+   "instructions": 31704,
+   "same": true,
+   "at": null,
+   "us_step": 39.25531610000235,
+   "tok_s": 25474.256721115544
+  },
+  {
+   "frames": 32,
+   "banks": false,
+   "layers": 11,
+   "phases": 14,
+   "slots": 827571,
+   "smem": 64480,
+   "tokens": 20000,
+   "instructions": 31704,
+   "same": true,
+   "at": null,
+   "us_step": 40.719793250013936,
+   "tok_s": 24558.08146814836
+  },
+  {
+   "frames": 64,
+   "banks": true,
+   "layers": 12,
+   "phases": 14,
+   "slots": 667676,
+   "smem": 56992,
+   "tokens": 20000,
+   "instructions": 31704,
+   "same": true,
+   "at": null,
+   "us_step": 39.56106099999488,
+   "tok_s": 25277.380705237643
+  },
+  {
+   "frames": 64,
+   "banks": false,
+   "layers": 12,
+   "phases": 14,
+   "slots": 938347,
+   "smem": 65232,
+   "tokens": 20000,
+   "instructions": 31704,
+   "same": true,
+   "at": null,
+   "us_step": 41.03583159999289,
+   "tok_s": 24368.946869354375
+  },
+  {
+   "frames": 128,
+   "banks": true,
+   "layers": 14,
+   "phases": 14,
+   "slots": 667708,
+   "smem": 57024,
+   "tokens": 20000,
+   "instructions": 31704,
+   "same": true,
+   "at": null,
+   "us_step": 39.923996850006915,
+   "tok_s": 25047.592398049866
+  },
+  {
+   "frames": 128,
+   "banks": false,
+   "layers": 14,
+   "phases": 14,
+   "slots": 1182573,
+   "smem": 75936,
+   "tokens": 20000,
+   "instructions": 31704,
+   "same": true,
+   "at": null,
+   "us_step": 42.58445450000181,
+   "tok_s": 23482.747677323365
+  }
+ ],
+ "estimates_E": {
+  "tokens_per_instruction": 1.465,
+  "turn1_tokens": 8270000.0,
+  "turn1_s_at_25700_tok_s": 322,
+  "session_s": 409,
+  "checkpoint_gb": 35.2,
+  "checkpoint_growth_gb": 16.5
+ }
+}

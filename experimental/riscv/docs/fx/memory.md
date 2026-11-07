@@ -100,3 +100,93 @@ take frames: 704 instead of 1,458.
 - Between ecalls the machine runs alone. At an ecall the host serves the import from a recorded log
   and resumes the CPU, as an OS would, by writing registers and memory into the state. The real I/O
   path is the bridge's, not part of this work.
+
+## Results
+
+**The whole session has not run on the GPU.** The GPU runs stopped before the two whole-session
+runs finished. The longest fx runs on Executor v4 are below; everything past them is the reference.
+
+| | result | |
+|---|---|---|
+| fx from reset, GPU alone, to the first ecall (2,048 frames, 90 layers) | 820,276 tokens, 457,978 instructions, 0 differences, 601 pages. Boot itself is 526,882 instructions, so **boot did not finish on the GPU** | M |
+| fx from the boot snapshot, first segment (past `initialize`) | 902,180 tokens, 617,726 instructions, 0 differences, at every frame count below | M |
+| fx residual against `ir.evaluate`, 59 layers | 2,987 dims, 4,000 positions, 0 differing | M |
+| whole session (turns 1 and 2) on the reference machine | 7,174,817 instructions, 10,509,389 tokens, 400 segments, 704 pages. Registers equal rv32emu at every ecall; memory equal on all 1,897,586 nonzero words at the end | M, CPU only |
+| whole session on the GPU, ecall resumes beyond the first | not run | - |
+| fx in the IR beyond the 4,000 positions | not finished (out of memory locally; stopped with the box) | - |
+| existing programs, residual (paged circuit, 14 layers) | 63 programs, 64,690 positions, 0 differing | M |
+| existing programs, free-running | 63 / 63 identical, 6,424,294 tokens, 5,626,517 instructions (MicroPython s1, s5 included) | M |
+| big map: far jumps, windows, bank edges | 2 programs, residual and free-running exact | M |
+| `tests/test_rv_mem.py` | 66 passed, 10 skipped (the long programs; they are in the free-running row) | M |
+| legacy suites | 287 passed, 14 skipped, 1 failed. `test_fuzz_free_running_cpu` fails the same way on clean `fx-int` (`KeyError: 'Q'` in `fastexec.py`) | M |
+| HF merge of the paged circuit | not attempted | - |
+
+**Speed against memory layers** (M, fx from the boot snapshot, 902,180 tokens on the L4):
+
+| frames | layers | us / step | tok/s | wrong |
+|---|---|---|---|---|
+| 128 | 31 | 39.04 | 25,616 | 0 |
+| 256 | 35 | 38.92 | 25,696 | 0 |
+| 512 | 43 | 38.9 | 25,709 | 0 |
+| 1024 | 59 | 38.95 | 25,674 | 0 |
+| 2048 | 91 | 38.86 | 25,732 | 0 |
+
+Flat from 31 to 91 layers. `exec-v4.md` estimated 54-67 us for fx's memory. Instructions:
+617,726 in 35.1 s, 17,580 instr/s (M, this segment, 1.46 tokens per instruction).
+
+**Banks on and off** (M, c-sieve, 20,000 tokens, best of 3):
+
+| frames | layers | banks | slots | shared memory (B) | us / step | tok/s |
+|---|---|---|---|---|---|---|
+| 8 | 11 | on | 667,588 | 56,944 | 39.49 | 25,323 |
+| 8 | 11 | off | 748,891 | 64,432 | 40.64 | 24,603 |
+| 16 | 11 | on | 667,636 | 56,944 | 39.12 | 25,565 |
+| 16 | 11 | off | 774,555 | 64,448 | 40.41 | 24,746 |
+| 32 | 11 | on | 667,644 | 56,960 | 39.26 | 25,474 |
+| 32 | 11 | off | 827,571 | 64,480 | 40.72 | 24,558 |
+| 64 | 12 | on | 667,676 | 56,992 | 39.56 | 25,277 |
+| 64 | 12 | off | 938,347 | 65,232 | 41.04 | 24,369 |
+| 128 | 14 | on | 667,708 | 57,024 | 39.92 | 25,048 |
+| 128 | 14 | off | 1,182,573 | 75,936 | 42.58 | 23,483 |
+
+The same plan at full size, 59 layers (M, plan sizes, no timing):
+
+| | banks | no banks | today's 11 layers |
+|---|---|---|---|
+| terms | 702,768 | 6,142,509 | 966,054 |
+| value-head records | 62 | 1684 | |
+| shared memory | 61,152 B | 175,760 B (limit 99 KB: does not fit) | 67 KB |
+
+**Size.**
+
+| | value | |
+|---|---|---|
+| layers | 59 (11 today); 90 from reset | M |
+| IR dims | 2,987 | M |
+| heads, MLP units | 850, 45,973 | M |
+| exec4 state | 110 MB | M |
+| vocabulary | +6,208 rows | M |
+| checkpoint | about 35 GB, +16.5 GB: 48 layers at about 0.34 GB, scaled from rv-tiny's 244 MB a layer at hidden 2816 | E |
+| HF merge RAM | about 58 GB against the box's 60 GB, scaled from 31 GB | E |
+
+**Tokens** (M, reference, whole session): 1.465 tokens per instruction. `JF` 55,364 (7.9% of jumps,
+0.5% of tokens), `PA` 692, `RF` 0.
+
+**fx turn 1** (E): 5.65M instructions x 1.465 = 8.27M tokens; at 25,700 tok/s (M) that is **5.4 min**.
+The whole session is 10.51M tokens (M, reference), 6.8 min (E). Neither counts the host's time at
+ecalls or Qwen's text.
+
+## Exact zeros added to `exec-v4.md`'s list
+7. A bank head that the address does not select has an all-zero key and query: it neither writes nor
+   reads. Exec4 computes the selected head and row from binary forms over the same address bits.
+   `test_rv_mem.check_bank_forms` asserts that they fire exactly the rows of the 128 channels, at
+   every position, and the residual checks compare every dim.
+
+## Blockers
+1. The whole session needs its GPU run: `fxrun LOG ELF run` and `run --from-reset --frames 2048`. They
+   take about 7 and 8 min (E). Only the first resume after an ecall has run on the GPU.
+2. Real I/O: imports are served from a recorded log. That is the bridge's work.
+3. The frame budget is 1.45x one short session; a longer one faults when frames run out.
+4. HF: the paged circuit has not been merged or run on the HF kernels at fx size. The IR's kernel
+   emulation covers the small and big test configs only on traces under 1,500 tokens.
+5. MMOVE / MEQL do not run on this map.
