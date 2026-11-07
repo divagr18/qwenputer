@@ -22,10 +22,16 @@ class HfBackend:
         self.reset()
 
     @classmethod
-    def load(cls, name, dtype=torch.bfloat16, device="cuda", **kw):
+    def load(cls, name, dtype=torch.bfloat16, device="cuda", temperature=None, top_k=None, top_p=None, **kw):
+        """Sampling left as None comes from the model's generation_config, as vLLM's default."""
         from transformers import AutoModelForCausalLM
 
-        return cls(AutoModelForCausalLM.from_pretrained(name, dtype=dtype).to(device), device, **kw)
+        m = AutoModelForCausalLM.from_pretrained(name, dtype=dtype).to(device)
+        g = m.generation_config
+        if temperature is None:
+            temperature = (g.temperature or 0.0) if g.do_sample else 0.0
+        return cls(m, device, temperature=temperature, top_k=(g.top_k or 0) if top_k is None else top_k,
+                   top_p=(g.top_p or 1.0) if top_p is None else top_p, **kw)
 
     def reset(self) -> None:
         self.cache = None
