@@ -424,7 +424,14 @@ The table rows, in order: the row-11 run, the row-11 rerun (jscan and the two IR
   (`test_rv_core.py`, with its depth and capacity check);
 - `test_rv_ref.py`, `test_rv_bridge.py`, `test_rv_fuzz.py`, `test_rv_hf.py`.
 
-Result: SUITE_RESULT. The suites caught one bug of mine on the way: a variable in the MEQL
+Result, with test_rv_circ.py in the same run: **287 passed, 14 skipped, 4 failed** (24 min).
+- The skips are the suites' own: RV_SLOW traces, and programs checked free-running on the
+  GPU executor.
+- The 4 failures fail identically on the unmodified `fx` branch, so they are not from this
+  work:
+  - three `test_rv_hf.py` tests: this machine's transformers has no `Qwen3_5ForCausalLM`;
+  - `test_fuzz_free_running_cpu`: `fastexec.FreeRun` looks up the bridge family `Q`
+    as a chip family (`KeyError: 'Q'`). The suites caught one bug of mine on the way: a variable in the MEQL
 code shadowed the digit file's zero-length check (`test_faults[illegal]`). It was fixed
 before the final run.
 
