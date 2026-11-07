@@ -136,9 +136,13 @@ class RvHost(H.Host):
     def linear_bytes(self):
         return struct.unpack("<I", ctypes.string_at(self.base + self.linear_bytes_addr, 4))[0]
 
+    def arg_bytes(self, argp, nwords):
+        """An import's argument words (argp is a machine address)."""
+        return ctypes.string_at(self.base + argp, 4 * nwords)
+
     def hostcall(self, ident, argp, nwords):
         imp, fn = self.handlers[ident]
-        words = struct.unpack(f"<{nwords}I", ctypes.string_at(self.base + argp, 4 * nwords)) if nwords else ()
+        words = struct.unpack(f"<{nwords}I", self.arg_bytes(argp, nwords)) if nwords else ()
         args, i = [], 0
         for t in imp["params"]:
             if t in ("u64", "s64"):
@@ -153,50 +157,54 @@ class RvHost(H.Host):
         r = fn(*args)
         return 0 if r is None else r & 0xFFFFFFFF
 
+    def dispatch(self, r, pc):
+        """One stop of the machine (rv_run's result r at pc); False ends the run."""
+        if r == 1:
+            a7 = self.regs[17]
+            if a7 >= 0x400:
+                try:
+                    self.regs[10] = self.hostcall(a7 - 0x400, self.regs[10], self.regs[11])
+                except SystemExit:
+                    return False
+                self.e.rv_set_pc(pc + 4)
+                return True
+            if a7 == 96:  # native tool call begins (imports.c --native-tools)
+                self.native_start = (self.e.rv_icount(), self.text(self.regs[10], self.regs[11]))
+                self.e.rv_set_pc(pc + 4)
+                return True
+            if a7 == 97:  # native tool call ended; a0 = its result (-100: not native)
+                r = self.regs[10]
+                if r != 0xFFFFFF9C:
+                    st, nm = self.native_start
+                    self.events.append((st, "tool_call", {"name": nm, "native": True}))
+                    self.mark("tool_result", {"name": nm, "bytes": r, "native": True})
+                    self.native_calls.append(nm)
+                self.e.rv_set_pc(pc + 4)
+                return True
+            if a7 == 95:
+                self.next_phase(self.phase_names[1])
+                self.phase_names.pop()
+                self.e.rv_set_pc(pc + 4)
+                return True
+            if a7 == 93:
+                self.mark("returned", self.regs[10])
+                return False
+            if a7 == 94:
+                self.mark("trap", f"wasm trap {self.regs[10] - 1000}")
+                return False
+            self.mark("trap", f"unknown ecall {a7}")
+            return False
+        word = struct.unpack("<I", ctypes.string_at(self.base + pc, 4))[0] if pc < 0x08000000 else 0
+        self.mark("trap", f"rv_run={r} pc={pc:#x} insn={word:#010x} fault={self.e.rv_fault_addr():#x} sym={self.sym(pc)}")
+        return False
+
     def run(self):
         t0 = time.perf_counter()
         self.mark("start")
         while True:
             r = self.e.rv_run(1 << 40)
-            pc = self.e.rv_get_pc()
-            if r == 1:
-                a7 = self.regs[17]
-                if a7 >= 0x400:
-                    try:
-                        self.regs[10] = self.hostcall(a7 - 0x400, self.regs[10], self.regs[11])
-                    except SystemExit:
-                        break
-                    self.e.rv_set_pc(pc + 4)
-                    continue
-                if a7 == 96:  # native tool call begins (imports.c --native-tools)
-                    self.native_start = (self.e.rv_icount(), self.text(self.regs[10], self.regs[11]))
-                    self.e.rv_set_pc(pc + 4)
-                    continue
-                if a7 == 97:  # native tool call ended; a0 = its result (-100: not native)
-                    r = self.regs[10]
-                    if r != 0xFFFFFF9C:
-                        st, nm = self.native_start
-                        self.events.append((st, "tool_call", {"name": nm, "native": True}))
-                        self.mark("tool_result", {"name": nm, "bytes": r, "native": True})
-                        self.native_calls.append(nm)
-                    self.e.rv_set_pc(pc + 4)
-                    continue
-                if a7 == 95:
-                    self.next_phase(self.phase_names[1])
-                    self.phase_names.pop()
-                    self.e.rv_set_pc(pc + 4)
-                    continue
-                if a7 == 93:
-                    self.mark("returned", self.regs[10])
-                    break
-                if a7 == 94:
-                    self.mark("trap", f"wasm trap {self.regs[10] - 1000}")
-                    break
-                self.mark("trap", f"unknown ecall {a7}")
+            if not self.dispatch(r, self.e.rv_get_pc()):
                 break
-            word = struct.unpack("<I", ctypes.string_at(self.base + pc, 4))[0] if pc < 0x08000000 else 0
-            self.mark("trap", f"rv_run={r} pc={pc:#x} insn={word:#010x} fault={self.e.rv_fault_addr():#x} sym={self.sym(pc)}")
-            break
         self.wall = time.perf_counter() - t0
         self.peak_mem = max(self.peak_mem, self.linear_bytes())
 
