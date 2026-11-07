@@ -44,6 +44,8 @@ def divergence_cause(c) -> str:
     had, new = d.get("had", ""), d.get("render", "")
     if had == new:
         return "same text, different tokens"
+    if had.startswith("<think>") and not new.startswith("<think>"):
+        return "template drops think blocks before the newest question"
     if "<parameter" in had + new or "</parameter" in had + new or "<function" in had + new or "<tool_call" in had + new:
         return "tool call layout"
     if "</think>" in had + new:
@@ -156,7 +158,34 @@ def main():
                          | {"solved": sum(r["solved"] for r in rs if r["task"] == t), "reps": sum(1 for r in rs if r["task"] == t)}
                          for t in TASKS if any(r["task"] == t for r in rs)}
         res["row" + row] = s
+    two = []
+    for f in sorted(glob.glob(os.path.join(d, "two_*.json"))):
+        run = json.load(open(f))
+        c = run["model_calls"]
+        two.append({"task": run["task"], "solved": run["solved"], "check": run["check"], "turns": run["turns"], "steps": run["steps"],
+                    "tools": [x for k in c for x in k["tool_calls"]],
+                    "calls": [{k: x[k] for k in ("call", "kind", "kept", "rolled_back", "full_tokens", "delta_tokens", "generated_tokens", "canonical", "common_prefix", "diverged")} for x in c],
+                    "causes": dict(Counter(divergence_cause(x) for x in c[1:] if x["kind"] != "exact"))})
+    res["two_turns"] = two
+    every = [c for f in sorted(glob.glob(os.path.join(d, "r*_?.json"))) + sorted(glob.glob(os.path.join(d, "two_*.json"))) + sorted(glob.glob(os.path.join(d, "chat_*.json")))
+             for c in json.load(open(f))["model_calls"]]
+    res["all_generations"] = {"calls": len(every), "generated_tokens": sum(c["generated_tokens"] for c in every),
+                              "noncanonical_calls": sum(1 for c in every if not c["canonical"]),
+                              "stopped_cleanly": sum(1 for c in every if c["stopped"]), "parser_warnings": sum(len(c["warnings"]) for c in every)}
+    second = [t["calls"][-1] for t in two if t["calls"]]
+    res["two_turns_summary"] = {"runs": len(two), "solved": sum(t["solved"] for t in two), "kinds": dict(Counter(k["kind"] for t in two for k in t["calls"])),
+                                "kinds_last_call": dict(Counter(x["kind"] for x in second)),
+                                "last_call_full_tokens": sum(x["full_tokens"] for x in second), "last_call_delta_tokens": sum(x["delta_tokens"] for x in second),
+                                "last_call_rolled_back": sum(x["rolled_back"] for x in second), "noncanonical": sum(1 for t in two for x in t["calls"] if not x["canonical"])}
+    p = os.path.join(d, "chat_t1_bug.json")
+    if os.path.exists(p):
+        v = json.load(open(p))
+        res["chat_route"] = {"solved": v["solved"], "steps": v["steps"], "turn": v["turn"], "kinds": dict(Counter(x["kind"] for x in v["model_calls"])), "generated": sum(x["generated_tokens"] for x in v["model_calls"]), "noncanonical": sum(1 for x in v["model_calls"] if not x["canonical"])}
+    p = os.path.join(d, "merged.json")
+    if os.path.exists(p):
+        res["merged_check"] = json.load(open(p))
     json.dump(res, open(out, "w"), indent=1)
+    print(json.dumps({"two": res["two_turns_summary"], "chat": res.get("chat_route")}, indent=1))
     show = {k: {x: v for x, v in res[k].items() if x != "per_task"} for k in res if k.startswith("row")}
     print(json.dumps(show, indent=1))
     print("decode ms/token", None if decode_s is None else 1000 * decode_s, "feed tok/s", prefill)

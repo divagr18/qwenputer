@@ -3,56 +3,63 @@
 Status 2026-11-07. Follows `speed-iter.md` (rows 11 and 24), `circuits.md` (the token model and
 units) and `speedups.md` (§1, §4, §5, §9, §13). Raw numbers: `io.json`. Code: `fx/fxio/`,
 `chipformer/rv/chat.py` (`FxQwen`, `fx_session`, `_qwen_prefill`), `tests/test_fx_io.py`.
-**M** = measured, **E** = estimated.
+**M** = measured, **E** = estimated. Figures from the scripted stand-in are labelled scripted.
 
-## Read this first: real Qwen has not driven fx yet
+## Result
 
-**The end-to-end run with Qwen did not happen.** No Qwen3.5-4B weights were run in any number
-here. The GPU boxes could not be reached (Blockers), and this machine has neither the weights nor
-the RAM. So task 3's solve rate is **not measured**, and P0c's 15/15 has no counterpart yet.
+**fx's exact RV32 binaries, in rv32emu, drove real Qwen3.5-4B and solved every P0c task they were
+given: 20 of 20, 10 on each row.** Native fx in P0c: 15 of 15. No task failed, so no failures are
+listed. All on one L4 with HF transformers, sampling at vLLM's defaults (see Limits).
 
-What ran in its place is `fxio/scripted.py`: hand-written tool-call plans for the P0c tasks,
-written out in Qwen's raw format and tokenized with Qwen's real tokenizer. Everything except the
-model is real: fx's exact binaries, its agent loop and tools, the chat template, the delta, the
-parser, the SSE, the instruction and token counts.
+| | real Qwen | scripted (see §3) | |
+|---|---|---|---|
+| **Solved**, row 24 (t1-t5 x 2) | **10 / 10** | plans correct by construction, not a solve rate | M |
+| **Solved**, row 11 (t1-t5 x 2) | **10 / 10** | as above | M |
+| Solved in the two-turn and chat-route runs | 6 / 6 | | M |
+| Steps per task, mean, row 24 | 4.1 | 6.6 | M |
+| Generated tokens per task, mean, row 24 | 681 | 792 | M |
+| Instructions per task, row 24 | 2.8-9.8M; with units 1.3-4.8M | 4.2-10.6M; 2.1-5.2M | M |
+| Tokens per task, row 24 | 4.2-14.7M; with units 2.0-7.6M | 6.0-15.5M; 3.3-8.2M | M; units' tokens E |
+| **Delta on later calls, row 24** | **102 tokens a call against 1,271: 92.0% saved** | 69 against 1,323: 94.8% | M |
+| Delta on later calls, row 11 | 88 against 1,280: 93.1% saved | | M |
+| Rollbacks inside a turn | **0 of 80** later calls (31 row 24, 32 row 11, 17 in two-turn runs) | 0 of 28 | M |
+| Rollbacks at a new fx turn | **5 of 5** second prompts; 47% of tokens still saved there | 1 of 1 | M |
+| Canonically tokenized generations | **114 of 115** | all, by construction | M |
+| Generations ending in a stop token; parser warnings | 115 of 115; 0 | | M |
+| Projected wall time per task, row 24, units + delta | 2.2-6.0 min at 23k tok/s; **3.0-8.8 min at 15k** (task means) | 3.2-6.8 min at 23k | E |
+| Protocol: 56 imports (the brief says 55) | 30 OS layer, 5 model I/O, 21 stubbed; 29 ever called | | M |
+| Text work on the RV32 core, not the host | | 32.5k instr a render, 12.0k a reply; byte-identical on every call | M, scripted sessions |
 
-**The "pass" column below is not a solve rate.** A plan that is right by construction passing the
-hidden check shows that the packet path carries a correct plan through fx. It says nothing about
-whether Qwen would write that plan. Each plan copies the tool order of a real P0c run, and its
-reasoning is filler sized to that run's recorded output tokens per step, so request bodies grow
-as they did. P0c did not record arguments or reasoning, so neither is Qwen's.
-
-The numbers that should survive a live run are the per-byte costs, the delta's mechanism and the
-protocol. The per-task instruction and token counts will move with what Qwen actually does.
-
-| | result | |
-|---|---|---|
-| Packet protocol, all 56 imports classified (the brief says 55) | 30 OS layer, 5 model I/O, 21 stubbed; 29 ever called | M |
-| Delta on the 28 later calls of the 5 tasks | **69 tokens a call against 1,323: 94.8% saved** (270 B against 5,630 B) | M, scripted |
-| Delta exactness, one turn | 28 of 28 calls exact, 0 tokens rolled back | M, scripted |
-| Delta at a second fx turn | history is rewritten: rollback, 876 of 1,520 tokens re-fed | M, scripted |
-| fx's RV32 binaries driving the packet path | 10 of 10 sessions complete, plans pass the checks; **not Qwen** | M, scripted |
-| Instructions and tokens per task, row 24 | 4.2-10.6M instr, 6.0-15.5M tokens; with units 2.1-5.2M, 3.3-8.2M | M; units' tokens E |
-| Text work on the RV32 core instead of the host | 32.5k instr per render, 12.0k per reply; output byte-identical on every call | M |
-| Projected wall time per task, row 24 + units + delta | 3.2-6.8 min (23k tok/s, 65 ms / token) | E |
-| **Solve rate with real Qwen** | **not measured** | |
+**Limits of this result.**
+- **Two reps per task** on small tasks. 20 of 20 shows the path works and that Qwen can drive these
+  tools through it. It does not bound the failure rate.
+- **Not the same prompt as P0c** (see Exactness), so 20 of 20 and 15 of 15 are not a like-for-like
+  comparison. Steps and tokens are lower here partly because the prompt is smaller.
+- **Sampling is inferred.** Qwen3.5-4B ships no `generation_config.json` and fx sends no
+  temperature, so P0c ran at vLLM's defaults; these runs set temperature 1, no top-k or top-p, to
+  match. The inference is from the code path, not an observation of the P0c server.
+- **Not vLLM.** Qwen ran in HF transformers, and the parser is a port. In 115 generations it gave no
+  warnings and fx accepted every call, but it was never compared with vLLM's output directly.
+- **Host work remains** (disclosed below). This is the fxputer loop minus the in-weights CPU, as
+  briefed: the emulator stands in for the circuit, and nothing here ran on the chip layers.
 
 ## Exactness
 
 - **fx's source:** `fx/check_src.sh`: 717 files, 0 changed against `757bdb9` (M).
 - **The binaries:** the images of speed-iter and circuits.md, not rebuilt. sha256 `282e53d4…`
-  (row 24) and `209f2a87…` (row 11), recorded in every run file (M).
-- **Across every run:** 0 misaligned accesses, 0 traps, 0 imports outside what the host answers (M).
-- **Units:** each run was replayed from its packets with all units on. On all 10: 0 request
-  bytes differ, the host-I/O hash chain is identical, the final repository is identical, and no
-  unit check failed (M).
+  (row 24) and `209f2a87…` (row 11), recorded in every run file and checked again on the GPU box (M).
+- **Across every run, real and scripted:** 0 misaligned accesses, 0 traps, 0 imports outside what
+  the host answers (M).
+- **Units:** each run was replayed from its packets with all units on. On all 20 real runs and all
+  10 scripted ones: 0 request bytes differ, the host-I/O hash chain is identical, the final
+  repository is identical, and no unit check failed (M).
 
 **Disclosed: what moves to the host, or changes which fx code runs.**
 
 | | who does it | status |
 |---|---|---|
-| Chat-template rendering, BPE, reasoning and tool-call parsing, SSE construction | the host | the model server's job. Render, parse and SSE are also measured on RV32 (below); BPE is not |
-| Qwen state snapshots | the host | a prefix cache by another name |
+| Chat-template rendering, BPE, reasoning and tool-call parsing, SSE construction | the host | the model server's job. Render, parse and SSE are also measured on RV32 (below, on scripted sessions); BPE is not |
+| Qwen state snapshots | the host | a prefix cache by another name; 84-128 MB each on real Qwen (M) |
 | grep_files, glob_files | the host | **fx's work, done by the host.** fx's own do not compile for WASM (speed-iter item 1) |
 | The file store | the host (`wasifs.py`) | fx's code reaches files only through WASI; the store itself is not in the weights |
 | The ACP client (initialize, prompt) | the host | stands in for the user |
@@ -60,9 +67,9 @@ protocol. The per-task instruction and token counts will move with what Qwen act
 | Gateway route, one SSE read, frozen clock | configuration | speed-iter rows 2-5 |
 
 **This is not the prompt P0c used.** Native fx sent 7 system messages (9 KB) and 13 tools.
-fx-core under the libfx contract sends one short system message and the 5 host tools. A live run
-tests Qwen on a smaller prompt than P0c, and a different tool set; its solve rate would not be
-directly comparable to 15/15.
+fx-core under the libfx contract sends one short system message and the 5 host tools. The live
+runs test Qwen on a smaller prompt and a different tool set, so 20 of 20 is not directly
+comparable to 15 of 15.
 
 ## 1. The packet protocol
 
@@ -86,7 +93,7 @@ result in a0, buffers by DMA into wasm linear memory.
   and those become one SSE read into fx's buffer.
 - **Silent:** ACP output on stdout is never echoed to Qwen.
 
-**Classification**, with call counts over the 5 tasks (M). Imports with zero calls are in `io.json`;
+**Classification**, with call counts over the 5 scripted sessions (M). Imports with zero calls are in `io.json`;
 every one of them has a fixed answer or an implementation in the host.
 
 | group | import | row 24 | row 11 | what it becomes |
@@ -130,7 +137,9 @@ where the text matches, the ids do not, and the rollback fires.
 reasoning, content, then calls. It is exact only because fx echoes reasoning back. That was
 checked on the binary on both routes (M). If fx dropped it, every step would roll back.
 
-| task (row 24) | full tokens, all calls | delta tokens | saved | full bytes | delta bytes | saved | calls |
+**Scripted**, row 24. The real figures follow.
+
+| task (row 24, scripted) | full tokens, all calls | delta tokens | saved | full bytes | delta bytes | saved | calls |
 |---|---|---|---|---|---|---|---|
 | t1_bug | 7,186 | 1,124 | 84.4% | 29,795 | 4,395 | 85.2% | 1 first, 5 exact |
 | t2_rename | 12,435 | 1,218 | 90.2% | 52,326 | 5,065 | 90.3% | 1 first, 8 exact |
@@ -140,29 +149,64 @@ checked on the binary on both routes (M). If fx dropped it, every step would rol
 | **all** | **40,374** | **5,252** | **87.0%** | **171,650** | **21,566** | **87.4%** | **33 calls** |
 
 - These include each session's first prompt, which has to go in whole. On the 28 later calls
-  alone: **1,323 against 69 tokens a call, 94.8% saved** (5,630 against 270 bytes). All M, scripted.
+  alone: 1,323 against 69 tokens a call, 94.8% saved (5,630 against 270 bytes). All M, scripted.
+
+**Real Qwen (M).**
+
+| | row 24 | row 11 |
+|---|---|---|
+| Model calls, of which later | 41, 31 | 42, 32 |
+| Later calls exact | 31 of 31 | 32 of 32 |
+| Tokens rolled back | 0 | 0 |
+| Delta / full tokens, per later call | 102 / 1,271 | 88 / 1,280 |
+| Saved on later calls | **92.0%** | **93.1%** |
+| Delta / full bytes, per later call | 386 / 5,100 | 345 / 5,165 |
+| Saved including first prompts | 78.7% | 80.2% |
+
+- The saving is close to the scripted 94.8%. It is lower because real sessions are shorter (4.1
+  steps against 6.6, so the render a delta is measured against is smaller), and because Qwen often
+  batches tool calls, so one step brings in several results.
+- **Parallel calls are exact too.** Qwen sent several tool calls in one reply on t2 (three reads,
+  three edits), and the template rebuilt them byte for byte. The scripted plans never did this.
 - Native fx's request is much larger (9 KB of system prompt, 13 tools), and it repeats on every
   call, so the saving there should be higher (E).
 
-**The limit of that result: generations here are canonical.** `scripted.py` produces exactly the
-tokens the tokenizer would. Real Qwen may not, and it may write a tool call in a layout the
-template will not rebuild byte for byte (`<parameter=x>value</parameter>` without newlines, say).
-Each such step costs a rollback of that step's generation, and only that. How often this happens
-is the first thing a live run measures. **"28 of 28 exact" is an upper bound.**
+**Are real generations canonically tokenized? Almost always (M).** 114 of 115 are: encoding the
+generated text gives back Qwen's own ids.
+- The one exception (row 11, t5, rep 2) has 198 ids where the tokenizer gives 197.
+- **It was a session's last answer, so no later request ever compared against it.** It shows that
+  non-canonical output happens. It does not show what it costs; mid-session it would have forced a
+  rollback of that step's generation. So 0 rollbacks inside a turn means none were triggered. The
+  rollback path itself did run on real Qwen, on the 5 second prompts below, but a non-canonical
+  trigger for it has only happened in a test.
+- Every real tool call used the template's own layout. The layout mismatch this section feared
+  (`<parameter=x>value</parameter>` with no newlines) did not occur.
 
-**A second turn is not a pure extension (M, scripted, rows 24 and 11).** Two things happen together
-when a new prompt arrives:
+**A second turn is not a pure extension (M, real Qwen, 5 of 5).** Two things happen together when a
+new prompt arrives:
 - fx inserts a "Session file evidence" user message before the last answer;
 - the template stops rendering think blocks before the newest question.
 
-This hits every multi-turn session. Row 24: 1,232 tokens rolled back, 876 of 1,520 re-fed, kept 644.
-With snapshots only at generation starts it was a full rebuild, which is why `DeltaLink` snapshots
-at every message boundary. In weights this needs Qwen's state to be restorable, and each snapshot
-holds the DeltaNet states (about 50 MB each, E; not measured on 4B).
+| task | solved | calls | in-turn calls exact | second prompt: full tokens | re-fed | saved | rolled back | kept |
+|---|---|---|---|---|---|---|---|---|
+| t1_bug | yes | 4 | 2 / 2 | 1,032 | 388 | 62% | 537 | 644 |
+| t2_rename | yes | 7 | 5 / 5 | 2,272 | 1,628 | 28% | 1,767 | 644 |
+| t3_feature | yes | 3 | 1 / 1 | 1,103 | 409 | 63% | 825 | 694 |
+| t4_config | yes | 8 | 6 / 6 | 1,359 | 708 | 48% | 794 | 651 |
+| t5_parse | yes | 5 | 3 / 3 | 1,189 | 529 | 56% | 834 | 660 |
+
+- Every second prompt rolled back, and all 5 diverged at the same place: the first assistant turn's
+  `<think>`, which the render no longer has. So this is structural, not a model behaviour.
+- Tokens re-fed: 3,662 of 6,955, 47% saved on those calls. The whole first turn goes back in.
+- Snapshots only at generation starts made this a full rebuild, which is why `DeltaLink` snapshots
+  at every message boundary. In weights this needs Qwen's state to be restorable, at 84-128 MB per
+  snapshot on these runs (M). That is per message, so a long session holds many of them.
+- All 5 tasks stayed solved, and the second prompt's rendering is what a stateless server would see.
 
 **Routes.** Row 11 and row 24 use fx's gateway route, as those rows are defined. Chat Completions
-also runs and is also exact (t1: 1 first, 5 exact), but fx pays much more for it: 16.46M tokens
-against 9.47M on the same plan (M, no units). This matches speed-iter row 2. So this work returns
+also runs and is also exact (scripted t1: 1 first, 5 exact; real Qwen t1: 1 first, 4 exact, solved in
+5 steps), but fx pays much more for it: 16.46M tokens against 9.47M on the same plan (M, scripted, no
+units); the real run took 13.06M. This matches speed-iter row 2. So this work returns
 the reply as gateway events rather than the OpenAI event the brief names; both are implemented.
 
 **The parser** is a port of the Python engine vLLM 0.33 serves with
@@ -170,13 +214,14 @@ the reply as gateway events rather than the OpenAI event the brief names; both a
 `\n\n` in content, which the Python engine does and the repo's Rust parser would not, so that is
 the right one to port.
 - Its cases come from reading vLLM's grammar and tests. **It has not been run against vLLM.**
+- On real Qwen: 115 generations, 0 warnings, and every tool call was accepted by fx (M).
 - It works on text; the engine also matches the wrapper tokens by id.
 - Schema coercion is simplified. All five tools take only strings, so it did not matter here.
 
 ### Who renders, and what doing it in weights would cost
 
 Today the host renders, tokenizes and parses, so the delta is exact but not in weights. To price
-that, `fxio/render_rv.c` does the text work on RV32, run in rv32emu on the recorded requests:
+that, `fxio/render_rv.c` does the text work on RV32, run in rv32emu on the scripted sessions' requests:
 
 | job | calls | instructions per call | per byte | trace tokens per call | output vs the host | |
 |---|---|---|---|---|---|---|
@@ -186,7 +231,8 @@ that, `fxio/render_rv.c` does the text work on RV32, run in rv32emu on the recor
 | token ids to bytes | | small | a table lookup | | not built | E |
 
 - **In all, about 50-55k instructions a call** (M + E), about 60k trace tokens without BPE.
-- That is **about 7% of a step** with units (0.84M tokens a step) and about 4% without (1.54M).
+- That is **about 7% of a step** with units on the scripted sessions (0.84M tokens a step), and
+  about 6% on the real ones (0.97M); without units 3-4%.
 - Code: 8.8 KB of RV32 text, 233 lines of C.
 - BPE also needs a vocabulary trie in DROM, 2-4 MB (E, speedups §4). Greedy longest-match is not
   exact BPE, so an in-weights tokenizer would need merge ranks to keep the id check meaningful.
@@ -194,7 +240,109 @@ that, `fxio/render_rv.c` does the text work on RV32, run in rv32emu on the recor
   recovery, no type coercion and no second-turn template. It scans the whole body; a provider
   bound in the platform root (speedups §5) would make that O(new bytes).
 
-## 3. End to end, fx's binary with the scripted stand-in
+## 3. End to end
+
+### Real Qwen
+
+fx's exact binaries in rv32emu, on `q35-batch` (one L4), with Qwen/Qwen3.5-4B in HF transformers,
+bf16. `fxio/live.sh 2`. Task means below, real against scripted. Each run's replay with all units
+gave identical host I/O (M).
+
+| row | task | solved | steps, real / scripted | generated, real / scripted | instr, real / scripted | tokens, real / scripted | instr, units | tokens, units |
+|---|---|---|---|---|---|---|---|---|
+| 24 | t1_bug | 2 / 2 | 4.5 / 6 | 466 / 752 | 4.47M / 6.56M | 6.52M / 9.47M | 2.30M | 3.57M |
+| 24 | t2_rename | 2 / 2 | 5.5 / 9 | 907 / 823 | 9.37M / 10.58M | 14.06M / 15.49M | 4.59M | 7.23M |
+| 24 | t3_feature | 2 / 2 | 2.0 / 6 | 789 / 1,078 | 2.96M / 6.62M | 4.38M / 9.33M | 1.38M | 2.11M |
+| 24 | t4_config | 2 / 2 | 5.5 / 8 | 422 / 555 | 4.87M / 7.43M | 6.97M / 10.58M | 2.57M | 4.02M |
+| 24 | t5_parse | 2 / 2 | 3.0 / 4 | 824 / 750 | 3.86M / 4.19M | 5.70M / 6.04M | 1.87M | 2.87M |
+| 11 | t1_bug | 2 / 2 | 3.0 / 6 | 314 / 752 | 2.37M / 5.90M | 3.33M / 8.26M | 1.28M | 1.98M |
+| 11 | t2_rename | 2 / 2 | 5.0 / 9 | 876 / 823 | 7.35M / 9.30M | 10.41M / 13.00M | 3.79M | 5.94M |
+| 11 | t3_feature | 2 / 2 | 4.0 / 6 | 1,046 / 1,078 | 5.50M / 6.31M | 7.67M / 8.76M | 2.56M | 3.93M |
+| 11 | t4_config | 2 / 2 | 6.0 / 8 | 445 / 555 | 5.05M / 7.16M | 7.12M / 10.10M | 2.67M | 4.18M |
+| 11 | t5_parse | 2 / 2 | 3.0 / 4 | 651 / 750 | 3.29M / 3.81M | 4.61M / 5.32M | 1.67M | 2.56M |
+
+Every run:
+
+| row | task | rep | solved | steps | generated | instr | tokens | tokens, units | tool calls (failed) |
+|---|---|---|---|---|---|---|---|---|---|
+| 11 | t1_bug | 1 | yes | 3 | 321 | 2.41M | 3.40M | 2.02M | 2 (0) |
+| 11 | t1_bug | 2 | yes | 3 | 306 | 2.32M | 3.26M | 1.94M | 2 (0) |
+| 11 | t2_rename | 1 | yes | 5 | 919 | 7.40M | 10.47M | 5.96M | 10 (0) |
+| 11 | t2_rename | 2 | yes | 5 | 832 | 7.30M | 10.34M | 5.91M | 10 (0) |
+| 11 | t3_feature | 1 | yes | 6 | 1,375 | 8.44M | 11.73M | 5.89M | 5 (0) |
+| 11 | t3_feature | 2 | yes | 2 | 716 | 2.57M | 3.60M | 1.96M | 1 (0) |
+| 11 | t4_config | 1 | yes | 5 | 364 | 3.96M | 5.58M | 3.28M | 4 (0) |
+| 11 | t4_config | 2 | yes | 7 | 526 | 6.14M | 8.65M | 5.09M | 6 (0) |
+| 11 | t5_parse | 1 | yes | 3 | 695 | 3.39M | 4.76M | 2.63M | 2 (0) |
+| 11 | t5_parse | 2 | yes | 3 | 607 | 3.18M | 4.46M | 2.48M | 2 (0) |
+| 24 | t1_bug | 1 | yes | 3 | 366 | 2.83M | 4.18M | 2.29M | 2 (0) |
+| 24 | t1_bug | 2 | yes | 6 | 565 | 6.11M | 8.85M | 4.85M | 5 (1) |
+| 24 | t2_rename | 1 | yes | 5 | 924 | 8.89M | 13.41M | 6.84M | 10 (0) |
+| 24 | t2_rename | 2 | yes | 6 | 890 | 9.84M | 14.70M | 7.63M | 11 (0) |
+| 24 | t3_feature | 1 | yes | 2 | 969 | 3.12M | 4.58M | 2.21M | 1 (0) |
+| 24 | t3_feature | 2 | yes | 2 | 609 | 2.81M | 4.18M | 2.01M | 1 (0) |
+| 24 | t4_config | 1 | yes | 4 | 318 | 3.28M | 4.72M | 2.72M | 3 (0) |
+| 24 | t4_config | 2 | yes | 7 | 526 | 6.46M | 9.22M | 5.32M | 6 (0) |
+| 24 | t5_parse | 1 | yes | 3 | 859 | 3.96M | 5.84M | 2.94M | 2 (0) |
+| 24 | t5_parse | 2 | yes | 3 | 788 | 3.76M | 5.56M | 2.80M | 2 (0) |
+
+- One tool call failed across the 20 runs (row 24, t1, rep 2: an edit). Qwen read fx's real error,
+  re-read the file and recovered, as it did in P0c.
+- Instructions and CPU tokens: M. Units' tokens: E per circuits.md's record formats.
+- Row 24 still costs more than row 11 per run, for fx's own tool code. Task means don't show it
+  cleanly, because Qwen's paths differ between runs (t3, 2 steps on row 24 against 2 and 6 on row 11).
+- **Per-task spread is wide:** t1 took 3 or 6 steps, and t3 on row 11 took 2 or 6. Two reps do not
+  pin these means down.
+- Chip-emitted text per later call: 102 BPE tokens on row 24, 88 on row 11.
+- **Largest single generation: 795 tokens and a 3,314-byte reply** (M). The capture window is 80 tokens.
+
+**Qwen's cost on this box (M).** HF transformers, one L4, with HF falling back to its reference
+PyTorch kernels (`flash-linear-attention` and `causal_conv1d` not installed), and on the base
+model, not the padded checkpoint.
+
+| | measured | assumed in the scripted projection |
+|---|---|---|
+| Decode | **50.1 ms / token** | 65 ms (E), 30 ms target (E) |
+| One chunked prefill, 2,272 tokens | **2,635 tok/s** | 5,000 tok/s (E) |
+| Delta feeds as they really are, many short suffixes | **682 tok/s** | |
+| Snapshot | 113 ms a session at most | |
+
+**Projected wall time, row 24, task means (E).** Tokens, decode and feed rates are measured; the
+chip rate is not this system's.
+- 23k tok/s is Executor v4 in RvChat on calc firmware (M there). exec-v4.md puts fx's memory layers
+  at about 15-19k (E), so **15k is the row to plan on**.
+- The last column prints every render byte by byte at 2 chip tokens a byte, with no units, and
+  feeds each byte at the measured decode rate.
+- In-weights text work is not included (about 6% of a real step; see §2). Boot is not included (0.53M
+  instructions, removed by a snapshot).
+
+| task | chip, no units | chip, units | generate | delta feed | **total, units + delta** | no units, no delta, bytewise |
+|---|---|---|---|---|---|---|
+| **23k tok/s** | | | | | | |
+| t1_bug | 4.7 min | 2.6 min | 23 s | 1.4 s | **3.0 min** | 20.8 min |
+| t2_rename | 10.1 min | 5.2 min | 45 s | 2.3 s | **6.0 min** | 37.6 min |
+| t3_feature | 3.2 min | 1.5 min | 40 s | 1.1 s | **2.2 min** | 10.7 min |
+| t4_config | 5.0 min | 2.9 min | 21 s | 1.3 s | **3.3 min** | 24.0 min |
+| t5_parse | 4.1 min | 2.1 min | 41 s | 1.1 s | **2.8 min** | 14.7 min |
+| **15k tok/s** | | | | | | |
+| t1_bug | 7.2 min | 4.0 min | 23 s | 1.4 s | **4.4 min** | 23.3 min |
+| t2_rename | 15.6 min | 8.0 min | 45 s | 2.3 s | **8.8 min** | 43.2 min |
+| t3_feature | 4.9 min | 2.3 min | 40 s | 1.1 s | **3.0 min** | 12.4 min |
+| t4_config | 7.7 min | 4.5 min | 21 s | 1.3 s | **4.8 min** | 26.7 min |
+| t5_parse | 6.3 min | 3.2 min | 41 s | 1.1 s | **3.9 min** | 16.9 min |
+
+- The chip dominates: generation is 7-34% of the total, and the delta feed is about 1-2 s.
+- Range across single runs, row 24: 2.0-6.3 min at 23k, 2.8-9.3 min at 15k.
+- A second turn adds the re-feed, a few seconds, plus its own chip time.
+
+### Scripted stand-in
+
+**Not Qwen.** Hand-written plans in `fxio/scripted.py`, in Qwen's raw format, using Qwen's real
+tokenizer. Each copies the tool order of a real P0c run, with reasoning as filler sized to that
+run's recorded output tokens. A "pass" here means a correct plan got through fx, not that a model
+solved anything. These figures are kept because they exercised the path before any GPU was
+available, and because the plans include things real runs did not (a planned failing edit in both
+rows).
 
 Row 24 is fx's own read / edit / write on the CPU; row 11 has all five tools in the host. One run
 of each plan, since a fixed plan gives the same result every time; the brief's two reps need the
@@ -221,7 +369,7 @@ live run. Instructions and tokens are one prompt to its response, without boot (
   the guest on both rows, and the plan recovered.
 - Row 24's t1-t5 cost 5-19% more tokens than row 11's (M).
 
-**Projected wall time, row 24 (E).** The tokens are measured, the rates are not this system's:
+**Scripted projection, row 24 (E).** Superseded by the real one above. The tokens are measured, the rates are not this system's:
 - 23k chip tok/s is Executor v4 in RvChat on calc firmware. exec-v4.md puts fx's memory layers at
   about 15-19k (E), so 15k is the row to plan on.
 - 65 ms / token is the HF path; 30 ms is speedups §9's target.
@@ -266,31 +414,57 @@ In `chipformer/rv/chat.py`; `core.py` and `exec4.py` are untouched.
 - with a random model the history never matches, and each call rolls back to its generation start
   and still answers. That is the path real divergence takes.
 
-**Not exercised:** none of this has run on a merged checkpoint. `_text_hc` fills the kept dims from
-the park, and those dims reach Qwen through RMSNorm's scale, so whether batched ingest matches
-`_exec_hc` needs a run on the real checkpoint. No chip that runs fx on the circuit exists yet.
+**Chunked prefill on real base weights (M, `fxio/prefill_check.py`, 2,272-token real render).**
+
+| comparison | max logit difference | top-1 equal | KL |
+|---|---|---|---|
+| `_qwen_prefill` vs the model's forward | 0.125 | True | -2.2e-08 |
+| chunks of 64 vs one chunk | 0.1875 | True | 3.1e-05 |
+| `_qwen_step` token by token vs one chunk | 0.1875 | True | 1.3e-06 |
+
+- It behaves: top-1 agrees everywhere and the differences are at bf16 rounding scale.
+- **Not bit-exact:** the top-10 order differed once (token-by-token vs chunk), and a greedy run from
+  chunks of 64 left a run from one chunk after 63 of 64 tokens. So chunking can change
+  which tokens Qwen writes, the same class of effect as batching. speedups §4 said so; this is the
+  measurement.
+- A snapshot restore reproduced the greedy continuation exactly: True.
+- `_qwen_prefill` was 133x faster than `_qwen_step` here: 0.86 s against 115 s.
+
+**`_text_hc` on the merged RV checkpoint (M, `fxio/merged_check.py`,
+`divagr1925/Qwen3.5-4B-Qwenputer`).** A hook took the true residual after the 11 chip layers as
+the reference.
+
+| filling for the 23 kept dims | max logit difference vs forward | top-1 equal |
+|---|---|---|
+| the true residual, per position | 0.0 | True |
+| `_text_hc`, one constant set (the last position's) | 0.0 | True |
+| `_text_hc`, zeros | 0.015625 | True |
+
+- Qwen's embedding dims come through the chip layers unchanged (max error 0.0), and every other
+  chip dim is 0.0 after them.
+- The kept-dims risk from RMSNorm did not show: those dims peak at 9.5e-07 here, too small to matter.
+- **Scope, and it matters:** a zero-state chip with no firmware, on the first 640 tokens, because the
+  full model peaks at 18 GB and a 2,272-token forward ran out of the L4's 22 GB. The real
+  case is text arriving while fx is parked, with a loaded machine; the kept values there were not
+  measured, and tau and mu may be larger. Executor v4 was not used either.
+
+No chip that runs fx on the circuit exists yet, so `fx_session` still runs against a replaying chip.
 
 ## Blockers
 
-1. **No access to a GPU box. This is what stopped task 3.**
-   - Port 22 on both boxes admits a fixed list of addresses, and this machine's current address,
-     `106.222.210.5`, is on neither list.
-   - Adding it to q35-eval2's security group was attempted once and **denied by the session's
-     permission policy**. Nothing was changed, and no workaround was tried. The boxes have no
-     instance profile, so SSM is not available.
-   - **To unblock:** someone with the authority adds that address to port 22 of
-     `sg-09b8c20eadfa4a8b3` (q35-eval2, us-west-2) or `sg-0dc8a50ea3fb3f5c3` (q35-batch, us-east-1),
-     or runs `fx/fxio/live.sh` from an allowed address. It does tasks t1-t5 × 2 reps on row 24, row
-     11, and the units replays.
-   - `live.sh` and `qwen_hf.py` have **never run on real Qwen**; the backend is tested on a tiny
-     model. Expect a fix or two.
-2. **Capture window.** Qwen to the CPU is 80 tokens in the circuit; this needs at least 195 tokens
-   and 1.4 KB a call, and real calls with tool arguments will need more (M, scripted). speedups
-   §13's 4-8k-token buffer is required before any of this runs in weights.
-3. **The file store and grep / glob** are still on the host (Disclosed).
-4. **The in-weights tokenizer** is unbuilt, and exact BPE needs merge ranks.
-5. **Snapshots in weights:** whether Qwen's state can be saved and restored on the real path, and
-   what it costs per message, is not measured.
+1. **Capture window.** Qwen to the CPU is 80 tokens in the circuit. Real Qwen needed 795 tokens and
+   3,314 bytes in one call (M), so a `write_file` is well past it. speedups §13's 4-8k-token
+   buffer is required before any of this runs in weights.
+2. **The file store and grep / glob** are still on the host (Disclosed). Real Qwen used grep on t2
+   and t4 and never used glob, so those tasks still leave the guest for fx's own tool work.
+3. **The in-weights tokenizer** is unbuilt, and exact BPE needs merge ranks.
+4. **`render_rv.c`** was checked on scripted sessions only. It is meant to handle parallel tool
+   calls, which real Qwen uses, but that case has not been compared against the host.
+5. **Snapshots in weights:** real snapshots are 84-128 MB, one per message. Whether Qwen's state can be
+   saved and restored on the real path is not measured, and every new fx turn needs it.
+6. **A non-canonical generation mid-session** has not occurred, so its real rollback is untested.
+7. **`_text_hc` with a loaded machine:** see §4. The merged-checkpoint check has no firmware in it.
+8. **Sample size:** two reps per task, on tiny repos. Larger repositories are untested.
 
 ## Reproduce
 
@@ -305,4 +479,8 @@ and template are needed for the scripted runs.
    `python -I fx/fxio/render_cost.py DLL render_rv.elf MODEL OUT.json RUN.json ..`.
 4. `io.json`: `python -I fx/fxio/report.py RUNS IMPORTS RENDER.json io.json`.
 5. Tests: `pytest tests/test_fx_io.py`.
-6. The live run, from an allowed address: `fx/fxio/live.sh 2`.
+6. The live run: `fx/fxio/live.sh 2` on the GPU box (setup, row 24, row 11, units replays), then
+   `python -I fx/fxio/report_live.py RUNS live.json`.
+7. Qwen's text path: `python fx/fxio/prefill_check.py Qwen/Qwen3.5-4B MODEL RUN.json OUT.json` and
+   `python fx/fxio/merged_check.py CHECKPOINT MODEL RUN.json OUT.json 640`, with `PYTHONPATH` at
+   `experimental/riscv`.
