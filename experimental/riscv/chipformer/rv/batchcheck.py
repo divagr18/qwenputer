@@ -25,13 +25,15 @@ def main() -> None:
     ap.add_argument("--max-len", type=int, default=6144)
     ap.add_argument("--local-ref", action="store_true",
                     help="compare with RvChat.generate here instead of the records' tokens")
+    ap.add_argument("--exec", default="v4", choices=("v2", "v4"), help="the executor")
+    ap.add_argument("--dump", default=None, help="append every batched result's tokens here")
     args = ap.parse_args()
     recs = []
     for spec in args.records:
         path, rid = spec.rsplit(":", 1)
         rows = [json.loads(x) for x in open(path, encoding="utf-8")]
         recs.append(next(r for r in rows if r["id"] == rid))
-    chat = RvChat(args.model, executor=True)
+    chat = RvChat(args.model, executor=True, exec_kind=args.exec)
 
     def job(r):
         m = ref.Machine.from_program(elf.program(args.firmware))
@@ -60,6 +62,12 @@ def main() -> None:
         st = rb.run((job(r) for r in recs), args.budget, args.max_chip,
                     lambda j, out: res.__setitem__(j.key, out))
         wall = time.time() - t0
+        if args.dump:
+            with open(args.dump, "a", encoding="utf-8") as f:
+                for r in recs:
+                    f.write(json.dumps({"exec": args.exec, "batch": B, "id": r["id"],
+                                        "tokens": res[r["id"]]["tokens"]}) + "
+")
         for r in recs:
             got, want = res[r["id"]]["tokens"], r["gen_ids"]
             first = next((i for i, (a, b) in enumerate(zip(got, want)) if a != b),

@@ -144,7 +144,7 @@ HEAD = r"""
 #define ND 16
 #define G (NT / 128)
 #define DUMMY ((PARTMAX - 1) << 16)  // the padding slots' piece
-#define ZB (PARTMAX - 129)  // 128 piece sums that stay 0
+#define ZB (PARTMAX - 132)  // 128 piece sums that stay 0 (16-byte aligned)
 
 __device__ __forceinline__ unsigned ld_acquire(const unsigned* p) {
     unsigned v;
@@ -220,7 +220,7 @@ __device__ __forceinline__ void warp_top(float* av, int* ai) {
 // row is the zero block ZB)
 template <int QH>
 __device__ __forceinline__ void heads(const int* d, const int* blob, const float* part,
-                                      float* S, float* Ycur) {
+                                      float* S, float* Ycur, long long* pp) {
     const int lane = threadIdx.x & 31;
     const int c0 = lane * 4;
     const int nvh = d[4];
@@ -229,14 +229,20 @@ __device__ __forceinline__ void heads(const int* d, const int* blob, const float
         const int rq = (r[0] < 0 ? ZB : r[0]) + c0, rk = (r[1] < 0 ? ZB : r[1]) + c0;
         const int rv = (r[2] < 0 ? ZB : r[2]) + c0, rz = (r[3] < 0 ? ZB : r[3]) + c0;
         float q4[4], k4[4], v4[4], z4[4];
-#pragma unroll
-        for (int c = 0; c < 4; c++) {
-            q4[c] = fmaxf(part[rq + c], 0.0f);
-            k4[c] = fmaxf(part[rk + c], 0.0f);
-            v4[c] = fmaxf(part[rv + c], 0.0f);
-            z4[c] = fmaxf(part[rz + c], 0.0f);
+        {
+            const float4 q = *(const float4*)(part + rq), k = *(const float4*)(part + rk);
+            const float4 v = *(const float4*)(part + rv), z = *(const float4*)(part + rz);
+            q4[0] = fmaxf(q.x, 0.0f); q4[1] = fmaxf(q.y, 0.0f);
+            q4[2] = fmaxf(q.z, 0.0f); q4[3] = fmaxf(q.w, 0.0f);
+            k4[0] = fmaxf(k.x, 0.0f); k4[1] = fmaxf(k.y, 0.0f);
+            k4[2] = fmaxf(k.z, 0.0f); k4[3] = fmaxf(k.w, 0.0f);
+            v4[0] = fmaxf(v.x, 0.0f); v4[1] = fmaxf(v.y, 0.0f);
+            v4[2] = fmaxf(v.z, 0.0f); v4[3] = fmaxf(v.w, 0.0f);
+            z4[0] = fmaxf(z.x, 0.0f); z4[1] = fmaxf(z.y, 0.0f);
+            z4[2] = fmaxf(z.z, 0.0f); z4[3] = fmaxf(z.w, 0.0f);
         }
         const float bv = part[r[5] < 0 ? ZB : r[5]] + __int_as_float(r[11]);
+        if (pp && vi == 0) pp[10] = clock64();
         float* Sb = S + r[7];
         const int nr = r[6];
         if (nr > 0) {
@@ -250,6 +256,7 @@ __device__ __forceinline__ void heads(const int* d, const int* blob, const float
                     *row = x;
                 }
         }
+        if (pp && vi == 0) pp[11] = clock64();
         // the key's row (top 1) and the query's QH first rows: Executor2's argmax rounds (the
         // largest value, the smallest index on ties; a chosen row is zeroed for the next round)
         unsigned kb[4], qb[4];
@@ -271,6 +278,7 @@ __device__ __forceinline__ void heads(const int* d, const int* blob, const float
         // each lane decays, writes and reads only its own 4 channels, so the read of a row this
         // step wrote is that write (forwarded); a head without keys or decay never writes
         // its state in a launch (read through the read-only path)
+        if (pp && vi == 0) pp[12] = clock64();
         const bool wrote = kmv[0] > 0.0f && bv == 1.0f;
         const float4 vw = make_float4(v4[0], v4[1], v4[2], v4[3]);
         if (wrote) *((float4*)(Sb + kmi[0] * 128) + lane) = vw;
@@ -286,19 +294,27 @@ __device__ __forceinline__ void heads(const int* d, const int* blob, const float
             }
         }
         const float o0 = __shfl_sync(0xffffffffu, o.x, 0), o1 = __shfl_sync(0xffffffffu, o.y, 0);
+        if (pp && vi == 0) pp[13] = clock64();
         const float ref = o0 * o0 + o1 * o1;
         if (ref > 0.0f) {
             const float norm = __fsqrt_rn(__fdiv_rn(ref, 128.0f));
+            // o / norm: a product by 1 / norm when norm is a power of 2 (then both are exact
+            // scalings, one rounding: the same float), else the IEEE division
+            const bool p2 = (__float_as_uint(norm) & 0x7fffffu) == 0u;
+            const float inv = __frcp_rn(norm);
             const float ov[4] = {o.x, o.y, o.z, o.w};
+            const int4 w4 = *(const int4*)(blob + r[8] + c0), d4 = *(const int4*)(blob + r[9] + c0);
+            const int wa[4] = {w4.x, w4.y, w4.z, w4.w}, da[4] = {d4.x, d4.y, d4.z, d4.w};
 #pragma unroll
             for (int c = 0; c < 4; c++) {
-                const float wv = __int_as_float(blob[r[8] + c0 + c]);
-                if (wv != 0.0f) {
-                    const float cc = __fdiv_rn(ov[c], norm) * z4[c] * wv;
-                    if (cc != 0.0f) atomicAdd(Ycur + blob[r[9] + c0 + c], cc);
+                const float wv = __int_as_float(wa[c]);
+                if (wv != 0.0f && z4[c] != 0.0f) {  // (else the output is 0: nothing to add)
+                    const float cc = (p2 ? ov[c] * inv : __fdiv_rn(ov[c], norm)) * z4[c] * wv;
+                    if (cc != 0.0f) atomicAdd(Ycur + da[c], cc);
                 }
             }
         }
+        if (pp && vi == 0) pp[14] = clock64();
     }
 }
 
@@ -510,7 +526,7 @@ UNITS = r"""
             }"""
 
 HEADS = r"""
-            heads<@QH@>(d, blob, pc, S, Ycur);"""
+            heads<@QH@>(d, blob, pc, S, Ycur, pr ? pp : nullptr);"""
 
 
 def gen_src(consts: dict, phases: list[dict]) -> str:
@@ -772,6 +788,7 @@ class Exec4:
                 def add_rows128(rs):
                     if not any(rs):
                         return -1
+                    rows.extend([{}] * (-len(rows) % 4))  # 16-byte aligned (empty rows: 0)
                     first = len(rows)
                     rows.extend(rs)
                     return first
@@ -814,8 +831,8 @@ class Exec4:
                             pieces.append((nr_ + nextra, ch_))
                             nextra += 1
                 npart = nr_ + nextra
-                self.PARTMAX = max(self.PARTMAX, npart + 129)
-                assert npart + 129 < 1 << 15
+                self.PARTMAX = max(self.PARTMAX, npart + 133)
+                assert npart + 133 < 1 << 15
                 J = max([len(x) for _, x in pieces], default=0)
                 bp_pieces[p, bi] = pieces
                 # this block-phase's tables
@@ -827,6 +844,7 @@ class Exec4:
                 vh_at = len(bl)
                 bl += [0] * (16 * len(vhr))
                 for x, (q0, k0, v0_, z0, ar, br, vh) in enumerate(vhr):
+                    bl += [0] * (-len(bl) % 4)
                     ow_at = len(bl)
                     bl += [fbits(w) for w in vh["ow"]]
                     od_at = len(bl)
