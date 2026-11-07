@@ -1,7 +1,18 @@
 /* A small RV32IM + Zba + Zbb + Zbs + Zalrsc interpreter, built as a host DLL and driven from
  * Python (rvhost.py). It counts every retired instruction by mnemonic and by PC.
  * rv_run() returns on ecall (1), illegal instruction (2), ebreak (3), the step
- * limit (4) or a memory fault (5); the host handles the ecall and resumes.
+ * limit (4), a memory fault (5) or a failed unit check (6); the host handles the ecall
+ * and resumes.
+ *
+ * circuits.md additions:
+ * - a token model: every retired instruction is charged the tokens of its record in the
+ *   Qwenputer trace format (chipformer/rv/spec.py: value records of 1-3 tokens by size, SB/SH
+ *   4, taken jumps J, an R refresh after 63 commits without a jump);
+ * - exact dedicated units ("circuits", circ_units.h): macro-uops that fire at fixed ROM PCs
+ *   of this fx build, with the architectural effect of the original instructions, and a
+ *   verify mode that also steps the original code from the same state and compares;
+ * - poison checks: registers / dead stack bytes a unit leaves different from the original
+ *   must be written before they are read (counted as violations otherwise).
  */
 #include <stdint.h>
 #include <stdlib.h>
@@ -57,7 +68,59 @@ static uint32_t watch_pc = 0xffffffffu;
 static uint32_t* wcalls;
 static uint64_t* wbytes;
 #define mt_icount_now icount
+static int nfz; /* read-only ranges a unit bakes in (circ_loops.h) */
+static void frozen_store_check(uint32_t a, uint32_t n);
 #include "memtrace.h"
+
+/* ---- token model (spec.py's record format) ---- */
+static uint64_t tokens;      /* tokens of the trace so far */
+static uint32_t tn;          /* commits since the last J / R (the R refresh comes at 63) */
+static uint32_t* tokpc;      /* tokens charged per PC */
+static int shadow;           /* stepping the original code for a unit check: no profiling */
+static inline uint32_t vlen(uint32_t v) {
+  int32_t s = (int32_t)v;
+  return (s >= -(1 << 14) && s < (1 << 14)) ? 1 : (s >= -(1 << 29) && s < (1 << 29)) ? 2 : 3;
+}
+static inline uint32_t nib_used(uint32_t v) { uint32_t k = 0; for (int i = 0; i < 8; i++) if (v >> (4 * i)) k++; return k; }
+static inline uint32_t div_k0(int sgn, uint32_t a, uint32_t b) { /* ref.div_start */
+  if (b == 0) return 0;
+  uint32_t da = nib_used(a), db = nib_used((sgn && (b >> 31)) ? ~b : b);
+  int k = 7 - (int)da + (int)db;
+  return k < 0 ? 0 : k > 8 ? 8 : (uint32_t)k;
+}
+
+/* ---- store log (unit checks) and poison ---- */
+typedef struct { uint32_t a; uint8_t old; } logent_t;
+static logent_t* lg;
+static size_t lgn, lgcap;
+static int log_on;
+static inline void log_byte(uint32_t a) {
+  if (lgn == lgcap) { lgcap = lgcap ? 2 * lgcap : 1 << 16; lg = realloc(lg, lgcap * sizeof(logent_t)); }
+  lg[lgn].a = a; lg[lgn].old = M[a]; lgn++;
+}
+static inline void log_store(uint32_t a, uint32_t n) { if (log_on) for (uint32_t i = 0; i < n; i++) log_byte(a + i); }
+#define PSTK_LO 0x07800000u /* native C stack region [PSTK_LO, MEMSZ): dead below sp at a return */
+#define WSTK_HI 0x00100000u /* wasm shadow stack [0, 1 MB): dead below __stack_pointer at a return */
+static uint32_t pois;        /* registers whose value differs from the original's (dead at a unit exit) */
+static uint8_t* pbits;       /* bitmap: bytes that differ from the original's (dead at a unit exit) */
+static uint32_t npmem;
+static uint64_t viol_reg, viol_mem;
+static uint32_t viol_pc, viol_what;
+#define PBIT(a) (pbits[(a) >> 3] >> ((a) & 7) & 1)
+static inline void preg(uint32_t r) {
+  if (r && (pois >> r & 1)) { if (!viol_reg++) { viol_pc = PC; viol_what = r; } }
+}
+static inline void pload(uint32_t a, uint32_t n) {
+  if (npmem) for (uint32_t i = 0; i < n; i++) if (a + i < MEMSZ && PBIT(a + i)) {
+    if (!viol_mem++) { viol_pc = PC; viol_what = a + i; } }
+}
+static inline void pstore(uint32_t a, uint32_t n) {
+  if (npmem) for (uint32_t i = 0; i < n; i++) if (a + i < MEMSZ && PBIT(a + i)) { pbits[(a + i) >> 3] &= (uint8_t)~(1u << ((a + i) & 7)); npmem--; }
+}
+static inline void ppoison(uint32_t a) { if (!PBIT(a)) { pbits[a >> 3] |= (uint8_t)(1u << (a & 7)); npmem++; } }
+EXPORT uint64_t rv_tokens(void) { return tokens; }
+EXPORT uint32_t* rv_tokpc(void) { return tokpc; }
+EXPORT void rv_violations(uint64_t* out) { out[0] = viol_reg; out[1] = viol_mem; out[2] = viol_pc; out[3] = viol_what; out[4] = pois; out[5] = npmem; }
 
 EXPORT uint8_t* rv_mem(void) { return M; }
 EXPORT uint32_t* rv_regs(void) { return X; }
@@ -91,16 +154,18 @@ EXPORT int rv_init(uint32_t lo, uint32_t hi) {
   incl_depth = calloc((hi - lo) / 4 + 1, sizeof(uint32_t));
   wcalls = calloc((hi - lo) / 4 + 1, sizeof(uint32_t));
   wbytes = calloc((hi - lo) / 4 + 1, sizeof(uint64_t));
-  return M && pcc && mpc && pcbytes && incl && incl_depth ? 0 : -1;
+  tokpc = calloc((hi - lo) / 4 + 1, sizeof(uint32_t));
+  pbits = calloc(MEMSZ / 8, 1);
+  return M && tokpc && pbits && pcc && mpc && pcbytes && incl && incl_depth ? 0 : -1;
 }
 
 static inline int ok(uint32_t a, uint32_t n) { return a < MEMSZ && a + n <= MEMSZ; }
 static inline uint32_t rotl(uint32_t a, uint32_t n) { n &= 31; return n ? (a << n) | (a >> (32 - n)) : a; }
 static inline uint32_t rotr(uint32_t a, uint32_t n) { n &= 31; return n ? (a >> n) | (a << (32 - n)) : a; }
 
-EXPORT int rv_run(uint64_t limit) {
-  uint64_t end = icount + limit;
-  while (icount < end) {
+/* One instruction (0: retired; else rv_run's return code, PC not advanced). */
+static int step(void) {
+  {
     if (!ok(PC, 4) || (PC & 3)) { fault_addr = PC; return 5; }
     uint32_t in;
     memcpy(&in, M + PC, 4);
@@ -110,6 +175,18 @@ EXPORT int rv_run(uint64_t limit) {
     int32_t immi = (int32_t)in >> 20;
     int k = -1;
     int wr = 1;
+    uint32_t tref = 0;
+    int jt = 0;
+    if (tn == 63) { tref = 1; tn = 0; }
+    if (pois) {
+      if (op == 0x67 || op == 0x03 || op == 0x13 || op == 0x63 || op == 0x23 || op == 0x33 || op == 0x2f) preg(rs1);
+      if (op == 0x63 || op == 0x23 || op == 0x33 || op == 0x2f) preg(rs2);
+      if (in == 0x00000073u) { /* what the OS reads (rvhost.py): a7, then the call's arguments */
+        preg(17);
+        if (X[17] >= 0x400 || X[17] == 96) { preg(10); preg(11); }
+        else if (X[17] == 93 || X[17] == 94 || X[17] == 97) preg(10);
+      }
+    }
     switch (op) {
       case 0x37: k = LUI; v = in & 0xfffff000u; break;
       case 0x17: k = AUIPC; v = PC + (in & 0xfffff000u); break;
@@ -135,7 +212,7 @@ EXPORT int rv_run(uint64_t limit) {
           case 7: k = BGEU; t = a >= b; break;
           default: return 2;
         }
-        if (t) next = PC + im;
+        if (t) { next = PC + im; jt = 1; }
         wr = 0;
         break;
       }
@@ -144,6 +221,7 @@ EXPORT int rv_run(uint64_t limit) {
         uint32_t n = (f3 & 3) == 0 ? 1 : (f3 & 3) == 1 ? 2 : 4;
         if (!ok(ad, n)) { fault_addr = ad; return 5; }
         if (ad & (n - 1)) { misaligned++; if (PC >= text_lo && PC < text_hi) mpc[(PC - text_lo) >> 2]++; }
+        pload(ad, n);
         mt_load(ad, n);
         if (prof && PC >= text_lo && PC < text_hi) pcbytes[(PC - text_lo) >> 2] += n;
         switch (f3) {
@@ -164,6 +242,9 @@ EXPORT int rv_run(uint64_t limit) {
         if (!ok(ad, n)) { fault_addr = ad; return 5; }
         if (ad & (n - 1)) { misaligned++; if (PC >= text_lo && PC < text_hi) mpc[(PC - text_lo) >> 2]++; }
         k = f3 == 0 ? SB : f3 == 1 ? SH : SW;
+        log_store(ad, n);
+        pstore(ad, n);
+        if (nfz) frozen_store_check(ad, n);
         memcpy(M + ad, &b, n);
         mt_store(ad, n);
         if (prof && PC >= text_lo && PC < text_hi) pcbytes[(PC - text_lo) >> 2] += n;
@@ -265,25 +346,44 @@ EXPORT int rv_run(uint64_t limit) {
         break;
       case 0x0f: k = FENCE; wr = 0; break;
       case 0x73:
-        if (in == 0x00000073u) { ops[ECALL]++; icount++; return 1; }
+        if (in == 0x00000073u) {
+          ops[ECALL]++; icount++; tokens += 3 + tref; tn++; /* the call, and a0's value from the OS */
+          if (!shadow && PC >= text_lo && PC < text_hi) tokpc[(PC - text_lo) >> 2] += 3 + tref;
+          return 1;
+        }
         if (in == 0x00100073u) { ops[EBREAK]++; icount++; return 3; }
         k = CSR; v = 0; break; /* reads as zero, writes ignored */
       case 0x2f: {
         if (f3 != 2) return 2;
         uint32_t f5 = in >> 27;
         if (!ok(a, 4) || (a & 3)) { fault_addr = a; return 5; }
-        if (f5 == 2) { k = LRW; memcpy(&v, M + a, 4); resv = a; mt_load(a, 4); }
+        if (f5 == 2) { k = LRW; pload(a, 4); memcpy(&v, M + a, 4); resv = a; mt_load(a, 4); }
         else if (f5 == 3) {
           k = SCW;
-          if (resv == a) { memcpy(M + a, &b, 4); mt_store(a, 4); v = 0; } else v = 1;
+          if (resv == a) { log_store(a, 4); pstore(a, 4); if (nfz) frozen_store_check(a, 4); memcpy(M + a, &b, 4); mt_store(a, 4); v = 0; } else v = 1;
           resv = 0xffffffffu;
         } else return 2;
         break;
       }
       default: return 2;
     }
-    if (wr && rd) X[rd] = v;
+    if (wr && rd) { X[rd] = v; pois &= ~(1u << rd); }
     ops[k]++;
+    { /* the record's tokens */
+      uint32_t tk;
+      if (k == JAL || k == JALR || jt) { tk = 1; tn = 0; }
+      else {
+        if (op == 0x63 || k == SW || k == FENCE) tk = 1;
+        else if (k == SB || k == SH) tk = 4;
+        else if (k == SCW) tk = (rd ? vlen(v) : 1) + 1;
+        else if (k >= DIV && k <= REMU) tk = rd ? 1 + (8 - div_k0(k == DIV || k == REM, a, b)) + vlen(v) : 1;
+        else tk = rd ? vlen(v) : 1;
+        tn++;
+      }
+      tokens += tk + tref;
+      if (!shadow && PC >= text_lo && PC < text_hi) tokpc[(PC - text_lo) >> 2] += tk + tref;
+    }
+    if (shadow) { icount++; PC = next; return 0; }
     if (prof && (k == JAL || k == JALR)) {
       if (rd == 1 && next >= text_lo && next < text_hi && csp < CSTK) {
         uint32_t e = (next - text_lo) >> 2;
@@ -311,6 +411,22 @@ EXPORT int rv_run(uint64_t limit) {
     if (PC >= text_lo && PC < text_hi) pcc[(PC - text_lo) >> 2]++;
     icount++;
     PC = next;
+  }
+  return 0;
+}
+
+#include "circ_units.h"
+
+EXPORT int rv_run(uint64_t limit) {
+  uint64_t end = icount + limit;
+  while (icount < end) {
+    if (umode && PC >= text_lo && PC < text_hi && tmap[(PC - text_lo) >> 2]) {
+      int r = unit_dispatch(tmap[(PC - text_lo) >> 2] - 1);
+      if (r < 0) return 6;
+      if (r > 0) continue;
+    }
+    int rc = step();
+    if (rc) return rc;
   }
   return 4;
 }
