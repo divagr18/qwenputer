@@ -194,7 +194,53 @@ __QUANT__
 
 Three steps. The first needs no new file.
 
-__STACK__
+**Step 1, the executor stops carrying what it does not read.** After `from_pretrained`, `RvChat` frees the
+chip layers and slices Qwen's layers and the embedding to 2,560 columns, taking the two norm gains from
+base (the widened gains do not invert exactly). Nothing there reads the rest: `Exec4` runs the IR, and
+`_qwen_step` only ever sees text tokens, so mute columns never fire. No new file, no change to the claim.
+
+**Step 2, ship the chip as sparse tensors beside base's weights.**
+- `chip.safetensors`: index and value arrays for the chip layers, the embedding's chip columns as a
+  bit table plus constants, and fx's image. About 8 MB (E). The chip layers alone are 39 MB raw, 296 KB
+  compressed (M).
+- Qwen: base's bytes, by reference to `Qwen/Qwen3.5-4B` or as an 8.41 GB text-only upload.
+- `expand.py`: rebuilds the dense stock checkpoint byte for byte, tested against the published file.
+- A load check: the executor emits its circuit and compares the terms with `chip.safetensors`, so what it
+  runs is shown to be what the file holds. Emission takes 16 s on fx's circuit (M). That closes the gap
+  in [Honesty](#honesty). Lifting `Exec4` to read the file directly is a larger job and is not needed.
+- A `trust_remote_code` class for the HF path, from P1's Linear swap, with chip and Qwen on separate
+  residuals. Not built.
+
+**Step 3, quantise Qwen,** with the native kernel below. __STEP3__
+
+| | fx, stock | step 1 | step 2 | step 3 |
+|---|---|---|---|---|
+| disk | 37.25 GB (E) | 37.25 GB | **8.42 GB** | __S3DISK__ |
+| wire | not measured | same | 5.5 GB (E, byte split) | __S3WIRE__ |
+| VRAM | 37.25 GB, over 24 GB | **8.5 GB** | 8.5 GB | __S3VRAM__ |
+| Qwen | exact | exact | exact, base's bytes | changed |
+| chip | exact | exact | exact | exact |
+| RAM to build | about 58 GB (R) | | under 2 GB (M, emission on this machine) | |
+| effort | | half a day | 3 to 5 days | __S3EFFORT__ |
+| risk | | low | low: byte-checked | __S3RISK__ |
+| speed | | Qwen matmuls 1.3-1.5x faster (M on CPU, E on GPU) | same | __S3SPEED__ |
+
+The waterfall in GB of disk (E past the first row of each):
+
+| from rv-q4p2 | | from fx | |
+|---|---|---|---|
+| today | 18.72 | fx, stock | 37.25 |
+| chip layers out | -3.85 | chip layers out | -21.32 |
+| Qwen padding out | -3.93 | Qwen padding out | -4.28 |
+| embedding chip rows and columns out | -2.53 | embedding chip rows and columns out | -3.24 |
+| sparse chip back in | +0.01 | sparse chip back in | +0.01 |
+| **result** | **8.42** | **result** | **8.42** |
+
+The same 8.42 GB, because the chip's cost stops depending on how many layers it has. Executor speed is
+already flat from 31 to 91 layers (R), so fx's 59 layers cost neither bytes nor time this way.
+
+If a stock file must stay the only release, the stock steps reach 24.9 GB of disk and 35.0 GB of VRAM (E),
+which still does not load on a 24 GB card.
 
 ## Honesty
 
