@@ -99,6 +99,24 @@ def run(dll_path, elf, imports, units="none", mode="on", opts=(), turns=2, pcdum
     tmp = H.repo_dir(tempfile.mkdtemp(prefix="fxrepo-"))
     tinyrepo.make_repo(tmp)
     h = RH.RvHost(dll, elf, json.load(open(imports)), tmp, turns, log=lambda *x: None, prof=bool(pcdump), memtrace=False)
+    if h.fs is not None:  # a deterministic inode (the real one changes with the temp dir)
+        import struct
+        import zlib
+        import wasifs
+        root = os.path.dirname(os.path.abspath(tmp))
+
+        def _filestat(path, out, fs=h.fs):
+            try:
+                st = os.stat(path)
+            except OSError:
+                return wasifs.ENOENT
+            ino = zlib.crc32(os.path.relpath(path, root).replace(os.sep, "/").encode())
+            ft = wasifs.FT_DIR if os.path.isdir(path) else wasifs.FT_REG
+            fs.h.wr(out, struct.pack("<QQBxxxxxxxQQQQQ", 1, ino, ft, 1, st.st_size, 1_767_000_000_000_000_000,
+                                     1_767_000_000_000_000_000, 1_767_000_000_000_000_000))
+            return wasifs.ESUCCESS
+
+        h.fs._filestat = _filestat
     rec = Recorder(h)
     specs, skipped = U.specs_for(elf, units)
     ids = install(dll, specs)

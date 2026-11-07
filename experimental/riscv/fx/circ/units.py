@@ -19,7 +19,8 @@ from elftools.elf.elffile import ELFFile
 
 # unit kinds (circ_units.h)
 KINDS = {"MEMMOVE": 1, "MEMCPY": 2, "MEMSET": 3, "EQL": 4, "TOKEST": 5, "JSCAN": 6, "JESC": 7, "ASCII": 8,
-         "MASKP": 9, "MEMCHR": 10, "BCOPY": 11, "SHA": 12, "WYHASH": 13}
+         "MASKP": 9, "MEMCHR": 10, "BCOPY": 11, "SHA": 12, "WYHASH": 13, "MOVE_IR": 14,
+         "EQL_IR": 15}
 ABI_DEAD = sum(1 << r for r in (5, 6, 7, 11, 12, 13, 14, 15, 16, 17, 28, 29, 30, 31))  # t*, a1-a7
 CALLER_SAVED = ABI_DEAD | 1 << 1 | 1 << 10
 CALLEE = sum(1 << r for r in [2, 3, 4, 8, 9] + list(range(18, 28)))  # sp gp tp s0-s11
@@ -146,18 +147,37 @@ def sig_mask(w):
     return w
 
 
+def masked(words):
+    """Signature view of a code region: sig_mask per word, and also the two kinds of word that
+    move with the layout inside a region: the `addi rd, rd, lo` that completes a `lui rd`
+    address, and a `j` whose target is outside the region (relative to the region's start)."""
+    out = []
+    for i, w in enumerate(words):
+        m = sig_mask(w)
+        op, rd, f3, rs1 = w & 0x7F, w >> 7 & 31, w >> 12 & 7, w >> 15 & 31
+        if op == 0x13 and f3 == 0 and rd == rs1 and i and words[i - 1] & 0x7F == 0x37 and words[i - 1] >> 7 & 31 == rd:
+            m = w & 0xFFFFF
+        if op == 0x6F and rd == 0:
+            im = sx((w >> 31 & 1) << 20 | (w >> 12 & 0xFF) << 12 | (w >> 20 & 1) << 11 | (w >> 21 & 0x3FF) << 1, 21)
+            if not 0 <= 4 * i + im < 4 * len(words):
+                m = w & 0xFFF
+        out.append(m)
+    return out
+
+
 def find_region(img, fn, sig, nth=0, count=1):
     """Address of the nth occurrence of the instruction sequence `sig` (masked) in function `fn`
-    of img, or None unless it occurs exactly `count` times."""
+    of img, or None unless it occurs exactly `count` times (count None: at least nth + 1)."""
     if fn not in img.funcs:
         return None
     a, sz = img.funcs[fn]
     n = sz // 4
     ws = img.words(a, n)
-    m = [sig_mask(w) for w in ws]
-    s = [sig_mask(w) for w in sig]
-    hits = [i for i in range(n - len(s) + 1) if m[i:i + len(s)] == s]
-    return a + 4 * hits[nth] if len(hits) == count else None
+    s = masked(sig)
+    L = len(s)
+    hits = [i for i in range(n - L + 1) if masked(ws[i:i + L]) == s]
+    ok = len(hits) == count if count is not None else len(hits) > nth
+    return a + 4 * hits[nth] if ok else None
 
 
 def liveness(img, fn):
@@ -295,12 +315,18 @@ UNITS = [
            "528734635, 1541459225 },256).round", "entry": True},
     {"name": "wyhash", "label": "hash.wyhash.Wyhash.hash", "kind": "WYHASH", "fn": "hash.wyhash.Wyhash.hash",
      "entry": True, "dead": ABI_DEAD & ~(1 << 11)},
+    # the two units built as circuits (chipformer/rv/core.py): not in "all" (they share PCs with
+    # move / eql); select them by name
+    {"name": "move_ir", "label": "memmove (circuit built in the core IR)", "kind": "MOVE_IR", "fn": "memmove",
+     "region": (0x208F4D8, 78), "trigger": 0x208F4D8, "exits": [0x208F60C], "dead": ABI_DEAD, "ir": True},
+    {"name": "eql_ir", "label": "mem.eqlBytes (circuit built in the core IR)", "kind": "EQL_IR", "fn": "mem.eqlBytes",
+     "region": (0x266616C, 198), "trigger": 0x2666178, "exits": [0x266627C], "dead": ABI_DEAD, "ir": True, "returns": True},
     {"name": "tokest", "label": "measureProviderRequest whitespace-run loop", "kind": "TOKEST",
      "fn": "core.agent.runtime.prompt_context.measureProviderRequest", "region": (0x22C4554, 39),
-     "trigger": 0x22C4574, "exits": [0x22C45F0], "count": 2},
+     "trigger": 0x22C4574, "exits": [0x22C45F0], "count": None},
     {"name": "tokest", "label": "measureProviderRequest whitespace-run loop (2nd copy)", "kind": "TOKEST",
      "fn": "core.agent.runtime.prompt_context.measureProviderRequest", "region": (0x22C52F8, 39),
-     "trigger": 0x22C52F8 + 0x20, "exits": [0x22C52F8 + 0x9C], "count": 2, "nth": 1},
+     "trigger": 0x22C52F8 + 0x20, "exits": [0x22C52F8 + 0x9C], "count": None, "nth": 1},
     {"name": "jscan", "label": "json.Scanner.next string loop", "kind": "JSCAN", "fn": "json.Scanner.next",
      "region": (0x263FFBC, 27), "trigger": 0x263FFBC, "exits": [0x263FFBC], "params": jscan_plain},
     {"name": "jesc", "label": "json.Stringify.encodeJsonString plain-run loop", "kind": "JESC",
@@ -344,6 +370,8 @@ def specs_for(elf, which="all"):
     for u in UNITS:
         if sel is not None and u["name"] not in sel and u["label"] not in sel:
             continue
+        if sel is None and u.get("ir"):
+            continue
         sg = sigs.get(u["label"])
         if sg is None:
             skipped.append({"unit": u["label"], "why": "no signature"})
@@ -359,10 +387,10 @@ def specs_for(elf, which="all"):
         off = base - sg["at"]
         live = liveness(img, u["fn"])
         exits = [x + off for x in sg["exits"]]
-        dead = [ALL & ~live[x] & ~1 for x in exits]
+        dead = [u["dead"] if "dead" in u else ALL & ~live[x] & ~1 for x in exits]
         params = exits + (u["params"](img, off) if u.get("params") else [])
         out.append({"name": u["name"], "label": u["label"], "kind": KINDS[u["kind"]], "pc": sg["trigger"] + off,
-                    "params": params, "dead": dead})
+                    "params": params, "dead": dead, "returns": u.get("returns", False)})
     return out, skipped
 
 
@@ -383,7 +411,7 @@ def make_signatures(elf):
             sigs[u["label"]] = {"at": at, "words": img.words(at, n), "trigger": u["trigger"],
                                 "exits": u["exits"]}
             if nth:  # a second copy of the same code: same words, its own addresses
-                assert find_region(img, u["fn"], img.words(at, n), nth, u["count"]) == at
+                assert find_region(img, u["fn"], img.words(at, n), nth, u.get("count", 1)) == at
     sigs["_source"] = {"elf": os.path.basename(os.path.dirname(elf)) + "/" + os.path.basename(elf)}
     json.dump(sigs, open(_SIGS, "w"), indent=0)
     return sigs

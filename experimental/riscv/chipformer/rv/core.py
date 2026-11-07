@@ -27,6 +27,12 @@ circuit computed at t-1 below the writing layer.
   L10  mlp   DIV: the 15 compare signs (the next quotient digit); rd value select and size
   L11  mlp   the output code (the exit)
 
+The macro units (fx/circuits.md, spec.py): MMOVE / MEQL decode at L4 (a beq with a body; RD = a2
+so the third read port gives the length); their schedule comes from the record counter j; the
+streaming addresses use the BLD / BSCAN adder (L5-6); a CWW token writes RAM from the two CW
+payloads before it (conv taps, block C of the RAM rows); MEQL keeps the latest EB byte in a
+one-row head and commits a0 on its J (a regfile source column from t-1).
+
 DIV / REM (radix 16, one digit per token): at the digit position for digit k (s = 7 - k) with the
 digits so far Q (right-aligned), q_k = #{m in 1..15 : |A| >> 4s >= (16 Q + m) |B|}; each test is
 one sign of D - m |B| (D = (|A| >> 4s) - 16 Q |B|) computed mod 2^40 from un-normalized columns
@@ -57,7 +63,7 @@ CODE_AMP = 128  # a token's code in its (tied) embedding row: CODE_AMP * (2 * bi
 KAPPA = 2.0**-20  # the predicted code after the exit: KAPPA * (2 * bit - 1)
 TAU_TEXT = 2.0**-40  # (P3) tau on text tokens; -1 on chip tokens (see q35.merge)
 PAY_W = {"V": 15, "F0": 15, "F1": 15, "F2": 2, "J": 16, "R": 16, "BYTE": 9, "FLT": 3, "HEX": 4,
-         "QS": 4, "QD": 7, "BD": 8}
+         "QS": 4, "QD": 7, "BD": 8, "CW": 16, "EB": 8}
 
 
 def code_bits(fam: str, p: int) -> list[int]:
@@ -121,7 +127,7 @@ class RvCore(Circ):
             return lambda t: (famof(t)[1] >> i & 1) if famof(t)[0] == nm else 0
 
         names = list(S.FAMILIES) + S.CONTROL_NAMES
-        paid = ("V", "F0", "F1", "F2", "J", "R", "QD", "BD") + (("BYTE",) if text else ())
+        paid = ("V", "F0", "F1", "F2", "J", "R", "QD", "BD", "CW", "EB") + (("BYTE",) if text else ())
         self.fam = {n: f(f"is{n}", fam_is(n), full=True) for n in names}
         self.pay = {n: [f(f"{n}.b{i}", pay_bit(n, i), full=True) for i in range(w)]
                     for n, w in PAY_W.items() if n in paid}
@@ -441,6 +447,27 @@ def build(target: Target | None = None, text=None) -> RvCore:
     bnrow = any_of(*RF.BN_ROW)
     k7 = RS2b + spare[0:2]  # BPRD's digit index
 
+    # ---------------------------------------------------------------- L2-4: macro units
+    # (spec.py) the record counter j says which token comes next: MMOVE token j >= 1 is
+    # u = j - 1: word i = u // 3, phase u % 3 (CW lo, CW hi, CWW); MEQL byte k = (j - 1) // 2
+    mmove, meql = uops["MMOVE"], uops["MEQL"]
+    macro = mmove + meql
+    jint0 = sum(jt, Expr())
+    mph = [c.node([t for jv in range(1, JMAX + 1) if (jv - 1) % 3 == k
+                   for t in c.t_eq(jint0, jv, 0, JMAX)], f"mv.ph{k}") for k in range(3)]
+    moff4 = [c.node(t, f"mv.off{b}") for b, t in
+             enumerate(c.fn_bits(jint0, 0, JMAX, lambda jv: 4 * ((jv - 1) // 3) if jv else 0, 7, "mv.off"))]
+    koff = [c.node(t, f"eq.off{b}") for b, t in
+            enumerate(c.fn_bits(jint0, 0, JMAX, lambda jv: (jv - 1) // 2 if jv else 0, 5, "eq.off"))]
+    mj0 = c.node(uop_terms("MMOVE", [j0]) + uop_terms("MEQL", [j0]), "macro.j0")  # at the beq
+    mv_src = c.node(uop_terms("MMOVE", [one - j0, mph[0] + mph[1]]), "mv.src")  # read src word i
+    mv_dst = c.node(uop_terms("MMOVE", [one - j0, mph[2]]), "mv.dst")  # read dst i: CWW next
+    eq_a = c.node(uop_terms("MEQL", [one - j0, fam["MP"] + fam["EC1"]]), "eq.a")  # EB next
+    eq_b = c.node(uop_terms("MEQL", [one - j0, fam["EB"]]), "eq.b")  # EC next
+    meq_in = c.node(uop_terms("MEQL", [one - j0]), "eq.in")
+    mval0 = c.node(uop_terms("MEQL", [one - j0, fam["EC1"]]), "eq.val")  # a0 at the J
+    moff = spare[0:10]  # the beq's forward word offset
+
     # ---------------------------------------------------------------- L5: register file
     P = pay["V"]
     isF1, isF2 = fam["F1"], fam["F2"]
@@ -458,10 +485,12 @@ def build(target: Target | None = None, text=None) -> RvCore:
             cs.append(Chan(pay["F2"][i - 30] + pay["F1"][14] + pay["F0"][14]))
         if jl[i].terms:
             cs.append(Chan(jl[i], (0, 1, 0, 0)))  # the link, computed at t-1
+        if i == 0:
+            cs.append(Chan(mval0, (0, 1, 0, 0)))  # MEQL's result, at its J
         vcols[i] = cs
     reg_beta = fam["F0"] + fam["F1"] + fam["F2"] + fam["J"]
-    nw = stores + branches  # the RD slot holds a store's data register / a branch offset
-    reg_keys = {r: Chan(rd[r] - nw, (0, 1, 0, 0)) for r in range(1, 32)}
+    nw = stores + branches + macro  # the RD slot holds a store's data register / a branch offset
+    reg_keys = {r: Chan(rd[r] - nw + (2 * meq_in if r == 10 else 0), (0, 1, 0, 0)) for r in range(1, 32)}
     ports = []
     for pname, rq in (("rs1", rs1), ("rs2", rs2), ("rd", rd)):
         dims = c.zeros(32, f"x.{pname}")
@@ -531,7 +560,11 @@ def build(target: Target | None = None, text=None) -> RvCore:
     # BLD's address: rs1 - 1 - j (the digit chars end at rs1 - 1); BSCAN's: rs1 + j
     bscan = uops["BSCAN"]
     notj, jj = [1 - b for b in jbin] + [one] * 9, jbin + [Expr()] * 9
-    ea_sums = [[(nib(A, k) + nib(notj, k), [uops["BLD"]]), (nib(A, k) + nib(jj, k), [bscan])]
+    moff4z = moff4 + [Expr()] * 9
+    koffz = koff + [Expr()] * 11
+    ea_sums = [[(nib(A, k) + nib(notj, k), [uops["BLD"]]), (nib(A, k) + nib(jj, k), [bscan]),
+                (nib(B, k) + nib(moff4z, k), [mv_src]), (nib(A, k) + nib(moff4z, k), [mv_dst]),
+                (nib(A, k) + nib(koffz, k), [eq_a]), (nib(B, k) + nib(koffz, k), [eq_b])]
                for k in range(4)]
     eg, ep, ed = stage1_digits(c, ea_sums, "bn.ea", 30)
     eab, _ = adder_stage2(c, eg, ep, ed, 4, "bn.ea")
@@ -561,7 +594,7 @@ def build(target: Target | None = None, text=None) -> RvCore:
     # ---------------------------------------------------------------- L5-6: adder
     md = {"ADD": any_of("ADD"),
           "ADDI": any_of("ADDI", "LB", "LH", "LW", "LBU", "LHU", "SB", "SH", "SW", "JALR"),
-          "SUB": any_of("SUB", "SLT", "SLTU", *RF.BRANCH_OPS),
+          "SUB": any_of("SUB", "SLT", "SLTU", *RF.BRANCH_OPS) + mj0,
           "SUBI": any_of("SLTI", "SLTIU")}
     bsrc = {"ADD": (B, False, 0), "ADDI": (imm, False, 0), "SUB": (B, True, 1),
             "SUBI": (imm, True, 1)}
@@ -692,7 +725,7 @@ def build(target: Target | None = None, text=None) -> RvCore:
     mul_lo, mul_hi = mres[:32], mres[32:]
 
     # store data for SW (0 on V tokens, so an SB/SH record's last V does not leak it)
-    sd = [c.and_([C[i], one - isV], f"sd.b{i}") for i in range(32)]
+    sd = [c.and_([C[i], one - isV, one - macro], f"sd.b{i}") for i in range(32)]
 
     # ---------------------------------------------------------------- L5-10: DIV digits
     # |B| = B' + sb with B' = B xor sb (as 8 nibbles, the +1 folded into nibble 0: 0..16)
@@ -822,7 +855,7 @@ def build(target: Target | None = None, text=None) -> RvCore:
     # word index wi = EA[14:2] (RAM at 0): key head = (wi[12], wi[3:0]) = (EA[14], EA[5:2]),
     # value head wi[4] = EA[6], row wi[11:5] = EA[13:7]
     EA = [r[i] + eab[i] if i < 15 else r[i] for i in range(32)]  # (BLD: r = 0; else eab = 0)
-    is_store = stores
+    is_store = stores + mv_dst  # (a macro's CWW writes the word read the position before)
     mem = c.zeros(32, "mem")
     n_ram_heads = S.RAM_WORDS >> 8
     for h in range(n_ram_heads):
@@ -844,14 +877,16 @@ def build(target: Target | None = None, text=None) -> RvCore:
                 taps[0], taps[lag] = 1, -1
                 v[34 + i] = chan(Chan(-1 * P[i % 15 if i < 30 else i - 30] + isSS + isV,
                                       tuple(taps)), A_BIT)
+            for i in range(32):  # block C: a macro's word from its CW tokens (lo at t-2, hi at t-1)
+                v[66 + i] = chan(Chan(pay["CW"][i % 16], (0, 0, 1, 0) if i < 16 else (0, 1, 0, 0)), A_BIT)
             for rc in REF_COLS:
                 v[rc] = chan(one, A_REF)
-            for col in range(2, 66):
+            for col in range(2, 98):
                 z[col] = K * (EA[6] if x else 1 - EA[6])
                 outs.append((col, OUT_W))
                 into.append(mem[(col - 2) % 32])
             vhs.append({"v": v, "z": z, "outs": outs, "into": into,
-                        "beta": fam[f"ST{x}"] + fam[f"SS{x}"]})
+                        "beta": fam[f"ST{x}"] + fam[f"SS{x}"] + fam[f"CWW{x}"]})
         c.table(f"ram{h}", q, keys, vhs)
 
     # ---------------------------------------------------------------- L9: DROM
@@ -1096,6 +1131,49 @@ def build(target: Target | None = None, text=None) -> RvCore:
     case([j3, ok, sbsh, EA[6]], "SS1")
     case(nr + [ecall, a7_is[1]], "BYTE", B[0:9])  # a byte, or (256..) a P3 special token
     case(nr + [ecall, a7_is[93]], "HALT")
+    # ---- macro units (spec.py): fire at the beq, else the beq runs
+    def below(bits, name):  # the value is below 0x7F80 (RF.MACRO_LIMIT)
+        return c.node(c.t_and([1 - b for b in bits[15:32]])
+                      + c.t_and([1 - b for b in bits[15:32]] + bits[7:15], -1), name)
+    in_a, in_b = below(A, "mc.a_in"), below(B, "mc.b_in")
+    assert RF.MACRO_LIMIT == 0x7F80
+    c_hi7 = c.and_([1 - b for b in C[7:32]], "mc.c7")
+    c_hi5 = c.and_([1 - b for b in C[5:32]], "mc.c5")
+    mv_n = c.node(c.t_in(from_bits(C[0:7]), 4, RF.MACRO_MAX["MMOVE"] + 1, 0, 127, lits=[c_hi7]), "mv.n")
+    eq_n = c.node(c.t_in(from_bits(C[0:5]), 1, RF.MACRO_MAX["MEQL"] + 1, 0, 31, lits=[c_hi5]), "eq.n")
+    r_hi0 = c.and_([1 - b for b in r[7:32]], "mv.rhi0")
+    r_ge = c.node(c.t_and([1 - r_hi0])
+                  + c.t_ge(from_bits(r[0:7]) - from_bits(C[0:7]), 0, -127, 127, lits=[r_hi0]), "mv.rge")
+    fwd = c.node(c.t_and([sltu]) + c.t_and([1 - sltu, r_ge]), "mv.fwd")  # a < b or a - b >= n
+    fire = c.node(c.t_and([mmove, 1 - A[0], 1 - A[1], 1 - B[0], 1 - B[1], 1 - C[0], 1 - C[1], mv_n,
+                           in_a, in_b, 1 - eq, fwd])
+                  + c.t_and([meql, eq_n, in_a, in_b, 1 - eq]), "macro.fire")
+    mtgt = add_nibbles(c, w, moff + [Expr()] * 6, 4, [macro], "mtgt")
+    case(nr + [macro, fire], "MP")
+    case(nr + [macro, 1 - fire, eq], "J", mtgt)
+    case(nr + [macro, 1 - fire, 1 - eq], "NT")
+    jin = sum(jt, Expr())
+    mv_last = c.node(c.t_eq(jin - 1 - 3 * from_bits(C[2:7]), 0, -64, JMAX), "mv.last")
+    inm = [one - j0, mmove]
+    case(inm + [1 - mv_last, mph[0]], "CW", mem[0:16])
+    case(inm + [1 - mv_last, mph[1]], "CW", mem[16:32])
+    case(inm + [1 - mv_last, mph[2], 1 - EA[6]], "CWW0")
+    case(inm + [1 - mv_last, mph[2], EA[6]], "CWW1")
+    case(inm + [mv_last], "J", mtgt)
+    ((eqa,),) = [thead(c, "eqa", {0: one}, {0: one},
+                       [{"data": {2 + i: pay["EB"][i] for i in range(8)}, "ref": one, "beta": fam["EB"]}])]
+    c.tables["eqa"] = c.nodes[-1]
+    bsel = [c.node([t for k in range(4) for t in c.t_and([mem[8 * k + b]] + lits_of(EA[0:2], k))],
+                   f"eq.byte{b}") for b in range(8)]
+    eqb = c.node(c.t_eq(from_bits(bsel) - from_bits(eqa), 0, -255, 255), "eq.same")
+    # the token before is EC(k) with k = n - 1 when j = 2n + 1 (MP is token 0, EB(k) 2k + 1)
+    eq_last = c.node(c.t_eq(jin - 1 - 2 * from_bits(C[0:5]), 0, -63, JMAX), "eq.last")
+    ine = [one - j0, meql]
+    case(ine + [fam["MP"] + fam["EC1"], 1 - eq_last], "EB", bsel)
+    case(ine + [fam["EB"], eqb], "EC1")
+    case(ine + [fam["EB"], 1 - eqb], "EC0")
+    case(ine + [fam["EC0"]], "J", mtgt)
+    case(ine + [fam["EC1"], eq_last], "J", mtgt)
     case(nr + [uops["FENCE"]], "NT")
     # digit-file ops: BD per digit (j < n), then rd = the last carry (or NT)
     for start in ([j0, one - at_max], [one - j0]):
@@ -1233,9 +1311,12 @@ def snapshot(c: RvCore, m: "RF.Machine") -> None:
     quo[list(REF_COLS)] = A_REF
     for h in range(4):
         c.tables[f"quo{h}"].init = [{0: quo.copy()} for _ in range(2)]
-    key = (hash(tuple(m.rom)), hash(m.drom))  # (rows of one firmware share ROM and DROM)
+    if "eqa" in c.tables:
+        c.tables["eqa"].init = [{0: quo.copy()}]
+    macros = getattr(m, "macros", {}) or {}
+    key = (hash(tuple(m.rom)), hash(m.drom), tuple(sorted(macros.items())))
     if _ROM_CACHE.get("key") != key:
-        rom = np.array([RF.rom_word(wd, S.ROM_BASE + 4 * i) if wd else 0
+        rom = np.array([RF.rom_word(wd, S.ROM_BASE + 4 * i, macros.get(i)) if wd else 0
                         for i, wd in enumerate(m.rom)], dtype=np.int64)
         drom = np.frombuffer(m.drom.ljust(4 * S.DROM_WORDS, bytes(1)), dtype="<u4").astype(np.int64)
         _ROM_CACHE.update(key=key, rom=byte_rows(rom, S.ROM_WORDS >> 11),

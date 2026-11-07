@@ -117,7 +117,15 @@ static inline void pload(uint32_t a, uint32_t n) {
 static inline void pstore(uint32_t a, uint32_t n) {
   if (npmem) for (uint32_t i = 0; i < n; i++) if (a + i < MEMSZ && PBIT(a + i)) { pbits[(a + i) >> 3] &= (uint8_t)~(1u << ((a + i) & 7)); npmem--; }
 }
-static inline void ppoison(uint32_t a) { if (!PBIT(a)) { pbits[a >> 3] |= (uint8_t)(1u << (a & 7)); npmem++; } }
+#define PLIST 4096
+static uint32_t plist[PLIST], nplist; /* poisoned addresses, for a cheap clear (rv_clear_poison) */
+static int plist_over;
+static inline void ppoison(uint32_t a) {
+  if (!PBIT(a)) {
+    pbits[a >> 3] |= (uint8_t)(1u << (a & 7)); npmem++;
+    if (nplist < PLIST) plist[nplist++] = a; else plist_over = 1;
+  }
+}
 EXPORT uint64_t rv_tokens(void) { return tokens; }
 EXPORT uint32_t* rv_tokpc(void) { return tokpc; }
 EXPORT void rv_violations(uint64_t* out) { out[0] = viol_reg; out[1] = viol_mem; out[2] = viol_pc; out[3] = viol_what; out[4] = pois; out[5] = npmem; }

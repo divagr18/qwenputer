@@ -21,7 +21,7 @@
 
 enum {
   U_NONE, U_MEMMOVE, U_MEMCPY, U_MEMSET, U_EQL, U_TOKEST, U_JSCAN, U_JESC, U_ASCII, U_MASKP,
-  U_MEMCHR, U_BCOPY, U_SHA, U_WYHASH, U_NKINDS
+  U_MEMCHR, U_BCOPY, U_SHA, U_WYHASH, U_MOVE_IR, U_EQL_IR, U_NKINDS
 };
 #define MAXT 64
 #define DMAX 64 /* data tokens per record (records stay <= 80 tokens with their commits) */
@@ -41,6 +41,7 @@ typedef struct {
   uint32_t wsp;     /* a wasm2c function's return: shadow-stack bytes below this are dead (0: none) */
   uint64_t data;    /* data tokens of the unit's records (split into records of DMAX) */
   uint64_t extra;   /* other tokens (stores of committed values) */
+  uint32_t free_commit; /* live registers whose commit rides the exit J (no value tokens) */
   uint64_t tok, bytes; /* all tokens (set by unit_exec), bytes processed */
 } ures_t;
 
@@ -302,6 +303,51 @@ static int u_wyhash(trig_t* t, ures_t* r) {
   return 1;
 }
 
+/* ---- the units built as circuits in chipformer/rv/core.py (their exact record formats) ----
+ * Both sit on a `beq` whose taken target is the function's `ret`: the ROM word keeps the beq's
+ * decoding plus a macro flag, the circuit fires when its condition holds and otherwise runs the
+ * beq as compiled; a fired record ends with J to the beq's target, where the original `ret`
+ * runs. p[0] = that target. */
+
+/* memmove's entry `beq a0, a1, ret`: d, s, n 4-aligned, 4 <= n <= 84, d != s, d < s or
+ * d - s >= n (a forward word copy is then memmove's result). Record: MP, then per word
+ * CW(lo16) CW(hi16) CWW (the CWW commits the destination word from the two payloads), J. */
+static int u_move_ir(trig_t* t, ures_t* r) {
+  uint32_t d = X[10], s = X[11], n = X[12];
+  if (((d | s | n) & 3) || n < 4 || n > 84 || d == s) return 0;
+  if (!(d < s || d - s >= n)) return 0;
+  if (!inmem(d, n) || !inmem(s, n)) return 0;
+  if ((d < X[2] && d + n > X[2] - 64) || (s < X[2] && s + n > X[2] - 64)) return 0;
+  move_bytes(d, s, n);
+  r->data = 1 + 3ull * (n / 4);
+  r->bytes = n;
+  r->exit_pc = t->p[0]; r->xi = 0;
+  r->creg = 2; r->cval = X[2]; r->fnret = 1;
+  return 1;
+}
+
+/* mem.eqlBytes' `beq a1, a3, ret` (after its length and zero checks; a0 = 1 there): a1 != a3,
+ * 1 <= n (a2) <= 31. Record: MP, then per byte EB(a's byte) EC(equal?) up to the first
+ * mismatch, then J (to the beq's target, a `ret`), which also commits a0 = the result; then the
+ * `ret` (one J). */
+static int u_eql_ir(trig_t* t, ures_t* r) {
+  uint32_t ap = X[11], n = X[12], bp = X[13];
+  if (ap == bp || n < 1 || n > 31 || !inmem(ap, n) || !inmem(bp, n)) return 0;
+  uint32_t m = 0;
+  while (m < n && rd8(ap + m) == rd8(bp + m)) m++;
+  X[10] = m == n;
+  r->data = 1 + 2ull * (m == n ? n : m + 1);
+  r->free_commit = 1u << 10;
+  r->bytes = m == n ? n : m + 1;
+  /* the record's J goes to the beq's target, a `ret`; past this beq the original builds a frame
+   * and returns through other `ret`s, so the state is compared after the return: the unit
+   * covers that `ret` too (its J token) */
+  r->extra = 1;
+  fn_exit(r);
+  (void)t;
+  return 1;
+}
+
 #include "circ_loops.h"
 
 static int unit_run(trig_t* t, ures_t* r) {
@@ -312,6 +358,8 @@ static int unit_run(trig_t* t, ures_t* r) {
     case U_EQL: return u_eql(t, r);
     case U_SHA: return u_sha(t, r);
     case U_WYHASH: return u_wyhash(t, r);
+    case U_MOVE_IR: return u_move_ir(t, r);
+    case U_EQL_IR: return u_eql_ir(t, r);
     default: return loop_unit_run(t, r);
   }
 }
@@ -328,7 +376,7 @@ static int unit_exec(trig_t* t, ures_t* r) {
   uint64_t C = 0;
   for (int i = 1; i < 32; i++) {
     if (dead >> i & 1) X[i] = X0[i];
-    else if (X[i] != X0[i]) C += vlen(X[i]);
+    else if (X[i] != X0[i] && !(r->free_commit >> i & 1)) C += vlen(X[i]);
   }
   r->tok = records(r->data, C + 1) + r->extra + C + 1;
   return 1;
@@ -475,7 +523,10 @@ EXPORT int rv_unit_check(uint64_t* out) {
 }
 EXPORT void rv_clear_poison(void) {
   pois = 0;
-  if (npmem) memset(pbits, 0, MEMSZ / 8);
+  if (plist_over) memset(pbits, 0, MEMSZ / 8);
+  else for (uint32_t i = 0; i < nplist; i++) pbits[plist[i] >> 3] = 0;
+  nplist = 0;
+  plist_over = 0;
   npmem = 0;
   viol_reg = viol_mem = 0;
 }
