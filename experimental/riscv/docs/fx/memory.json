@@ -1,5 +1,5 @@
 {
- "status": "whole session NOT run on the GPU: stopped before those runs finished",
+ "status": "whole session run on the GPU, from the boot snapshot and from reset: 0 differences",
  "reference_session_M": {
   "frames": 1024,
   "from_reset": false,
@@ -327,11 +327,130 @@
   }
  ],
  "estimates_E": {
-  "tokens_per_instruction": 1.465,
-  "turn1_tokens": 8270000.0,
-  "turn1_s_at_25700_tok_s": 322,
-  "session_s": 409,
   "checkpoint_gb": 35.2,
-  "checkpoint_growth_gb": 16.5
+  "checkpoint_growth_gb": 16.5,
+  "merge_ram_gb": 58
+ },
+ "whole_session_on_gpu_M": {
+  "from_boot_snapshot": {
+   "frames": 1024,
+   "from_reset": false,
+   "image_windows": 35,
+   "stats": {
+    "layers": 59,
+    "dims": 2987,
+    "heads": 850,
+    "ffn_units": 45973,
+    "max_units": 9216,
+    "max_heads": 16
+   },
+   "phases": 14,
+   "slots": 707664,
+   "smem": 61152,
+   "S_bytes": 110362624,
+   "tokens": 10508989,
+   "instructions": 7174817,
+   "segments": 400,
+   "gpu_s": 405.91,
+   "ref_s": 34.94,
+   "tok_s": 25890,
+   "wrong": null,
+   "us_step": 38.63,
+   "pages": 704,
+   "end": {
+    "end_words": 1897586,
+    "end_diff": 0,
+    "extra": 0,
+    "end_x_equal": true
+   },
+   "instr_s": 17676
+  },
+  "from_reset": {
+   "frames": 2048,
+   "from_reset": true,
+   "image_windows": 16,
+   "stats": {
+    "layers": 90,
+    "dims": 2971,
+    "heads": 1341,
+    "ffn_units": 45959,
+    "max_units": 9216,
+    "max_heads": 16
+   },
+   "phases": 14,
+   "slots": 700520,
+   "smem": 60192,
+   "S_bytes": 174718976,
+   "tokens": 11415547,
+   "instructions": 7701699,
+   "segments": 412,
+   "gpu_s": 442.25,
+   "ref_s": 37.1,
+   "tok_s": 25812,
+   "wrong": null,
+   "us_step": 38.74,
+   "pages": 1458,
+   "end": {
+    "end_words": 1897586,
+    "end_diff": 0,
+    "extra": 0,
+    "end_x_equal": true
+   },
+   "instr_s": 17415
+  }
+ },
+ "reference_session_from_reset_M": {
+  "frames": 2048,
+  "from_reset": true,
+  "image_windows": 16,
+  "segments": 412,
+  "tokens": 11415959,
+  "instructions": 7701699,
+  "pages": 1458,
+  "frames_used": 1458,
+  "words": 161184,
+  "families": {
+   "V": 3696728,
+   "F0": 2606196,
+   "F1": 2132086,
+   "F2": 620907,
+   "J": 674013,
+   "FLT": 411,
+   "HEX": 3288,
+   "NT": 496637,
+   "ST0": 770659,
+   "ST1": 256133,
+   "SS0": 44773,
+   "HALT": 412,
+   "GO": 412,
+   "PA": 1449,
+   "JF": 55570,
+   "SS1": 44313,
+   "R": 8567,
+   "QS": 662,
+   "QD": 2743
+  },
+  "image_words": 67995,
+  "rom_words": 1743407,
+  "end": {
+   "end_words": 1897586,
+   "end_diff": 0,
+   "extra": 0,
+   "end_x_equal": true
+  }
+ },
+ "turn1_M": {
+  "tokens": 8350275,
+  "instructions": 5649313,
+  "tok_per_instr": 1.478,
+  "s_at_whole_session_rate": 322.5,
+  "note": "tokens and instructions counted on the reference at segment boundaries; rv32emu's turn 1 is 5,648,040 instructions; time = tokens / the session's tok/s"
+ },
+ "ir_on_fx_M": {
+  "positions_predicted": 57344,
+  "wrong": 0,
+  "seconds": 966,
+  "exactness_asserts_on_first_tokens": 4000,
+  "note": "teacher-forced, first segment only; stopped with the box"
  }
 }

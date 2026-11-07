@@ -220,7 +220,7 @@ def ir_run(c, m, log, a, z, t0, res) -> None:
             if wrong:
                 print(json.dumps({"wrong": wrong, "at": n_tok, "segment": seg}), flush=True)
                 return
-            if n_tok % (64 * a.chunk) < a.chunk:
+            if n_tok % (8 * a.chunk) < a.chunk:
                 line = {"tokens": n_tok, "segment": seg, "instr": m.steps, "wrong": wrong,
                         "pages": len(m.pt), "s": round(time.time() - t0)}
                 print(json.dumps(line), flush=True)
