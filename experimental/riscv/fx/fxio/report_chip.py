@@ -4,10 +4,25 @@ Per run: solved or not, steps, chip tokens, instructions, Qwen tokens, chip / Qw
 peak GPU memory, and the comparison with rv32emu and the reference. EXTRA files are merged in
 under their own names (the GPU check, the regression, the restore and loaded-machine checks).
 """
+import difflib
 import glob
 import json
 import os
 import sys
+
+HERE = os.path.dirname(os.path.abspath(__file__))
+sys.path.insert(0, os.path.join(os.path.dirname(HERE), "p0c"))
+import tasks as TK  # noqa: E402
+
+
+def repo_diff(files: dict) -> dict:
+    """The final repo against the task's start: path -> a unified diff."""
+    out = {}
+    for rel in sorted(set(files) | set(TK.COMMON)):
+        a, b = TK.COMMON.get(rel, ""), files.get(rel, "")
+        if a != b:
+            out[rel] = "".join(difflib.unified_diff(a.splitlines(True), b.splitlines(True), rel, rel, n=1))
+    return out
 
 
 def row(p: str) -> dict:
@@ -25,7 +40,7 @@ def row(p: str) -> dict:
         # rv32emu's count at the last ecall gives the true figure, the tokens themselves were right)
         "instructions": c["instructions"] + 1 + max((int(k) for k in e.get("ic_minus_chip", {"-1": 1})), default=-1),
         "instructions_counted": c["instructions"], "ecalls": c["ecalls"], "launches": c["launches"],
-        "pages_mapped": c.get("pages_mapped"), "tok_s_fx": c["tok_s_fx"],
+        "pages_mapped": c.get("pages_mapped"), "forced_positions_checked": c["forced_positions_checked"], "tok_s_fx": c["tok_s_fx"],
         "qwen_fed": q["fed"], "qwen_generated": q["generated"], "rollbacks": q.get("rollbacks", 0),
         "chip_s_fx": c["seconds"]["fx"], "chip_s_io": c["seconds"]["io"], "chip_s_audit": c["seconds"]["audit"],
         "qwen_s": q["link_s"], "qwen_seconds": q["seconds"], "host_s": r["host_s"], "shadow_s": r["shadow_s"], "wall_s": r["wall_s"],
@@ -37,6 +52,11 @@ def row(p: str) -> dict:
         "emu_requests_identical": e.get("requests_identical"), "emu_host_io_equal": e.get("host_io_equal"),
         "emu_repo_equal": e.get("final_repo_equal"), "emu_ic_minus_chip": e.get("ic_minus_chip"),
         "end": r.get("end"), "audit": {k: v for k, v in a.items()}, "final_repo_sha256": r["final_repo_sha256"],
+        "final_repo_diff": repo_diff(r["final_repo"]),
+        "calls": [{k: m.get(k) for k in ("call", "kind", "ctx_before", "kept", "rolled_back", "delta_tokens", "full_tokens",
+                                         "generated_tokens", "reply_bytes", "request_bytes", "canonical", "tool_calls", "link_s",
+                                         "chip_s_at_open", "rv_instr_at_open", "tokens_at_open", "snapshot_bytes", "stopped")}
+                  | {"restore_s_so_far": m.get("seconds", {}).get("restore")} for m in mc],
         "elf_sha256": r["elf_sha256"], "boot": r["boot"],
     }
 
