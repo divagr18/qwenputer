@@ -28,6 +28,14 @@ every value exact), organized for latency instead of launches:
             Executor2's decay, one-row write, at-most-QHOT-hot read, ballast norm and gated
             output. The kernel is generated per circuit: each phase's code has its sizes built in.
 
+Banks (the paged map, docs/fx/memory.md): the circuit's big memories are groups of regular heads
+(core.bank_table): the same value, gate and write-gate rows, each head selected by a binary field
+of an address. A bank runs as one value head per value-head parity: its gate, head index and row
+come from a few terms over the address bits, computed once, instead of 256 query and key rows per
+head, and only the selected state row is touched. So the work per step does not grow with the
+number of memory layers. Same values: every other head's query and key are all 0, so it reads
+nothing and writes nothing (exact zeros 2 and 7 in docs/fx/memory.md).
+
 Exact zeros used (each is exact, see docs/fx/exec-v4.md): an MLP unit whose coef * a * relu(b) is
 0 adds nothing (Executor2 adds +-0); a value head whose query is all 0 reads no row and adds
 nothing (its read is the zero row, so its output is exactly 0); empty rows are not stored; a
@@ -48,7 +56,7 @@ import numpy as np
 import torch
 
 from chipformer.dsl.graph import ONE
-from chipformer.q35.ir import FFN, HD, Head
+from chipformer.q35.ir import FFN, HD, Chan, Head
 
 PMAX = 8  # terms per piece
 NT = 512  # threads per block
@@ -218,6 +226,59 @@ __device__ __forceinline__ void warp_top(float* av, int* ai) {
 // one value head per warp, 4 channels per lane (Executor2's _head_kernel; see the module doc).
 // part[]: the rows' values (a head's q / k / v / z rows are 128 consecutive rows; a negative
 // row is the zero block ZB)
+// one value-head parity of a bank (see the module doc). r: 0 gate, 1 key gate, 2 v rows, 3 z rows,
+// 4 head, 5 beta, 6 row, 7 state offset, 8 outputs, 9 key's head, 10 key's row, 11 bconst bits,
+// 12 1, 13 heads, 14 the 2-hot partner row or -1, 15 state stride per head
+__device__ __forceinline__ void bank_vh(const int* r, const int* blob, const float* part, float* S,
+                                        float* Ycur, const int lane, const int c0) {
+#define PV(i) part[(i) < 0 ? ZB : (i)]
+    const float g = PV(r[0]), kg = PV(r[1]);
+    const float bv = PV(r[5]) + __int_as_float(r[11]);
+    const int nh = r[13];
+    const int kh = (int)PV(r[9]), kr = (int)PV(r[10]);
+    const bool wrote = kg > 0.0f && bv == 1.0f && kh < nh;
+    float4 vw = make_float4(0.0f, 0.0f, 0.0f, 0.0f);
+    float* Sk = S + (long long)r[7] + (long long)kh * r[15];
+    if (wrote) {
+        const float4 v = *(const float4*)(part + (r[2] < 0 ? ZB : r[2]) + c0);
+        vw = make_float4(fmaxf(v.x, 0.0f), fmaxf(v.y, 0.0f), fmaxf(v.z, 0.0f), fmaxf(v.w, 0.0f));
+        *((float4*)(Sk + kr * 128) + lane) = vw;
+    }
+    const int qh = (int)PV(r[4]), qr = (int)PV(r[6]);
+    if (!(g > 0.0f) || qh >= nh) return;
+    const float4 z = *(const float4*)(part + (r[3] < 0 ? ZB : r[3]) + c0);
+    const float z4[4] = {fmaxf(z.x, 0.0f), fmaxf(z.y, 0.0f), fmaxf(z.z, 0.0f), fmaxf(z.w, 0.0f)};
+    const float* Sq = S + (long long)r[7] + (long long)qh * r[15];
+    const bool ro = r[1] < 0;
+    const bool fwd = wrote && qh == kh && qr == kr;
+    const float4* row = (const float4*)(Sq + qr * 128) + lane;
+    float4 o = fwd ? vw : (ro ? __ldg(row) : *row);
+    const int zr = r[14];
+    if (zr >= 0 && zr != qr) {
+        const float4 x = ro ? __ldg((const float4*)(Sq + zr * 128) + lane)
+                            : *((const float4*)(Sq + zr * 128) + lane);
+        o.x += x.x; o.y += x.y; o.z += x.z; o.w += x.w;
+    }
+    const float o0 = __shfl_sync(0xffffffffu, o.x, 0), o1 = __shfl_sync(0xffffffffu, o.y, 0);
+    const float ref = o0 * o0 + o1 * o1;
+    if (ref > 0.0f) {
+        const float norm = __fsqrt_rn(__fdiv_rn(ref, 128.0f));
+        const bool p2 = (__float_as_uint(norm) & 0x7fffffu) == 0u;
+        const float inv = __frcp_rn(norm);
+        const float ov[4] = {o.x, o.y, o.z, o.w};
+        const int4 w4 = *(const int4*)(blob + r[8] + c0);
+        const int wa[4] = {w4.x, w4.y, w4.z, w4.w};
+#pragma unroll
+        for (int c = 0; c < 4; c++) {
+            const float wv = __uint_as_float((unsigned)wa[c] & 0xffff0000u);
+            if (wv != 0.0f && z4[c] != 0.0f) {
+                const float cc = (p2 ? ov[c] * inv : __fdiv_rn(ov[c], norm)) * z4[c] * wv;
+                if (cc != 0.0f) atomicAdd(Ycur + (wa[c] & 0xffff), cc);
+            }
+        }
+    }
+}
+
 template <int QH>
 __device__ __forceinline__ void heads(const int* d, const int* blob, const float* part,
                                       float* S, float* Ycur, long long* pp) {
@@ -226,6 +287,10 @@ __device__ __forceinline__ void heads(const int* d, const int* blob, const float
     const int nvh = d[4];
     for (int vi = threadIdx.x >> 5; vi < nvh; vi += NT / 32) {
         const int* r = blob + d[5] + 16 * vi;
+        if (r[12]) {
+            bank_vh(r, blob, part, S, Ycur, lane, c0);
+            continue;
+        }
         const int rq = (r[0] < 0 ? ZB : r[0]) + c0, rk = (r[1] < 0 ? ZB : r[1]) + c0;
         const int rv = (r[2] < 0 ? ZB : r[2]) + c0, rz = (r[3] < 0 ? ZB : r[3]) + c0;
         float q4[4], k4[4], v4[4], z4[4];
@@ -627,15 +692,17 @@ class Exec4:
     FORCED, CHIP, OWN = 0, 1, 2  # run modes: the forced rows only; then chip tokens; then any
 
     def __init__(self, c, device="cuda", nb: int | None = None, text=None, v0: int = 0,
-                 tables=None, extra_layers: int = 0, flatten: bool = True):
+                 tables=None, extra_layers: int = 0, flatten: bool = True, banks: bool = True,
+                 plan_only: bool = False):
         from chipformer.rv import core
 
         self.c, self.dev = c, device
+        self.use_banks = banks
         D = len(c.dims)
         self.D, self.DP = D, (D + 3) // 4 * 4
         assert self.DP < 1 << 14
-        props = torch.cuda.get_device_properties(device)
-        self.NB = nb or props.multi_processor_count
+        props = None if plan_only else torch.cuda.get_device_properties(device)
+        self.NB = nb or (props.multi_processor_count if props else 58)  # (an L4 has 58 SMs)
         nodes = sorted(c.nodes, key=lambda n: n.level)  # stable: the levels' own order
         if extra_layers:
             nodes = _with_extra_layers(c, nodes, extra_layers)
@@ -654,6 +721,9 @@ class Exec4:
         self.NCODE, self.NFAM = core.NFAM + core.NPAY, core.NFAM
         assert self.NCODE <= self.NKEEP <= NT
         self._build(nodes, qhot_lv)
+        if plan_only:  # the plan's size, no GPU (see fxrun.py plan)
+            self.smem = 4 * (self.DP + self.HMAX + self.PARTMAX + self.BLOBMAX)
+            return
         self.v0 = v0
         self.text = text
         self._tables(tables)
@@ -733,8 +803,51 @@ class Exec4:
         self.vheads = []  # (node index, value head) per state block
         groups = defaultdict(list)  # phase -> [(cost, kind, payload)]
         writes = [set() for _ in range(NPH)]  # the dims each phase writes
+        self.head_block = {}  # head name -> (state block of value head 0, value heads)
+        bank_nodes = defaultdict(list)
+        for i, n in enumerate(nodes):
+            if isinstance(n, Head) and n.bank is not None and self.use_banks:
+                bank_nodes[n.bank].append(i)
+        banked = {i for v in bank_nodes.values() for i in v}
+        for name_, idx in bank_nodes.items():
+            idx.sort(key=lambda i: nodes[i].bank_h)
+            n0 = nodes[idx[0]]
+            ps = {self.phase[i] for i in idx}
+            assert len(ps) == 1 and {nodes[i].bank_h for i in idx} == set(range(len(idx))), name_
+            p = ps.pop()
+            form = self.c.banks[name_]
+            nx = len(n0.vheads())
+            base_vg = len(self.vheads)
+            for i in idx:
+                n = nodes[i]
+                assert not n.vheads()[0].a.terms
+                for x in range(nx):
+                    self.head_block[n.name] = (base_vg + (n.bank_h) * nx, nx)
+                    self.vheads.append((i, x))
+            lag1 = lambda e: None if e is None else lagged(Chan(e, (0, 1, 0, 0)))
+            vhs = []
+            for x, vd in enumerate(n0.vheads()):
+                od, w_ = np.zeros(HD, np.int32), np.zeros(HD, f32)
+                for col, dd, w in vd.out:
+                    od[col], w_[col] = dd, w
+                vhs.append({"v": [lagged(vd.v[col]) if col in vd.v else {} for col in range(HD)],
+                            "z": [flat(vd.z[col]) if col in vd.z else {} for col in range(HD)],
+                            "b": {} if vd.beta is None else flat(vd.beta),
+                            "bconst": 1.0 if vd.beta is None else 0.0, "od": od, "ow": w_,
+                            "sofs": (base_vg + x) * HD * HD, "qhot": 2})
+            it = {"gate": flat(form["gate"]), "kgate": lag1(form.get("kgate")) or {},
+                  "row": flat(form["row"]), "head": flat(form["head"]),
+                  "krow": lag1(form["row"]) or {}, "khead": lag1(form["head"]) or {},
+                  "zrow": -1 if form["zrow"] is None else form["zrow"], "nh": len(idx),
+                  "stride": nx * HD * HD, "vhs": vhs, "bank": name_}
+            for i in idx:
+                writes[p] |= node_writes(nodes[i])
+            cost = 200 + sum(sum(len(r) for r in vh["v"] + vh["z"]) + 400 for vh in vhs)
+            groups[p].append((cost, "h", it))
         for i, n in enumerate(nodes):
             p = self.phase[i]
+            if i in banked:
+                continue
             writes[p] |= node_writes(n)
             if isinstance(n, FFN):
                 for cf, a, b in n.terms:
@@ -752,6 +865,7 @@ class Exec4:
                     od[col], w_[col] = dd, w
                 vg = len(self.vheads)
                 self.vheads.append((i, x))
+                self.head_block.setdefault(n.name, (vg, len(n.vheads())))
                 vhs.append({"v": [lagged(vd.v[col]) if col in vd.v else {} for col in range(HD)],
                             "z": [flat(vd.z[col]) if col in vd.z else {} for col in range(HD)],
                             "a": flat(vd.a), "b": {} if vd.beta is None else flat(vd.beta),
@@ -813,6 +927,12 @@ class Exec4:
                 for kind, it in blk[bi]:
                     if kind == "u":
                         units.append((add_row(it["a"]), add_row(it["b"]), it["out"], it["coef"]))
+                    elif "bank" in it:
+                        ga, kg, he, ro_, kh, kr = (add_row(it[k]) for k in (
+                            "gate", "kgate", "head", "row", "khead", "krow"))
+                        for vh in it["vhs"]:
+                            vhr.append(("b", ga, kg, add_rows128(vh["v"]), add_rows128(vh["z"]), he,
+                                        add_row(vh["b"]), ro_, kh, kr, it, vh))
                     else:
                         q0, k0 = add_rows128(it["q"]), add_rows128(it["k"])
                         for vh in it["vhs"]:
@@ -862,11 +982,19 @@ class Exec4:
                                                                   .view(np.int32))]
                 vh_at = len(bl)
                 bl += [0] * (16 * len(vhr))
-                for x, (q0, k0, v0_, z0, ar, br, vh) in enumerate(vhr):
+                for x, rec in enumerate(vhr):
+                    vh = rec[-1]
                     bl += [0] * (-len(bl) % 4)
                     ow_at = od_at = len(bl)  # one word a column: out dim | bf16 weight << 16
                     bl += [int(np.uint32(int(dd) | bf16(w)).view(np.int32))
                            for dd, w in zip(vh["od"], vh["ow"])]
+                    if rec[0] == "b":
+                        _, ga, kg, v0_, z0, he, br, ro_, kh, kr, it, vh = rec
+                        bl[vh_at + 16 * x: vh_at + 16 * x + 16] = [
+                            ga, kg, v0_, z0, he, br, ro_, vh["sofs"], ow_at, kh, kr,
+                            fbits(vh["bconst"]), 1, it["nh"], it["zrow"], it["stride"]]
+                        continue
+                    q0, k0, v0_, z0, ar, br, vh = rec
                     bl[vh_at + 16 * x: vh_at + 16 * x + 12] = [
                         q0, k0, v0_, z0, ar, br, vh["nrows"], vh["sofs"], ow_at, od_at,
                         vh["qhot"], fbits(vh["bconst"])]
@@ -876,7 +1004,7 @@ class Exec4:
                     bl += [r_i | (n_ << 16), e0]
                 lag_at = len(bl)
                 bl += lags
-                qhb = max([vh["qhot"] for *_, vh in vhr], default=0)
+                qhb = max([rec[-1]["qhot"] for rec in vhr], default=0)
                 bl[ND * p + 2: ND * p + 11] = [len(units), units_at, len(vhr), vh_at,
                                                len(lags), lag_at, base, len(fix), qhb]
                 bl[ND * p + 15] = fix_at
@@ -1002,6 +1130,20 @@ class Exec4:
     def zero_state(self):
         self.S.zero_()
 
+    def poke(self, rows: list) -> None:
+        """Set state rows: [(head name, value head, row, the row (128 values))] (a resume after
+        the host served an ecall, see fxrun.py)."""
+        if not rows:
+            return
+        idx = torch.zeros(len(rows) * HD, dtype=torch.int64)
+        val = np.zeros((len(rows), HD), np.float32)
+        for i, (nm, x, r, vec) in enumerate(rows):
+            vg, _ = self.head_block[nm]
+            idx[i * HD:(i + 1) * HD] = torch.arange((vg + x) * HD * HD + r * HD,
+                                                    (vg + x) * HD * HD + (r + 1) * HD)
+            val[i] = vec
+        self.S[idx.to(self.dev)] = torch.from_numpy(val.reshape(-1)).to(self.dev)
+
     def reset(self):
         """Fresh lag history."""
         self.hist.zero_()
@@ -1067,11 +1209,12 @@ def build_tables(c, text, v0: int):
     lut_id = np.full(nf << 16, -2, np.int32)
     lut_row = np.full(nf << 16, -1, np.int32)
     echo = sorted(set(text.printable) | {text.NL}) if text is not None else []
-    echo_row = {q: S.VOCAB + i for i, q in enumerate(echo)}
+    vocab = getattr(c, "vocab", S.VOCAB)
+    echo_row = {q: vocab + i for i, q in enumerate(echo)}
     for fid in range(nf):
         for p in range(1 << 16):
             t = core.decode_code(fid, p, text)
-            if t < 0:
+            if t < 0 or (vocab <= t < S.TEXT_TOKEN):
                 continue
             if S.is_text(t):
                 qid = t - S.TEXT_TOKEN
@@ -1080,7 +1223,7 @@ def build_tables(c, text, v0: int):
             else:
                 lut_id[fid << 16 | p] = v0 + t
                 lut_row[fid << 16 | p] = t
-    toks = list(range(S.VOCAB)) + [BR.text_token(q) for q in echo]
+    toks = list(range(vocab)) + [BR.text_token(q) for q in echo]
     feat = sorted(c.token_fns)
     D = len(c.dims)
     cols = {}
@@ -1147,7 +1290,7 @@ def cached_tables(c, text, v0: int):
     for f in ("core.py", "spec.py", "bridge.py"):
         h.update((here / f).read_bytes())
     h.update(inspect.getsource(build_tables).encode())
-    h.update(repr((v0, len(c.dims), list(text.printable) if text else None,
+    h.update(repr((v0, len(c.dims), getattr(c, "vocab", 0), list(text.printable) if text else None,
                    text.NL if text else None)).encode())
     path = Path.home() / ".cache" / "chipformer" / f"exec4-tables-{h.hexdigest()[:16]}.npz"
     if path.exists():

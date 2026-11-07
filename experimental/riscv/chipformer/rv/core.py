@@ -53,7 +53,7 @@ from chipformer.rv import spec as S
 T4B = Target(key_heads=16, value_heads=32, intermediate=9216)  # Qwen3.5-4B's layers
 # output family ids: the chip families and controls, then Q (P3: a printable Qwen token, the echo
 # of a putchar; its payload indexes the bridge's printable tokens)
-OUT_NAMES = list(S.FAMILIES) + S.CONTROL_NAMES + ["Q"]
+OUT_NAMES = list(S.FAMILIES) + S.CONTROL_NAMES + ["Q"] + list(S.NEW_FAMILIES)
 FAM_ID = {n: i for i, n in enumerate(OUT_NAMES)}
 NFAM = (len(OUT_NAMES) - 1).bit_length()  # family id bits in the output code
 NPAY = 16  # payload bits in the output code
@@ -63,7 +63,7 @@ CODE_AMP = 128  # a token's code in its (tied) embedding row: CODE_AMP * (2 * bi
 KAPPA = 2.0**-20  # the predicted code after the exit: KAPPA * (2 * bit - 1)
 TAU_TEXT = 2.0**-40  # (P3) tau on text tokens; -1 on chip tokens (see q35.merge)
 PAY_W = {"V": 15, "F0": 15, "F1": 15, "F2": 2, "J": 16, "R": 16, "BYTE": 9, "FLT": 3, "HEX": 4,
-         "QS": 4, "QD": 7, "BD": 8, "CW": 16, "EB": 8}
+         "QS": 4, "QD": 7, "BD": 8, "CW": 16, "EB": 8, "PA": 12, "JF": 6, "RF": 11}
 
 
 def code_bits(fam: str, p: int) -> list[int]:
@@ -76,9 +76,9 @@ def token_code(t: int) -> list[int]:
     return code_bits(*S.family(t))
 
 
-def famof(t: int) -> tuple:
+def famof(t: int, vocab: int = S.VOCAB) -> tuple:
     """(family, payload) of a chip token; (None, 0) for a text token (P3)."""
-    return S.family(t) if t < S.VOCAB else (None, 0)
+    return S.family(t) if t < vocab else (None, 0)
 
 
 def lits_of(bits, v):
@@ -112,22 +112,95 @@ def col_offsets(bounds: list[tuple[int, int]], top: int = 255) -> list[int]:
     return offs[::-1]
 
 
+def dense_plan(bits, gates=(), name="t", limit=None, spill_slot=True) -> list:
+    """The tables that hold a read-only byte store of 32-bit words, address bits ``bits`` (the ids
+    of the address's bits, low first). A dense table: 31 words a row (124 of the 126 data columns),
+    rows 0..126, the all-zero ballast row Z = 127 as the partner of every 2-hot read. The words
+    that do not fit a bit-sliced 32 x 128 layout, slot 31 and row 127, go to smaller tables of the
+    same kind (gates: address bits that must be 1 there). A base table (at most 11 bits) has 16
+    words a row and rows 0..63, so nothing spills from it."""
+    gates = list(gates)
+    if len(bits) <= 11:
+        return [{"name": name, "kind": "base", "slot": bits[:4], "row": bits[4:10],
+                 "x": bits[10:11], "kh": [], "gates": gates, "limit": None}]
+    leaf = {"name": name, "kind": "dense", "slot": bits[:5], "row": bits[5:12], "x": bits[12:13],
+            "kh": bits[13:], "gates": gates, "limit": limit}
+    out = [leaf]
+    if spill_slot:
+        out += dense_plan(bits[5:], gates + bits[:5], name + "s")
+    # (a slot-31 word that is also in row 127 went to the slot spill: this one holds no slot 31)
+    out += dense_plan(bits[:5] + bits[12:], gates + bits[5:12], name + "r", spill_slot=False)
+    return out
+
+
+def dense_fill(plan, addr: np.ndarray, val: np.ndarray) -> dict:
+    """Head name -> per value head {row: state row} of a plan holding the words val at addr."""
+    rest = np.ones(len(addr), bool)
+    out = {}
+    z = np.zeros(HD)
+    z[list(REF_COLS)] = A_REF
+
+    def field(a, bits):
+        v = np.zeros(len(a), np.int64)
+        for i, b in enumerate(bits):
+            v |= (a >> b & 1) << i
+        return v
+
+    for leaf in plan:
+        nk = leaf["limit"] or 1 << len(leaf["kh"])
+        nx = 1 << len(leaf["x"])
+        heads = {f'{leaf["name"]}.{h}': [{127: z} for _ in range(nx)] for h in range(nk)}
+        out.update(heads)
+        m = rest.copy()
+        for b in leaf["gates"]:
+            m &= (addr >> b & 1) == 1
+        ii = np.nonzero(m)[0]
+        a = addr[ii]
+        slot, row, x, kh = (field(a, leaf[k]) for k in ("slot", "row", "x", "kh"))
+        if leaf["kind"] == "dense":
+            keep = (slot != 31) & (row != 127)
+            ii, slot, row, x, kh = ii[keep], slot[keep], row[keep], x[keep], kh[keep]
+        rest[ii] = False
+        assert (kh < nk).all(), "a word beyond the table"
+        if not len(ii):
+            continue
+        key = kh * 2 + x
+        order = np.lexsort((row, key))
+        ii, slot, row, key = ii[order], slot[order], row[order], key[order]
+        rk = key * 128 + row
+        ids, first = np.unique(rk, return_index=True)
+        block = np.zeros((len(ids), HD))
+        idx = np.searchsorted(ids, rk)
+        v = val[ii]
+        for b in range(4):
+            block[idx, 2 + 4 * slot + b] = v >> (8 * b) & 0xFF
+        for j, r_k in enumerate(ids.tolist()):
+            heads[f'{leaf["name"]}.{r_k >> 8}'][r_k >> 7 & 1][r_k & 127] = block[j]
+    assert not rest.any(), "words no table holds"
+    return out
+
+
 class RvCore(Circ):
-    def __init__(self, target: Target | None = None, text=None) -> None:
+    def __init__(self, target: Target | None = None, text=None, cfg=None) -> None:
         """``text`` (P3, bridge.Text): the Qwen vocabulary the bridge reads and prints; None
-        builds the standalone machine."""
+        builds the standalone machine. ``cfg`` (spec.MemCfg): the paged map; None: the legacy
+        map (the rv-q4p2 circuit)."""
         super().__init__(target or T4B)
         f = self.token_feature
         self.text = text
+        self.cfg = cfg
+        self.vocab = vocab = S.VOCAB2 if cfg else S.VOCAB
+        self.banks = {}  # (paged) group -> its regular form, for Exec4 (Head.bank names it)
 
         def fam_is(nm):
-            return lambda t: int(famof(t)[0] == nm)
+            return lambda t: int(famof(t, vocab)[0] == nm)
 
         def pay_bit(nm, i):
-            return lambda t: (famof(t)[1] >> i & 1) if famof(t)[0] == nm else 0
+            return lambda t: (famof(t, vocab)[1] >> i & 1) if famof(t, vocab)[0] == nm else 0
 
-        names = list(S.FAMILIES) + S.CONTROL_NAMES
-        paid = ("V", "F0", "F1", "F2", "J", "R", "QD", "BD", "CW", "EB") + (("BYTE",) if text else ())
+        names = list(S.FAMILIES) + S.CONTROL_NAMES + (list(S.NEW_FAMILIES) if cfg else [])
+        paid = (("V", "F0", "F1", "F2", "J", "R", "QD", "BD", "CW", "EB") + (("BYTE",) if text else ())
+                + (tuple(S.NEW_FAMILIES) if cfg else ()))
         self.fam = {n: f(f"is{n}", fam_is(n), full=True) for n in names}
         self.pay = {n: [f(f"{n}.b{i}", pay_bit(n, i), full=True) for i in range(w)]
                     for n, w in PAY_W.items() if n in paid}
@@ -135,17 +208,17 @@ class RvCore(Circ):
         def next_digit(k):
             """The token says the next token is quotient digit k: QS(k) or QD(k - 1, q)."""
             def fn(t):
-                nm, p = famof(t)
+                nm, p = famof(t, vocab)
                 return int(nm == "QS" and p == k or nm == "QD" and p >> 4 == k - 1)
             return fn
 
         self.kk = [f(f"digit=={k}", next_digit(k), full=True) for k in range(8)]
-        self.final = sum((self.fam[n] for n in S.FINAL), Expr())
+        self.final = sum((self.fam[n] for n in S.FINAL if n in self.fam), Expr())
         self.tables = {}  # name -> head node (for snapshots)
 
         def code_of(t):
             """A token's own output code, or None (a text token the circuit never prints)."""
-            if t < S.VOCAB:
+            if t < vocab:
                 return token_code(t)
             p = text.printable_index(t - S.TEXT_TOKEN) if text else None
             return None if p is None else code_bits("Q", p)
@@ -158,7 +231,7 @@ class RvCore(Circ):
         if text:
             tt = S.TEXT_TOKEN
             self.is_text = f("is_text", lambda t: int(t >= tt), full=True)
-            self.mu = f("mu", lambda t: int(t < S.VOCAB), full=True)  # Qwen mutes on chip tokens
+            self.mu = f("mu", lambda t: int(t < vocab), full=True)  # Qwen mutes on chip tokens
             self.tau = f("tau", lambda t: TAU_TEXT if t >= tt else -1, full=True)
             self.isTCO = f("isTCO", lambda t: int(t == tt + text.TCO), full=True)
             self.isTCC = f("isTCC", lambda t: int(t == tt + text.TCC), full=True)
@@ -214,6 +287,43 @@ class RvCore(Circ):
         node.levels = levels
         self.tables[name] = node
         return outs
+
+    def bank_table(self, group, h, name, queries, keys, vheads, levels, form) -> None:
+        """A head of a bank: all its heads share values and gates and differ only in which key
+        head a (binary) address selects (form: Exec4's view of the group, see exec4.py)."""
+        self.table(name, queries, keys, vheads, levels)
+        self.nodes[-1].bank = group
+        self.nodes[-1].bank_h = h
+        self.banks.setdefault(group, form)
+
+    def dense_tables(self, plan, ab, gate, out, name, levels="byte") -> None:
+        """A dense_plan's heads over the address bits ab; gate: literals of the whole store; out:
+        the 4 byte dims."""
+        for leaf in plan:
+            sl, rw = [ab[b] for b in leaf["slot"]], [ab[b] for b in leaf["row"]]
+            xb, kb = [ab[b] for b in leaf["x"]], [ab[b] for b in leaf["kh"]]
+            gl = list(gate) + [ab[b] for b in leaf["gates"]]
+            nslot = 31 if leaf["kind"] == "dense" else 16
+            nrow = 127 if leaf["kind"] == "dense" else 64
+            nx = 1 << len(xb)
+            vhs = []
+            for x in range(nx):
+                z, outs, into = {}, [], []
+                for k in range(nslot):
+                    ze = K * andpre(lits_of(sl, k) + lits_of(xb, x))
+                    for b in range(4):
+                        z[2 + 4 * k + b] = ze
+                        outs.append((2 + 4 * k + b, OUT_W / 2))  # one row has the ballast
+                        into.append(out[b])
+                vhs.append({"v": {}, "z": z, "outs": outs, "into": into})
+            form = {"gate": andpre(gl) if gl else self.one, "row": from_bits(rw),
+                    "head": from_bits(kb), "zrow": 127, "nh": leaf["limit"] or 1 << len(kb)}
+            for h in range(form["nh"]):
+                hl = lits_of(kb, h) + gl
+                q = {r: andpre(lits_of(rw, r) + hl) for r in range(nrow)}
+                q[127] = andpre(hl) if hl else self.one
+                self.bank_table(f'{name}{leaf["name"]}', h, f'{leaf["name"]}.{h}', q, {}, vhs,
+                                levels, form)
 
     def int_bits(self, z: Expr, hi: int, name: str, n: int) -> list:
         """Bits of an integer 0..hi (thresholds at every flip of each bit)."""
@@ -302,29 +412,64 @@ def add_nibbles(c, a_bits, b_bits, n_nib, lits, name):
     return r
 
 
-def build(target: Target | None = None, text=None) -> RvCore:
+def build(target: Target | None = None, text=None, cfg=None) -> RvCore:
     """The circuit; with ``text`` (P3) also the bridge to Qwen's text: a tool call's text goes
     into a buffer the program reads (TEXT_ADDR), ``</tool_call>`` starts a run (GO), putchar
-    output is echoed as Qwen tokens, and the circuit owns the positions of a run."""
-    c = RvCore(target, text)
+    output is echoed as Qwen tokens, and the circuit owns the positions of a run. With ``cfg``
+    (spec.MemCfg) the paged map: more ROM, a dense image, demand-paged RAM (docs/fx/memory.md)."""
+    c = RvCore(target, text, cfg)
+    W = cfg.wbits if cfg else 16  # bits of the PC word index
+    wide = W > 16  # the PC has a high head; far jumps and refreshes
     no_text = c.is_text if text else 0  # text tokens do not count as tokens of a record
     one, fam, pay, kk = c.one, c.fam, c.pay, c.kk
     isV, isJR = fam["V"], fam["J"] + fam["R"]
+    isJF, isRF = (fam["JF"], fam["RF"]) if cfg else (Expr(), Expr())
     isSS = fam["SS0"] + fam["SS1"]
     isQ = fam["QS"] + fam["QD"]
     dp = sum(kk, Expr())  # the next token is a quotient digit
 
     # ---------------------------------------------------------------- L1: anchor, counters
     jr_bits = [pay["J"][i] + pay["R"][i] for i in range(16)]
-    (anchor,) = thead(c, "pc", {0: one}, {0: one},
-                      [{"data": {2 + i: jr_bits[i] for i in range(16)}, "ref": one, "beta": isJR}])
-    c.tables["pc"] = c.nodes[-1]
-    xn = c.counter("count", isJR, c.final - isJR)
-    rec_start = c.final + fam["GO"]
+    if wide:
+        # a far jump's low bits: V at t-1 (bits 0..14), JF bit 0 (bit 15); a far refresh's: RF
+        data, owner_, col = {}, [], 2
+        for i in range(16):
+            srcs = [jr_bits[i]]
+            srcs.append(Chan(-1 * pay["V"][i] + isJF + isV, (1, -1, 0, 0)) if i < 15 else pay["JF"][0])
+            if i < 6:
+                srcs.append(pay["RF"][i])
+            for e in srcs:
+                data[col] = e
+                owner_.append(i)
+                col += 1
+        (ao,) = thead(c, "pc", {0: one}, {0: one},
+                      [{"data": data, "ref": one, "beta": isJR + isJF + isRF}])
+        c.tables["pc"] = c.nodes[-1]
+        anchor = [sum((d for d, o in zip(ao, owner_) if o == i), Expr()) for i in range(16)]
+        c.pc_cols = {i: 2 + owner_.index(i) for i in range(16)}
+        data, owner_, col = {}, [], 2
+        for j in range(W - 16):
+            for e in (pay["JF"][1 + j], pay["RF"][6 + j]):
+                data[col] = e
+                owner_.append(j)
+                col += 1
+        (ao,) = thead(c, "pch", {0: one}, {0: one}, [{"data": data, "ref": one, "beta": isJF + isRF}])
+        c.tables["pch"] = c.nodes[-1]
+        pchi = [sum((d for d, o in zip(ao, owner_) if o == j), Expr()) for j in range(W - 16)]
+        c.pch_cols = {j: 2 + owner_.index(j) for j in range(W - 16)}
+        anchor = anchor + pchi
+    else:
+        c.pc_cols = {i: 2 + i for i in range(16)}
+        (anchor,) = thead(c, "pc", {0: one}, {0: one},
+                          [{"data": {2 + i: jr_bits[i] for i in range(16)}, "ref": one, "beta": isJR}])
+        c.tables["pc"] = c.nodes[-1]
+    isJA = isJR + isJF + isRF  # the anchor is written
+    xn = c.counter("count", isJA, c.final - isJA)
+    rec_start = c.final + fam["GO"] + (fam["PA"] if cfg else Expr())
     xj = c.counter("j", rec_start, one - rec_start - no_text)
     v_reset = rec_start + isQ
     xv = c.counter("vcnt", v_reset, one - v_reset - no_text)
-    cnt = c.thermo(xn, isJR, S.N_MAX, "n")
+    cnt = c.thermo(xn, isJA, S.N_MAX, "n")
     jt = c.thermo(xj, rec_start, JMAX, "j")
     vt = c.thermo(xv, v_reset, 3, "v")
     n_int = sum(cnt, Expr())
@@ -367,7 +512,7 @@ def build(target: Target | None = None, text=None) -> RvCore:
             bits.append(c.node(terms, f"{name}.b{j}"))
         for j in range(6, nb):
             below = abits[6:j]
-            if j < 16:
+            if j < len(abits):
                 terms = c.t_and([abits[j]])
                 terms += c.t_ge(L, 64, lo, hi, 1, lits=below + [one - abits[j]])
                 terms += c.t_ge(L, 64, lo, hi, -1, lits=below + [abits[j]])
@@ -376,11 +521,16 @@ def build(target: Target | None = None, text=None) -> RvCore:
             bits.append(c.node(terms, f"{name}.b{j}"))
         return bits
 
-    w = add_small(anchor, 0, 16, "w")
-    w1 = add_small(anchor, 1, 17, "w+1")  # the link: PC + 4 = ROM_BASE + 4 * (w + 1)
+    w = add_small(anchor, 0, W, "w")
+    w1 = add_small(anchor, 1, W + 1, "w+1")  # the link: PC + 4 = ROM_BASE + 4 * (w + 1)
     assert S.ROM_BASE == 1 << 18 and S.ROM_WORDS == 1 << 16
-    pc_bits = [Expr(), Expr()] + w + [one] + [Expr()] * 13  # PC = 0x40000 + 4 w
-    link = [Expr()] * 2 + w1[:16] + [one - w1[16], w1[16]] + [Expr()] * 12
+    rbit = cfg.rom_bit if cfg else 18
+    pc_bits = [Expr(), Expr()] + w + [Expr()] * (rbit - W - 2) + [one] + [Expr()] * (31 - rbit)
+    if rbit == W + 2:  # PC = ROM_BASE + 4 w
+        link = [Expr()] * 2 + w1[:W] + [one - w1[W], w1[W]] + [Expr()] * (30 - rbit)
+    else:
+        link = ([Expr()] * 2 + w1[:W + 1] + [Expr()] * (rbit - W - 3) + [one]
+                + [Expr()] * (31 - rbit))
     # digits so far: nd = j - 1 - v inside a DIV record (QS at j = 0, then the digits)
     nd_int = sum(jt, Expr()) - 1 - sum(vt, Expr())
     nd_is = {v: c.node(c.t_eq(nd_int, v, -4, JMAX), f"nd=={v}") for v in range(1, 9)}
@@ -390,7 +540,10 @@ def build(target: Target | None = None, text=None) -> RvCore:
     # with p = w[9:4], half w[3] (row p: columns 2..33, row p + 64: 34..65), word w[2:0], 4 byte
     # columns (b0..b3 of the ROM word)
     fdims = c.zeros(4, "rom.b")
-    for h in range(S.ROM_WORDS >> 11):
+    if cfg:
+        c.rom_plan = dense_plan(list(range(W)), limit=cfg.rom_kh, name="rom")
+        c.dense_tables(c.rom_plan, w, [], fdims, "rom:")
+    for h in range(0 if cfg else S.ROM_WORDS >> 11):
         hl = lits_of(w[11:16], h)
         q = {}
         for p in range(64):
@@ -435,6 +588,9 @@ def build(target: Target | None = None, text=None) -> RvCore:
     boff = RDb + spare[0:6] + [spare[5]] * 5  # branch: word offset, sign-extended to 16 bits
     bbad, jbad = spare[6], spare[6]
     jtgt = RS1b + RS2b + spare[0:6]  # JAL: target word index
+    if cfg:
+        boff = RDb + spare[0:6] + [spare[5]] * (W - 11)
+        joff = RS1b + RS2b + spare[0:6] + spare[7:10] + [spare[9]] * (W - 19)  # (signed, paged)
     upper = RS1b + RS2b + spare[0:10]  # LUI / AUIPC: value bits 12..31
     jl = [Expr() if not link[i].terms else
           c.node(uop_terms("JAL", [link[i]]) + uop_terms("JALR", [link[i]]), f"link.b{i}")
@@ -488,7 +644,7 @@ def build(target: Target | None = None, text=None) -> RvCore:
         if i == 0:
             cs.append(Chan(mval0, (0, 1, 0, 0)))  # MEQL's result, at its J
         vcols[i] = cs
-    reg_beta = fam["F0"] + fam["F1"] + fam["F2"] + fam["J"]
+    reg_beta = fam["F0"] + fam["F1"] + fam["F2"] + fam["J"] + isJF
     nw = stores + branches + macro  # the RD slot holds a store's data register / a branch offset
     reg_keys = {r: Chan(rd[r] - nw + (2 * meq_in if r == 10 else 0), (0, 1, 0, 0)) for r in range(1, 32)}
     ports = []
@@ -860,7 +1016,16 @@ def build(target: Target | None = None, text=None) -> RvCore:
     # ---------------------------------------------------------------- L7-8: Zba, branch target
     zres = add_nibbles(c, shift, B, 8, [any_of(*RF.ZBA)], "zba")
     with c.at_least(14):
-        btgt = add_nibbles(c, w, boff, 4, [branches], "btgt")
+        if cfg:  # branches and JAL: PC + a signed word offset
+            nn = (W + 3) // 4
+            wp, bp_, jp = (b + [Expr()] * (4 * nn - W) for b in (w, boff, joff))
+            ts = [[(from_bits(wp[4 * k:4 * k + 4]) + from_bits(bp_[4 * k:4 * k + 4]), [branches]),
+                   (from_bits(wp[4 * k:4 * k + 4]) + from_bits(jp[4 * k:4 * k + 4]), [uops["JAL"]])]
+                  for k in range(nn)]
+            tg_, tp_, td_ = stage1_digits(c, ts, "btgt", 30)
+            btgt = adder_stage2(c, tg_, tp_, td_, nn, "btgt")[0][:W]
+        else:
+            btgt = add_nibbles(c, w, boff, 4, [branches], "btgt")
 
     # ---------------------------------------------------------------- L7-8: RAM
     # word index wi = EA[14:2] (RAM at 0): key head = (wi[12], wi[3:0]) = (EA[14], EA[5:2]),
@@ -868,7 +1033,84 @@ def build(target: Target | None = None, text=None) -> RvCore:
     EA = [r[i] + eab[i] if i < 15 else r[i] for i in range(32)]  # (BLD: r = 0; else eab = 0)
     is_store = stores + mv_dst  # (a macro's CWW writes the word read the position before)
     mem = c.zeros(32, "mem")
-    n_ram_heads = S.RAM_WORDS >> 8
+    n_ram_heads = 0 if cfg else S.RAM_WORDS >> 8
+    if cfg:
+        # the allocator: the last frame handed out (a PA token's payload); the next one is +1
+        FB = (cfg.frames - 1).bit_length()
+        assert FB <= 12
+        ((af,),) = [thead(c, "palloc", {0: one}, {0: one},
+                          [{"data": {2 + i: pay["PA"][i] for i in range(FB)}, "ref": one,
+                            "beta": fam["PA"]}])]
+        c.tables["palloc"] = c.nodes[-1]
+        anext = []
+        for j in range(FB):
+            low = af[:j]
+            t = (c.t_and([af[j]]) + c.t_and(low + [1 - af[j]]) + c.t_and(low + [af[j]], -1) if j
+                 else c.t_const(1) + c.t_and([af[0]], -1))  # a_j, flipped by the carry
+            anext.append(c.node(t, f"pa.next{j}"))
+        afull = c.and_(lits_of(af, cfg.frames - 1), "pa.full")
+        # the page table: a window's page -> its frame, written at the PA token (the store's EA
+        # is still there at t: the record has not committed), read before the frames
+        fb = c.zeros(FB, "pt.f")
+        (mapped,) = c.zeros(1, "pt.mapped")
+        for wi, (base, lg) in enumerate(cfg.rw):
+            wl = lits_of(EA[lg:32], base >> lg)
+            bits = EA[S.PAGE_BITS:lg]
+            rowb, xb, khb = bits[:7], bits[7:8], bits[8:]
+            nx = 1 << len(xb)
+            form = {"gate": andpre(wl), "row": from_bits(rowb), "head": from_bits(khb), "zrow": None,
+                    "nh": 1 << len(khb), "kgate": andpre(wl + [is_store])}
+            vhs = []
+            for x in range(nx):
+                v = {2 + i: chan(Chan(pay["PA"][i]), A_BIT) for i in range(FB)}
+                v[2 + FB] = chan(Chan(fam["PA"]), A_BIT)
+                for rc in REF_COLS:
+                    v[rc] = chan(one, A_REF)
+                xl = lits_of(xb, x)
+                ze = K * xl[0] if xl else K * one
+                vhs.append({"v": v, "z": {i: ze for i in range(2, 3 + FB)},
+                            "outs": [(i, OUT_W) for i in range(2, 3 + FB)], "into": fb + [mapped],
+                            "beta": fam["PA"] + xl[0] - 1 if xl else fam["PA"]})
+            for h in range(form["nh"]):
+                hl = lits_of(khb, h) + wl
+                keys = {r: Chan(andpre(lits_of(rowb, r) + hl + [is_store]), (0, 1, 0, 0))
+                        for r in range(1 << len(rowb))}
+                q = {r: andpre(lits_of(rowb, r) + hl) for r in range(1 << len(rowb))}
+                c.bank_table(f"pt{wi}", h, f"pt{wi}.{h}", q, keys, vhs, "bit", form)
+        # the frames: frame f = (key head f >> 1, value head f & 1), the word at row EA[8:2]. A
+        # written slot carries the valid column; an unwritten one reads as the image
+        (valid,) = c.zeros(1, "ram.valid")
+        rowb = EA[2:9]
+        nkh = (cfg.frames + 1) >> 1
+        form = {"gate": andpre([mapped]), "row": from_bits(rowb), "head": from_bits(fb[1:]),
+                "zrow": None, "nh": nkh, "kgate": andpre([mapped, is_store])}
+        vhs = []
+        for x in range(2):
+            v, z, outs, into = {}, {}, [], []
+            for i in range(32):  # block A: SW data from t-1
+                v[2 + i] = chan(Chan(sd[i], (0, 1, 0, 0)), A_BIT)
+            for i in range(32):  # block B: the SB/SH word from the record's V tokens
+                lag = 3 - i // 15 if i < 30 else 1
+                taps = [0, 0, 0, 0]
+                taps[0], taps[lag] = 1, -1
+                v[34 + i] = chan(Chan(-1 * P[i % 15 if i < 30 else i - 30] + isSS + isV,
+                                      tuple(taps)), A_BIT)
+            v[66] = chan(one, A_BIT)
+            for rc in REF_COLS:
+                v[rc] = chan(one, A_REF)
+            ze = K * (fb[0] if x else 1 - fb[0])
+            for col in range(2, 67):
+                z[col] = ze
+                outs.append((col, OUT_W))
+                into.append(mem[(col - 2) % 32] if col < 66 else valid)
+            vhs.append({"v": v, "z": z, "outs": outs, "into": into,
+                        "beta": fam[f"ST{x}"] + fam[f"SS{x}"]})
+        for h in range(nkh):
+            hl = lits_of(fb[1:], h) + [mapped]
+            keys = {r: Chan(andpre(lits_of(rowb, r) + hl + [is_store]), (0, 1, 0, 0))
+                    for r in range(128)}
+            q = {r: andpre(lits_of(rowb, r) + hl) for r in range(128)}
+            c.bank_table("ram", h, f"ram{h}", q, keys, vhs, "bit", form)
     for h in range(n_ram_heads):
         hl = lits_of(EA[2:6], h & 15) + lits_of(EA[14:14 + (n_ram_heads >> 4).bit_length() - 1],
                                                  h >> 4)
@@ -904,7 +1146,17 @@ def build(target: Target | None = None, text=None) -> RvCore:
     # word index wi = EA[16:2] (DROM at 0x20000): key head wi[14:11] = EA[16:13], value head
     # wi[10] = EA[12], row pair (p, p + 64) with p = EA[11:6], half EA[5], word EA[4:2]
     ddims = c.zeros(4, "drom.b")
-    for h in range(S.DROM_WORDS >> 11):
+    if cfg:
+        # the image: 32 KB windows, compacted by a static map (window j's hit is a dim; the
+        # compact bits are linear in the hits). Address bits: EA[14:2], then the compact window
+        hits = [c.and_(lits_of(EA[S.WIN_BITS:32], wn), f"img.w{wn}") for wn in cfg.image]
+        nb_ = max((len(hits) - 1).bit_length(), 1)
+        cib = [sum((e for j, e in enumerate(hits) if j >> b & 1), Expr()) for b in range(nb_)]
+        hany = sum(hits, Expr())
+        ab = EA[2:S.WIN_BITS] + cib
+        c.img_plan = dense_plan(list(range(len(ab))), limit=len(hits), name="img")
+        c.dense_tables(c.img_plan, ab, [hany], ddims, "img:")
+    for h in range(0 if cfg else S.DROM_WORDS >> 11):
         hl = lits_of(EA[13:17], h)
         q = {}
         for p in range(64):
@@ -924,7 +1176,12 @@ def build(target: Target | None = None, text=None) -> RvCore:
                         into.append(ddims[b])
             vhs.append({"v": {}, "z": z, "outs": outs, "into": into})
         c.table(f"drom{h}", q, {}, vhs, levels="byte")
-    dbits = [b for k in range(4) for b in c.int_bits(256 * ddims[k], 255, f"drom.b{k}", 8)]
+    if cfg:  # the image's bytes where the slot has not been written; one word for the loads
+        dbits = [c.node(t, f"img.b{k}.{i}") for k in range(4) for i, t in enumerate(
+            c.fn_bits(256 * ddims[k], 0, 255, lambda v: v, 8, f"img.b{k}", [1 - valid]))]
+        mem = [m_ + d_ for m_, d_ in zip(mem, dbits)]
+    else:
+        dbits = [b for k in range(4) for b in c.int_bits(256 * ddims[k], 255, f"drom.b{k}", 8)]
 
     # ---------------------------------------------------------------- P3: the text buffer
     # row i = the i-th captured token's bytes (2 value heads of 8 bytes), read as memory at
@@ -952,8 +1209,15 @@ def build(target: Target | None = None, text=None) -> RvCore:
 
     # ---------------------------------------------------------------- loads, merge, compares
     lane = EA[0:2]
-    in_ram = c.and_([1 - b for b in EA[15:32]], "in_ram")
-    in_drom = c.and_([1 - b for b in EA[18:32]] + [EA[17]], "in_drom")
+    if cfg:
+        in_ram = c.node([t for b_, lg in cfg.load_regions()
+                         for t in c.t_and(lits_of(EA[lg:32], b_ >> lg))], "in_mem")  # (loads)
+        in_rw = c.node([t for b_, lg in cfg.rw for t in c.t_and(lits_of(EA[lg:32], b_ >> lg))],
+                       "in_rw")
+        in_drom = Expr()
+    else:
+        in_ram = in_rw = c.and_([1 - b for b in EA[15:32]], "in_ram")
+        in_drom = c.and_([1 - b for b in EA[18:32]] + [EA[17]], "in_drom")
     in_text = (c.and_(tsel + [1 - b for b in EA[16:32]], "in_text") if text else None)
     ld = []
     for i in range(32):
@@ -1024,13 +1288,20 @@ def build(target: Target | None = None, text=None) -> RvCore:
     mis_st = c.node(c.t_and([s_halfs, EA[0]]) + c.t_and([s_words, EA[0]])
                     + c.t_and([s_words, 1 - EA[0], EA[1]]), "fault.misst")
     oor_ld = c.node(c.t_and([loads, 1 - mis_ld]) + c.t_and([loads, 1 - mis_ld, in_ram], -1)
-                    + c.t_and([loads, 1 - mis_ld, in_drom], -1)
+                    + (c.t_and([loads, 1 - mis_ld, in_drom], -1) if not cfg else [])
                     + (c.t_and([loads, 1 - mis_ld, in_text], -1) if text else []), "fault.oorld")
     oor_st = c.node(c.t_and([is_store, 1 - mis_st])
-                    + c.t_and([is_store, 1 - mis_st, in_ram], -1), "fault.oorst")
+                    + c.t_and([is_store, 1 - mis_st, in_rw], -1)
+                    + (c.t_and([is_store, 1 - mis_st, in_rw, 1 - mapped, afull]) if cfg else []),
+                    "fault.oorst")  # (paged: also a store that needs a frame when none is left)
     jalr = uops["JALR"]
     # a bad JALR target (EA & ~1): misaligned, or outside the ROM (EA[31:19] = 0, EA[18] = 1)
     rom_ok = [1 - b for b in EA[19:32]] + [EA[18]]
+    if cfg:
+        rom_ok = [1 - b for b in EA[W + 2:rbit] + EA[rbit + 1:32]] + [EA[rbit]]
+        if cfg.rom_kh < 1 << (W - 13):
+            kh_ = from_bits(EA[15:W + 2])
+            rom_ok.append(c.node(c.t_lt(kh_, cfg.rom_kh, 0, (1 << (W - 13)) - 1), "rom.lim"))
     fc6_terms = (c.t_and([jalr, EA[1]]) + c.t_and([jalr, 1 - EA[1]])
                  + c.t_and([jalr, 1 - EA[1]] + rom_ok, -1) + c.t_and([uops["JAL"], jbad]))
     fc = {0: c.and_([uops["ILLEGAL"]], "fault.0"), 1: c.and_([uops["EBREAK"]], "fault.1"),
@@ -1102,6 +1373,12 @@ def build(target: Target | None = None, text=None) -> RvCore:
     valc = (addish + uops["LUI"] + uops["AUIPC"] + uops["MISA"] + logicops + shiftops + loads
             + uops["MUL"] + mulhs + any_of(*RF.ZBA) + sltish + sltuish)
     ok = one - any_fault
+    if wide:  # the jump target (PC, or EA for JALR) against the anchor's high head
+        ah_i = from_bits(pchi)
+        M_ = (1 << (W - 16)) - 1
+        far_t = c.node(c.t_const(1) + c.t_eq(from_bits(btgt[16:W]) - ah_i, 0, -M_, M_, -1), "far.t")
+        far_r = c.node(c.t_const(1) + c.t_eq(from_bits(EA[18:W + 2]) - ah_i, 0, -M_, M_, -1), "far.r")
+        far_w = c.node(c.t_const(1) + c.t_eq(from_bits(w[16:W]) - ah_i, 0, -M_, M_, -1), "far.w")
     nr = [j0, one - at_max, ok]  # the first token of a record (no refresh, no fault)
     cases = []  # (literals, family, payload bits or int)
     # P3: at a BYTE / HALT the next token is the echo (a Qwen token), at </tool_call> it is GO;
@@ -1111,7 +1388,20 @@ def build(target: Target | None = None, text=None) -> RvCore:
     def case(lits, fam_name, payload=0):
         cases.append((lits + nb, fam_name, payload))
 
-    case([j0, at_max], "R", w)
+    def jump_case(lits, tg, far):
+        """A taken jump: J, or (leaving the anchor's window) V JF."""
+        if wide:
+            case(nr + lits + [1 - far], "J", tg[:16])
+            case(nr + lits + [far], "V", tg[:15])
+            case([j1, ok] + lits, "JF", tg[15:W])
+        else:
+            case(nr + lits, "J", tg)
+
+    if wide:
+        case([j0, at_max, 1 - far_w], "R", w[:16])
+        case([j0, at_max, far_w], "RF", w[:6] + w[16:W])
+    else:
+        case([j0, at_max], "R", w[:16])
     case(nr + [valc, rdw_any, k0], "F0", val[0:15])
     case(nr + [valc, rdw_any, 1 - k0], "V", val[0:15])
     case([j1, ok, valc, rdw_any, k1], "F1", val[15:30])
@@ -1128,18 +1418,23 @@ def build(target: Target | None = None, text=None) -> RvCore:
     case(dv + [v1, k1], "F1", val[15:30])
     case(dv + [v1, 1 - k1], "V", val[15:30])
     case(dv + [v2], "F2", val[30:32])
-    case(nr + [branches, taken], "J", btgt)
+    jump_case([branches, taken], btgt, far_t if wide else None)
     case(nr + [branches, 1 - taken], "NT")
-    case(nr + [uops["JAL"]], "J", jtgt)
-    case(nr + [uops["JALR"]], "J", EA[2:18])  # word = (EA - 0x40000) >> 2
-    case(nr + [uops["SW"], 1 - EA[6]], "ST0")
-    case(nr + [uops["SW"], EA[6]], "ST1")
+    jump_case([uops["JAL"]], btgt if cfg else jtgt, far_t if wide else None)
+    jump_case([uops["JALR"]], EA[2:W + 2], far_r if wide else None)  # word = (EA - ROM_BASE) >> 2
     sbsh = any_of("SB", "SH")
-    case(nr + [sbsh], "V", merged[0:15])
+    if cfg:  # the frame's value head, and the allocation before a store to an unmapped page
+        st_lit, st_ok = fb[0], [mapped]
+        case(nr + [stores, 1 - mapped], "PA", anext)
+    else:
+        st_lit, st_ok = EA[6], []
+    case(nr + st_ok + [uops["SW"], 1 - st_lit], "ST0")
+    case(nr + st_ok + [uops["SW"], st_lit], "ST1")
+    case(nr + st_ok + [sbsh], "V", merged[0:15])
     case([j1, ok, sbsh], "V", merged[15:30])
     case([j2, ok, sbsh], "V", merged[30:32])
-    case([j3, ok, sbsh, 1 - EA[6]], "SS0")
-    case([j3, ok, sbsh, EA[6]], "SS1")
+    case([j3, ok, sbsh, 1 - st_lit], "SS0")
+    case([j3, ok, sbsh, st_lit], "SS1")
     case(nr + [ecall, a7_is[1]], "BYTE", B[0:9])  # a byte, or (256..) a P3 special token
     case(nr + [ecall, a7_is[93]], "HALT")
     # ---- macro units (spec.py): fire at the beq, else the beq runs
@@ -1308,17 +1603,8 @@ _ROM_CACHE: dict = {}
 def snapshot(c: RvCore, m: "RF.Machine") -> None:
     """Load a machine's state into the circuit's tables (the heads' initial states), as at the
     start of a record (j = 0)."""
-    pc = np.zeros(HD)
-    pc[list(REF_COLS)] = A_REF
-    for i in range(16):
-        pc[2 + i] = A_BIT * (m.anchor >> i & 1)
-    c.tables["pc"].init = [{0: pc}]
-    c.tables["count"].init = [counter_rows(m.n)]
-    c.tables["j"].init = [counter_rows(0)]
-    c.tables["vcnt"].init = [counter_rows(0)]
-    regs = {r: reg_row(c, m.x[r]) for r in range(1, 32)}
-    for p in ("rs1", "rs2", "rd"):
-        c.tables[f"regs.{p}"].init = [regs]
+    cfg = c.cfg
+    snapshot_regs(c, m)
     quo = np.zeros(HD)
     quo[list(REF_COLS)] = A_REF
     for h in range(4):
@@ -1327,15 +1613,18 @@ def snapshot(c: RvCore, m: "RF.Machine") -> None:
         c.tables["eqa"].init = [{0: quo.copy()}]
     macros = getattr(m, "macros", {}) or {}
     key = (hash(tuple(m.rom)), hash(m.drom), tuple(sorted(macros.items())))
-    if _ROM_CACHE.get("key") != key:
+    if cfg:
+        assert not macros, "the macro units do not run on the paged map"
+        snapshot_paged(c, m, key)
+    elif _ROM_CACHE.get("key") != key:
         rom = np.array([RF.rom_word(wd, S.ROM_BASE + 4 * i, macros.get(i)) if wd else 0
                         for i, wd in enumerate(m.rom)], dtype=np.int64)
         drom = np.frombuffer(m.drom.ljust(4 * S.DROM_WORDS, bytes(1)), dtype="<u4").astype(np.int64)
         _ROM_CACHE.update(key=key, rom=byte_rows(rom, S.ROM_WORDS >> 11),
                           drom=byte_rows(drom, S.DROM_WORDS >> 11))
-    for h, vh in enumerate(_ROM_CACHE["rom"]):
+    for h, vh in enumerate(_ROM_CACHE["rom"] if not cfg else []):
         c.tables[f"rom{h}"].init = vh
-    for h, vh in enumerate(_ROM_CACHE["drom"]):
+    for h, vh in enumerate(_ROM_CACHE["drom"] if not cfg else []):
         c.tables[f"drom{h}"].init = vh
     for port in (1, 2):
         for h in range(4):
@@ -1350,7 +1639,7 @@ def snapshot(c: RvCore, m: "RF.Machine") -> None:
                     rows[r] = row
                 vh.append(rows)
             c.tables[f"bn{port}.{h}"].init = vh
-    for h in range(S.RAM_WORDS >> 8):
+    for h in range(0 if cfg else S.RAM_WORDS >> 8):
         r0, r1 = {}, {}
         for wi in range(S.RAM_WORDS):
             if (wi & 15 | (wi >> 12) << 4) != h or not m.ram[wi]:
@@ -1361,6 +1650,94 @@ def snapshot(c: RvCore, m: "RF.Machine") -> None:
                 row[2 + i] = A_BIT * (m.ram[wi] >> i & 1)
             (r1 if wi >> 4 & 1 else r0)[wi >> 5 & 127] = row
         c.tables[f"ram{h}"].init = [r0, r1]
+
+
+def snapshot_regs(c: RvCore, m) -> None:
+    """The PC, the counters, the registers (and the allocator): what a resume rewrites."""
+    pc = np.zeros(HD)
+    pc[list(REF_COLS)] = A_REF
+    for i in range(16):
+        pc[c.pc_cols[i]] = A_BIT * (m.anchor >> i & 1)
+    c.tables["pc"].init = [{0: pc}]
+    if "pch" in c.tables:
+        ph = np.zeros(HD)
+        ph[list(REF_COLS)] = A_REF
+        for j, col in c.pch_cols.items():
+            ph[col] = A_BIT * (m.anchor >> (16 + j) & 1)
+        c.tables["pch"].init = [{0: ph}]
+    c.tables["count"].init = [counter_rows(m.n)]
+    c.tables["j"].init = [counter_rows(0)]
+    c.tables["vcnt"].init = [counter_rows(0)]
+    regs = {r: reg_row(c, m.x[r]) for r in range(1, 32)}
+    for p in ("rs1", "rs2", "rd"):
+        c.tables[f"regs.{p}"].init = [regs]
+    if c.cfg:
+        al = np.zeros(HD)
+        al[list(REF_COLS)] = A_REF
+        for i in range((c.cfg.frames - 1).bit_length()):
+            al[2 + i] = A_BIT * (m.nf >> i & 1)
+        c.tables["palloc"].init = [{0: al}]
+
+
+def rom_image(c: RvCore, m) -> tuple:
+    """(word index, pre-decoded word) of the nonzero ROM."""
+    cfg = c.cfg
+    a = [i for i, wd in enumerate(m.rom) if wd]
+    v = [RF.rom_word(m.rom[i], cfg.rom_base + 4 * i, None, cfg) for i in a]
+    return np.asarray(a, np.int64), np.asarray(v, np.int64)
+
+
+def image_words(c: RvCore, m) -> tuple:
+    """(compact word address, value) of the image: EA[14:2], then the window's index."""
+    idx = {wn: j for j, wn in enumerate(c.cfg.image)}
+    if not m.image:
+        return np.zeros(0, np.int64), np.zeros(0, np.int64)
+    ad = np.fromiter(m.image.keys(), np.int64, len(m.image))
+    val = np.fromiter(m.image.values(), np.int64, len(m.image))
+    win = ad >> (S.WIN_BITS - 2)
+    cw = np.array([idx[int(x)] for x in win.tolist()], np.int64)
+    return (ad & ((1 << (S.WIN_BITS - 2)) - 1)) | cw << (S.WIN_BITS - 2), val
+
+
+def snapshot_paged(c: RvCore, m, key) -> None:
+    """The ROM, the image, the page table and the frames of a PagedMachine."""
+    cfg = c.cfg
+    if _ROM_CACHE.get("pkey") != (key, cfg, id(c)) or _ROM_CACHE.get("img") != hash(frozenset(m.image.items())):
+        ra, rv = rom_image(c, m)
+        _ROM_CACHE["prom"] = dense_fill(c.rom_plan, ra, rv)
+        ia, iv = image_words(c, m)
+        _ROM_CACHE["pimg"] = dense_fill(c.img_plan, ia, iv)
+        _ROM_CACHE["pkey"], _ROM_CACHE["img"] = (key, cfg, id(c)), hash(frozenset(m.image.items()))
+    for tb in ("prom", "pimg"):
+        for nm, vh in _ROM_CACHE[tb].items():
+            c.tables[nm].init = vh
+    FB = (cfg.frames - 1).bit_length()
+    for wi, (base, lg) in enumerate(cfg.rw):
+        nx = 2 if lg - S.PAGE_BITS >= 8 else 1
+        for h in range(1 << max(lg - S.PAGE_BITS - 8, 0)):
+            c.tables[f"pt{wi}.{h}"].init = [{} for _ in range(nx)]
+    for pg, f in m.pt.items():
+        ea = pg << S.PAGE_BITS
+        wi = cfg.rw_window(ea)
+        p = (ea - cfg.rw[wi][0]) >> S.PAGE_BITS
+        row = np.zeros(HD)
+        row[list(REF_COLS)] = A_REF
+        for i in range(FB):
+            row[2 + i] = A_BIT * (f >> i & 1)
+        row[2 + FB] = A_BIT
+        nx = len(c.tables[f"pt{wi}.{p >> 8}"].init)
+        c.tables[f"pt{wi}.{p >> 8}"].init[(p >> 7 & 1) if nx == 2 else 0][p & 127] = row
+    nkh = (cfg.frames + 1) >> 1
+    for h in range(nkh):
+        c.tables[f"ram{h}"].init = [{}, {}]
+    for a, v in m.wr.items():
+        f = m.pt[(a << 2) >> S.PAGE_BITS]
+        row = np.zeros(HD)
+        row[list(REF_COLS)] = A_REF
+        for i in range(32):
+            row[2 + i] = A_BIT * (v >> i & 1)
+        row[66] = A_BIT
+        c.tables[f"ram{f >> 1}"].init[f & 1][a & 127] = row
 
 
 def decode_code(fid: int, p: int, text=None) -> int:
@@ -1374,7 +1751,7 @@ def decode_code(fid: int, p: int, text=None) -> int:
         return -1 if q is None else S.TEXT_TOKEN + q
     if nm in S.CONTROLS:
         return S.tok(nm)
-    return S.tok(nm, p) if p < S.FAMILIES[nm][1] else -1
+    return S.tok(nm, p) if p < (S.FAMILIES.get(nm) or S.NEW_FAMILIES[nm])[1] else -1
 
 
 def predictions(c: RvCore, mat: np.ndarray) -> list[int]:

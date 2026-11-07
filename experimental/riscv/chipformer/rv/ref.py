@@ -331,7 +331,9 @@ def csr_read(ins: Inst) -> int | None:
     return CSR_STUBS.get(ins.imm) if pure else None
 
 
-def in_rom(t: int) -> bool:
+def in_rom(t: int, cfg=None) -> bool:
+    if cfg is not None:
+        return cfg.in_rom(t)
     return t % 4 == 0 and S.ROM_BASE <= t < S.ROM_BASE + 4 * S.ROM_WORDS
 
 
@@ -344,10 +346,12 @@ def pack(uop: str, rd: int = 0, rs1: int = 0, rs2: int = 0, spare: int = 0) -> i
     return b0 | b1 << 8 | b2 << 16 | b3 << 24
 
 
-def rom_word(w: int, pc: int, macro: str | None = None) -> int:
+def rom_word(w: int, pc: int, macro: str | None = None, cfg=None) -> int:
     """The pre-decoded ROM word of the instruction word w at pc (format in the module doc). With
     macro (MMOVE / MEQL), w must be a forward beq: the word is the macro uop with the beq's
-    registers, RD = a2 and the word offset in S0..S9."""
+    registers, RD = a2 and the word offset in S0..S9. With a paged cfg JAL holds the signed word
+    offset, not the target: RS1 (0..4) + RS2 (5..9) + S0..S5 (10..15) + S7..S9 (16..18), S6 = bad
+    (a 21-bit target would not fit; the branch adder adds it)."""
     ins = decode(w)
     op, imm = ins.op, ins.imm
     if macro:
@@ -371,10 +375,14 @@ def rom_word(w: int, pc: int, macro: str | None = None) -> int:
     if op in BRANCH_OPS:
         t = (pc + imm) & M32
         off = (imm >> 2) & 0x7FF  # signed word offset, 11 bits
-        bad = int(not in_rom(t))
+        bad = int(not in_rom(t, cfg))
         return pack(op, off & 31, ins.rs1, ins.rs2, off >> 5 | bad << 6)
     if op == "JAL":
         t = (pc + imm) & M32
+        if cfg is not None:
+            jo = (imm >> 2) & 0x7FFFF
+            bad = int(not in_rom(t, cfg))
+            return pack(op, ins.rd, jo & 31, jo >> 5 & 31, (jo >> 10 & 63) | bad << 6 | (jo >> 16) << 7)
         wi = (t - S.ROM_BASE) >> 2 & 0xFFFF
         bad = int(not in_rom(t))
         return pack(op, ins.rd, wi & 31, wi >> 5 & 31, wi >> 10 | bad << 6)
@@ -427,9 +435,42 @@ class Machine:
     fault: tuple[int, int] | None = None  # (cause, pc) of the fault that halted the run
     exit_code: int | None = None
 
+    rom_base = S.ROM_BASE  # (PagedMachine: its map's)
+
     @property
     def pc(self) -> int:
-        return S.ROM_BASE + 4 * (self.anchor + self.n)
+        return self.rom_base + 4 * (self.anchor + self.n)
+
+    def in_rom(self, t: int) -> bool:
+        return in_rom(t)
+
+    def refresh_tokens(self, w: int) -> list[int]:
+        self.anchor, self.n = w, 0
+        return [S.tok("R", w)]
+
+    def jump_tokens(self, target: int) -> list[int]:
+        self.anchor, self.n = (target - self.rom_base) >> 2, 0
+        return [S.tok("J", self.anchor)]
+
+    def load_word(self, ea: int) -> int | None:
+        i = self.ram_index(ea)
+        word = self.ram[i] if i is not None else self.drom_word(ea)
+        return self.text_word(ea) if word is None else word
+
+    def store_commit(self, ea: int, n: int, b: int, op: str, fault) -> list[int]:
+        i = self.ram_index(ea)
+        if i is None:
+            return fault("store out of range")
+        w4 = i >> 4 & 1
+        self.n += 1
+        if op == "SW":
+            self.ram[i] = b
+            return [S.tok(f"ST{w4}")]
+        sh, mask = 8 * (ea & 3), (1 << 8 * n) - 1
+        m = self.ram[i] & ~(mask << sh) & M32 | (b & mask) << sh
+        self.ram[i] = m
+        return [S.tok("V", m & 0x7FFF), S.tok("V", m >> 15 & 0x7FFF), S.tok("V", m >> 30),
+                S.tok(f"SS{w4}")]
 
     def ram_index(self, ea: int) -> int | None:
         return (ea - S.RAM_BASE) >> 2 if 0 <= ea - S.RAM_BASE < 4 * S.RAM_WORDS else None
@@ -455,14 +496,13 @@ class Machine:
     def record(self) -> list[int]:
         """The next record's tokens; commits it (state as after its last token)."""
         if self.n == S.N_MAX:
-            w = self.anchor + self.n
-            self.anchor, self.n = w, 0
-            return [S.tok("R", w)]
+            return self.refresh_tokens(self.anchor + self.n)
         pc = self.pc
-        word = self.rom[(pc - S.ROM_BASE) >> 2]
+        wi = (pc - self.rom_base) >> 2
+        word = self.rom[wi] if wi < len(self.rom) else 0
         ins = decode(word)
         op, x = ins.op, self.x
-        macro = self.macros.get((pc - S.ROM_BASE) >> 2)
+        macro = self.macros.get(wi)
         if macro:
             toks = self.macro_record(macro, ins, pc)
             if toks is not None:
@@ -482,12 +522,11 @@ class Machine:
             return [S.tok("NT")]
 
         def jump(target, link):
-            if not in_rom(target):
+            if not self.in_rom(target):
                 return fault("bad jump")
             if link and ins.rd:
                 x[ins.rd] = (pc + 4) & M32
-            self.anchor, self.n = (target - S.ROM_BASE) >> 2, 0
-            return [S.tok("J", self.anchor)]
+            return self.jump_tokens(target)
 
         if op in ("LUI", "AUIPC") or op.startswith("CSR"):
             v = ins.imm if op == "LUI" else pc + ins.imm if op == "AUIPC" else csr_read(ins)
@@ -505,10 +544,7 @@ class Machine:
             n = {"LB": 1, "LBU": 1, "LH": 2, "LHU": 2, "LW": 4}[op]
             if ea % n:
                 return fault("misaligned load")
-            i = self.ram_index(ea)
-            word = self.ram[i] if i is not None else self.drom_word(ea)
-            if word is None:
-                word = self.text_word(ea)
+            word = self.load_word(ea)
             if word is None:
                 return fault("load out of range")
             wv = word >> 8 * (ea & 3) & ((1 << 8 * n) - 1)
@@ -518,19 +554,7 @@ class Machine:
             n = {"SB": 1, "SH": 2, "SW": 4}[op]
             if ea % n:
                 return fault("misaligned store")
-            i = self.ram_index(ea)
-            if i is None:
-                return fault("store out of range")
-            w4 = i >> 4 & 1
-            self.n += 1
-            if op == "SW":
-                self.ram[i] = b
-                return [S.tok(f"ST{w4}")]
-            sh, mask = 8 * (ea & 3), (1 << 8 * n) - 1
-            m = self.ram[i] & ~(mask << sh) & M32 | (b & mask) << sh
-            self.ram[i] = m
-            return [S.tok("V", m & 0x7FFF), S.tok("V", m >> 15 & 0x7FFF), S.tok("V", m >> 30),
-                    S.tok(f"SS{w4}")]
+            return self.store_commit(ea, n, b, op, fault)
         if op == "ECALL":
             a, b = x[17], x[10]  # the call (a7) and its argument (a0)
             if a == 1:  # putchar(a0): a byte, or (256..) a special token of the P3 bridge
@@ -598,7 +622,10 @@ class Machine:
     def ram_byte(self, ea: int) -> int:
         """A byte of RAM at ea mod 32 KB (the digit-file ops' addressing)."""
         ea &= 0x7FFF
-        return self.ram[ea >> 2] >> 8 * (ea & 3) & 0xFF
+        return self.ram_word(ea & ~3) >> 8 * (ea & 3) & 0xFF
+
+    def ram_word(self, ea: int) -> int:
+        return self.ram[ea >> 2]
 
     def digit_op(self, ins: Inst, a: int, b: int) -> list[int]:
         """A digit-file instruction's record (see the module doc)."""
@@ -651,6 +678,111 @@ class Machine:
         while not self.halted and len(toks) < max_records:
             toks += self.record()
         return toks
+
+
+@dataclass
+class PagedMachine(Machine):
+    """The traced machine on a paged map (spec.MemCfg, docs/fx/memory.md).
+
+    image   word address -> value: the read-only image (never written; absent words read 0)
+    wr      word address -> value: words stored since the snapshot. A word read comes from here
+            if present (the circuit: the slot's valid column), else from the image
+    pt      page number (ea >> 9) -> frame
+    nf      the last frame allocated (frames are handed out 1, 2, ... in order)"""
+
+    cfg: S.MemCfg | None = None
+    image: dict = field(default_factory=dict)
+    wr: dict = field(default_factory=dict)
+    pt: dict = field(default_factory=dict)
+    nf: int = 0
+
+    @classmethod
+    def from_segments(cls, cfg, entry: int, segs, sp: int | None = None, x=None,
+                      code_end: int | None = None) -> "PagedMachine":
+        """segs: (address, bytes); bytes inside the ROM (below code_end: the ROM's address range
+        may also hold data, fetches and loads are separate) are code, the rest the image."""
+        code_end = code_end or cfg.rom_base + 4 * cfg.rom_words
+        rom = []
+        image = {}
+        for va, blob in segs:
+            blob = bytes(va % 4) + blob + bytes(-(va + len(blob)) % 4)
+            va -= va % 4
+            if cfg.rom_base <= va < code_end:
+                o = (va - cfg.rom_base) >> 2
+                rom += [0] * max(0, o + len(blob) // 4 - len(rom))
+                for i in range(0, len(blob), 4):
+                    rom[o + i // 4] = int.from_bytes(blob[i:i + 4], "little")
+            else:
+                for i in range(0, len(blob), 4):
+                    v = int.from_bytes(blob[i:i + 4], "little")
+                    if v:
+                        assert (va + i) >> S.WIN_BITS in cfg.image, hex(va + i)
+                        image[(va + i) >> 2] = v
+        xs = list(x) if x else [0] * 32
+        if not x:
+            xs[2] = cfg.sp if sp is None else sp
+        m = cls(rom=rom, ram=[], x=xs, anchor=(entry - cfg.rom_base) >> 2, cfg=cfg, image=image)
+        m.rom_base = cfg.rom_base
+        return m
+
+    @classmethod
+    def from_elf(cls, cfg, path) -> "PagedMachine":
+        from chipformer.rv import elf
+        entry, segs = elf.segments(path)
+        return cls.from_segments(cfg, entry, segs)
+
+    def in_rom(self, t: int) -> bool:
+        return self.cfg.in_rom(t)
+
+    def refresh_tokens(self, w: int) -> list[int]:
+        hi = self.anchor >> 16
+        self.anchor, self.n = w, 0
+        if w >> 16 != hi:
+            assert w & 0xFFFF < 64
+            return [S.tok("RF", w & 63 | (w >> 16) << 6)]
+        return [S.tok("R", w & 0xFFFF)]
+
+    def jump_tokens(self, target: int) -> list[int]:
+        w = (target - self.rom_base) >> 2
+        hi = self.anchor >> 16
+        self.anchor, self.n = w, 0
+        if w >> 16 != hi:
+            return [S.tok("V", w & 0x7FFF), S.tok("JF", w >> 15)]
+        return [S.tok("J", w & 0xFFFF)]
+
+    def ram_word(self, ea: int) -> int:
+        a = ea >> 2
+        v = self.wr.get(a)
+        return self.image.get(a, 0) if v is None else v
+
+    def load_word(self, ea: int) -> int | None:
+        tw = self.text_word(ea)
+        if tw is not None:
+            return tw
+        return self.ram_word(ea) if self.cfg.in_load(ea) else None
+
+    def store_commit(self, ea: int, n: int, b: int, op: str, fault) -> list[int]:
+        if self.cfg.rw_window(ea) is None:
+            return fault("store out of range")
+        toks = []
+        pg = ea >> S.PAGE_BITS
+        f = self.pt.get(pg)
+        if f is None:
+            if self.nf + 1 >= self.cfg.frames:
+                return fault("store out of range")  # out of frames
+            self.nf += 1
+            f = self.pt[pg] = self.nf
+            toks.append(S.tok("PA", f))
+        self.n += 1
+        a, x = ea >> 2, f & 1
+        if op == "SW":
+            self.wr[a] = b
+            return toks + [S.tok(f"ST{x}")]
+        sh, mask = 8 * (ea & 3), (1 << 8 * n) - 1
+        m = self.ram_word(ea & ~3) & ~(mask << sh) & M32 | (b & mask) << sh
+        self.wr[a] = m
+        return toks + [S.tok("V", m & 0x7FFF), S.tok("V", m >> 15 & 0x7FFF), S.tok("V", m >> 30),
+                       S.tok(f"SS{x}")]
 
 
 def trace_stats(toks: list[int]) -> dict:

@@ -79,6 +79,8 @@ def hi_lo(v):
 
 
 class Program:
+    base = ROM_BASE
+
     def __init__(self, text: list[int], data: bytes, labels: dict[str, int],
                  data_base: int = DATA_BASE, rodata: bytes = b""):
         self.text, self.data, self.labels, self.data_base = text, data, labels, data_base
@@ -86,10 +88,10 @@ class Program:
 
     @property
     def entry(self) -> int:
-        return self.labels.get("_start", ROM_BASE)
+        return self.labels.get("_start", self.base)
 
 
-def assemble(src: str) -> Program:
+def assemble(src: str, base: int = ROM_BASE) -> Program:
     lines = []
     for raw in src.splitlines():
         line = re.split(r"[;#]", raw)[0].strip()
@@ -110,7 +112,7 @@ def assemble(src: str) -> Program:
 
         def here():
             if sec == "text":
-                return ROM_BASE + 4 * len(text)
+                return base + 4 * len(text)
             return DATA_BASE + len(data) if sec == "data" else DROM_BASE + len(rodata)
 
         def buf():
@@ -266,4 +268,6 @@ def assemble(src: str) -> Program:
                 emit(csr << 20 | reg(a[1]) << 15 | 1 << 12 | 0x73)
             else:
                 raise ValueError(f"unknown instruction {op} {args}")
-    return Program(text, bytes(data), labels, rodata=bytes(rodata))
+    p = Program(text, bytes(data), labels, rodata=bytes(rodata))
+    p.base = base
+    return p

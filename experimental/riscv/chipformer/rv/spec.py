@@ -66,10 +66,26 @@ Memory (P2):
 The digit file (custom-0 / custom-1 ops, see ref.py): 8 registers of 128 decimal digits (least
 significant first), outside the address space, saved in the snapshot like RAM.
 
+The paged map (MemCfg, docs/fx/memory.md): a bigger ROM, a dense read-only image and demand-paged
+RAM, for programs the size of fx. New tokens (ids after the legacy VOCAB, so the rv-q4p2
+checkpoint's ids do not move):
+
+  PA    not final; page allocation before a store to an unmapped page: payload = the new frame
+  JF    final; far jump after one V: V = target bits 0..14, payload = target bits 15.. (the PC's
+        high head is written; a plain J keeps it)
+  RF    final; far refresh when the PC crosses a 64K-word window: payload = low 6 bits of the word
+        | high bits << 6 (the word's bits 6..15 are 0 there)
+
+  a store to an unmapped page    PA(f), then the store's record
+  a jump leaving the window      V(lo) JF(hi) instead of J
+  n == 63, crossing a window     RF instead of R
+
 A DIV-class record: QS(k0), then QD(k << 4 | q_k) for k = k0..7, then the result's value record.
 q_k are the hex digits of |A| / |B| (most significant first); k0 skips digits that are known to
 be 0 from the operands' sizes (see ref.div_start), so small quotients take few tokens.
 """
+
+from dataclasses import dataclass
 
 FAMILY_SIZES = [("V", 1 << 15), ("F0", 1 << 15), ("F1", 1 << 15), ("F2", 4), ("J", 1 << 16),
                 ("R", 1 << 16), ("BYTE", 512), ("FLT", 8), ("HEX", 16), ("QS", 16), ("QD", 128),
@@ -105,15 +121,89 @@ CAP_MAX = 80
 TEXT_TOKEN = 1 << 24  # (P3) a Qwen text token in the circuit's token stream: TEXT_TOKEN | qwen_id
 
 
+# --- the paged map's tokens: after the legacy ids, which stay put ------------------------------
+NEW_FAMILY_SIZES = [("PA", 1 << 12), ("JF", 1 << 6), ("RF", 1 << 11)]
+NEW_FAMILIES = {}
+_base = VOCAB
+for _n, _s in NEW_FAMILY_SIZES:
+    NEW_FAMILIES[_n] = (_base, _s)
+    _base += _s
+VOCAB2 = _base
+FINAL |= {"JF", "RF"}
+PAGE_BITS = 9  # a RAM frame is one value head: 128 word slots, 512 bytes
+WIN_BITS = 15  # an image window is one key head: 32 KB
+
+
+@dataclass(frozen=True)
+class MemCfg:
+    """The paged machine's address map (see docs/fx/memory.md).
+
+    rom_bit  ROM_BASE = 1 << rom_bit
+    wbits    bits of the ROM word index (the PC)
+    rom_kh   main ROM key heads, 2^13 words each (the ROM holds rom_kh << 13 words)
+    rw       writable windows, (base, log2 size): each is direct-mapped by a page table
+    frames   RAM frames (ids 1..frames-1, so this many value heads, half as many key heads)
+    image    window numbers (address >> WIN_BITS) of the read-only image
+    sp       the initial stack pointer"""
+
+    name: str
+    rom_bit: int
+    wbits: int
+    rom_kh: int
+    rw: tuple
+    frames: int
+    image: tuple
+    sp: int = 0
+
+    @property
+    def rom_base(self) -> int:
+        return 1 << self.rom_bit
+
+    @property
+    def rom_words(self) -> int:
+        return self.rom_kh << 13
+
+    def in_rom(self, t: int) -> bool:
+        return t % 4 == 0 and self.rom_base <= t < self.rom_base + 4 * self.rom_words
+
+    def rw_window(self, ea: int) -> int | None:
+        for i, (b, lg) in enumerate(self.rw):
+            if b <= ea < b + (1 << lg):
+                return i
+        return None
+
+    def in_load(self, ea: int) -> bool:
+        return self.rw_window(ea) is not None or ea >> WIN_BITS in self.image
+
+    def load_regions(self) -> list:
+        """Disjoint aligned regions (base, log2 size) that loads may touch."""
+        out = list(self.rw)
+        for w in self.image:
+            a = w << WIN_BITS
+            if self.rw_window(a) is None:
+                out.append((a, WIN_BITS))
+        return out
+
+
+def small_cfg(frames: int = 128, rom_kh: int = 8) -> MemCfg:
+    """The legacy addresses on the paged machinery: RAM at 0 (32 KB, by pages), DROM and .data in
+    the image, ROM at 0x40000. The existing ELFs run on it unchanged."""
+    return MemCfg("small", 18, 16, rom_kh, ((0, 15),), frames,
+                  (0, 4, 5, 6, 7), RAM_BASE + 4 * RAM_WORDS)
+
+
 def is_text(t: int) -> bool:
     return t >= TEXT_TOKEN
 
 
 def family(t: int) -> tuple[str, int]:
     """(family or control name, payload) of a token."""
+    if t >= VOCAB:
+        for name, (base, size) in NEW_FAMILIES.items():
+            if base <= t < base + size:
+                return name, t - base
+        raise ValueError(f"not an rv token: {t}")
     if t >= CTRL:
-        if t >= VOCAB:
-            raise ValueError(f"not an rv token: {t}")
         return CONTROL_NAMES[t - CTRL], 0
     for name, (base, size) in FAMILIES.items():
         if base <= t < base + size:
@@ -124,7 +214,7 @@ def family(t: int) -> tuple[str, int]:
 def tok(name: str, payload: int = 0) -> int:
     if name in CONTROLS:
         return CONTROLS[name]
-    base, size = FAMILIES[name]
+    base, size = FAMILIES[name] if name in FAMILIES else NEW_FAMILIES[name]
     assert 0 <= payload < size, (name, payload)
     return base + payload
 

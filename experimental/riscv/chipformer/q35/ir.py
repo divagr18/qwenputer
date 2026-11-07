@@ -100,6 +100,8 @@ class Head:
     # with a 2-hot query (see kernel_check); "decay" rows hold A_BIT * 2^-n (a halving counter)
     init: list | None = None
     levels: str = "bit"
+    bank: str | None = None  # (rv paged map) the group of regular heads Exec4 runs as one
+    bank_h: int = 0
 
     def vheads(self) -> list[VHead]:
         return [VHead(self.v, self.a, self.z, self.out, self.beta, self.into), *self.vx]
