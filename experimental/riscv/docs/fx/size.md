@@ -61,7 +61,7 @@ is linear in hidden size. A stock layer costs 88 KB per hidden dim whatever it h
 | base Qwen, any family | 100% | 0.78; 0.67 with hi/lo bytes split |
 | base embedding | 100% | 0.61; 0.52 split |
 
-Chip weights use 809 distinct values on the fx circuit (M). The widest value is 2^49, so an integer dtype
+Chip weights use 809 distinct values on the fx circuit (M). Values reach at least 2^49, so an integer dtype
 does not fit, and a dtype change would not remove a zero anyway.
 
 **Qwen's tensors are base's bytes.** Sampled rows of every tensor family, in 3 Qwen layers and the
@@ -113,9 +113,9 @@ the weights are gone and a generator replaces them. **C** Qwen's weights change.
 | technique | disk | VRAM | load | needs | honesty | verdict |
 |---|---|---|---|---|---|---|
 | Chip layers as sparse tensors | -21.3 GB, to 39 MB raw, 296 KB zstd (M) | -21.3 GB, to 39 MB | faster | T or X | F | **do it** |
-| Qwen layers at base width | -3.4 GB | -3.4 GB | faster | T or X | F | **do it**, needs the split |
+| Qwen layers at base width | -4.3 GB | -4.3 GB | faster | T or X | F | **do it**, needs the split |
 | Chip columns out of the embedding | -3.2 GB, to about 8 MB (E) | -3.2 GB | faster | T or X | F | **do it**, needs the split |
-| Executor frees chip layers and slices Qwen after load | 0 | -28 GB (E) | slower | X | none on the file | **do it first** |
+| Executor frees chip layers and slices Qwen after load | 0 | -28.7 GB (E) | slower | X | none on the file | **do it first** |
 | Base Qwen by reference, not re-uploaded | 0 to -8.4 GB download | 0 | | T or X | F | do it; see Honesty |
 | Lossless compression of Qwen (byte split + entropy) | -2.9 GB on the wire, 0.67 (M, sampled) | 0 | decode cost | wire only | L | optional |
 | Quantise Qwen | see below | | | T, X or S | C | ranked below |
@@ -125,7 +125,7 @@ the weights are gone and a generator replaces them. **C** Qwen's weights change.
 | Payloads of 12 bits, not 15 | -0.5 GB (E) | -0.5 GB | | S | L | no: 1.19 to 1.44 tok/instr (R) |
 | All-zero tensors left out of the file | -10.0 GB (E) | 0 | slower | S | L | stock path only |
 | Four-square ballast: any hidden, m = 4 | -1.2 GB (E) | -1.2 GB | | S | L | stock path only |
-| Overlay chip dims on Qwen's columns | -9 GB (E), hidden about 3072 | -9 GB | | S | L | research; needs a trace change |
+| Overlay chip dims on Qwen's columns | -8 GB (E), hidden about 3072 | -8 GB | | S | L | research; needs a trace change |
 | Fewer frames (768: 51 layers) | -2.9 GB (E) | same | | S | L | no: faults sooner |
 | 3-word RAM slots (43 layers for 2 MB) | -5.8 GB (E) | same | | S | L | no: SW costs 5 tokens (R) |
 | `full_attention` type on MLP-only layers | -26 MB (E) | same | | S | L | no |
