@@ -125,7 +125,7 @@ def main():
         a = arrs[k]
         n = t["shape"][0]
         rowb = (t["b"] - t["a"]) // n
-        step = max(1, (8 << 20) // rowb)
+        step = max(1, (4 << 20) // rowb)
         same = True
         where = None
         for r in range(0, n, step):
@@ -140,7 +140,7 @@ def main():
         return k, same, t["b"] - t["a"], where
 
     total = 0
-    with ThreadPoolExecutor(3) as ex:
+    with ThreadPoolExecutor(8) as ex:
         for k, same, nb, where in ex.map(one, names):
             total += nb
             done[k] = dict(same=same, bytes=nb)

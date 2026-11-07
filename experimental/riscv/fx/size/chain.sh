@@ -6,14 +6,12 @@ TK=$(ls -d /c/Users/kesha/.cache/huggingface/hub/models--Qwen--Qwen3.5-4B/snapsh
 export PYTHONDONTWRITEBYTECODE=1 PYTHONIOENCODING=utf8
 D=$ROOT/qwenputer-size/experimental/riscv/fx/size
 echo "chain start $(date)"
-(cd $ROOT/qwenputer-exec/experimental/riscv && PYTHONPATH=. python $D/verify_sparse.py "$TK" "$SP" q4p2 > "$SP/verify_q4p2.log" 2>&1); echo "verify q4p2 rc=$? $(date)"
-(cd $ROOT/qwenputer-exec/experimental/riscv && PYTHONPATH=. python $D/analyze.py "$TK" legacy "$SP/an_q4p2.pkl" > "$SP/an_q4p2.log" 2>&1); echo "analyze q4p2 rc=$?"
-(cd $ROOT/qwenputer-size/experimental/riscv && PYTHONPATH=. python $D/analyze.py "$TK" legacy "$SP/an_fxint.pkl" > "$SP/an_fxint.log" 2>&1); echo "analyze fxint rc=$?"
-(cd $ROOT/qwenputer-mem/experimental/riscv && PYTHONPATH=. python $D/analyze.py "$TK" fx "$SP/an_fx.pkl" > "$SP/an_fx.log" 2>&1); echo "analyze fx rc=$?"
-(cd $ROOT/qwenputer-mem/experimental/riscv && PYTHONPATH=. python $D/verify_sparse.py "$TK" "$SP" fx > "$SP/verify_fx.log" 2>&1); echo "store fx rc=$?"
-python $D/sample.py "$SP" --base-only > "$SP/sample_base.log" 2>&1; echo "sample rc=$? $(date)"
-for i in 1 2 3 4 5 6; do
+( cd $ROOT/qwenputer-exec/experimental/riscv && for i in 1 2 3 4 5 6; do PYTHONPATH=. python $D/verify_sparse.py "$TK" "$SP" q4p2 >> "$SP/verify_q4p2.log" 2>&1 && break; sleep 60; done; echo "verify q4p2 finished $(date)"
+  PYTHONPATH=. python $D/analyze.py "$TK" legacy "$SP/an_q4p2.pkl" > "$SP/an_q4p2.log" 2>&1; echo "analyze q4p2 rc=$?"
+  cd $ROOT/qwenputer-size/experimental/riscv && PYTHONPATH=. python $D/analyze.py "$TK" legacy "$SP/an_fxint.pkl" > "$SP/an_fxint.log" 2>&1; echo "analyze fxint rc=$?" ) &
+for i in 1 2 3 4 5 6 7 8; do
   (cd $ROOT/qwenputer-size/experimental/riscv && "$SP/venv/Scripts/python.exe" -W ignore fx/size/qstream.py "$SP" "$TK" >> "$SP/qstream.log" 2>&1) && break
   echo "qstream stopped, try $i $(date)"; sleep 60
 done
+wait
 echo "chain end $(date)"

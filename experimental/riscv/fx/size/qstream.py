@@ -144,9 +144,9 @@ def _bytes(t: torch.Tensor) -> bytes:
 def fetch(t) -> torch.Tensor:
     """A tensor by parallel range reads."""
     n = t["b"] - t["a"]
-    step = 24 << 20
+    step = 6 << 20  # the link here limits each stream, up to about 16 of them
     parts = [(i, min(i + step, n)) for i in range(0, n, step)]
-    with ThreadPoolExecutor(8) as ex:
+    with ThreadPoolExecutor(16) as ex:
         chunks = list(ex.map(lambda p: hub.read(t, *p), parts))
     b = bytearray().join(chunks)
     dt = {"BF16": DT, "F32": torch.float32}[t["dtype"]]
@@ -232,13 +232,19 @@ def main():
 
     ecfg = copy.deepcopy(cfg)
     ecfg._attn_implementation = "eager"
+
+    def load_layer(i):
+        pre = f"model.language_model.layers.{i}."
+        return {k[len(pre):]: fetch(H[k]).to(DT) for k in H if k.startswith(pre)}
+
+    bg = ThreadPoolExecutor(1)  # the next layer is read while this one runs
+    nxt = None
     with torch.no_grad():
         for i in range(done, a.layers):
             t0 = time.time()
-            pre = f"model.language_model.layers.{i}."
-            names = [k for k in H if k.startswith(pre)]
-            sd = {k[len(pre):]: fetch(H[k]).to(DT) for k in names}
+            sd = (nxt.result() if nxt else load_layer(i))
             t1 = time.time()
+            nxt = bg.submit(load_layer, i + 1) if i + 1 < a.layers else None
             var = {}
 
             def get(name, m):
@@ -270,7 +276,7 @@ def main():
             del lay, var, sd
             pickle.dump((i + 1, state), open(ck + ".tmp", "wb"))
             os.replace(ck + ".tmp", ck)
-            print(f"layer {i} fetch {t1 - t0:.0f}s run {time.time() - t1:.0f}s", flush=True)
+            print(f"layer {i} wait {t1 - t0:.0f}s run {time.time() - t1:.0f}s", flush=True)
 
     # the output head: norm, then the embedding matrix (Qwen's vocabulary). RAM is short here, so the
     # base and quantised matrices sit in scratch files (bf16, deleted at the end), read a chunk at a
