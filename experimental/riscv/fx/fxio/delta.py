@@ -408,6 +408,8 @@ class DeltaLink:
         ids = self.t.encode(text)
         had = len(self.ctx)
         ctx_text = self.t.decode(self.ctx) if self.ctx else ""
+        lcp = common_prefix(self.ctx, ids)
+        was, now = self.t.decode(self.ctx[lcp:lcp + 16]), self.t.decode(ids[lcp:lcp + 16])
         kind, keep = self._align(ids)
         suffix = ids[keep:]
         self._feed(ids, keep)
@@ -425,6 +427,10 @@ class DeltaLink:
                "delta_tokens": len(suffix), "delta_bytes": len(self.t.decode(suffix).encode()),
                "generated_tokens": len(body_ids), "stopped": stopped, "request_bytes": len(raw),
                "reply_bytes": sum(map(len, chunks)), "tool_calls": [t["name"] for t in c.tool_calls],
-               "finish": c.finish, "warnings": c.warnings, "n_messages": len(msgs)}
+               "finish": c.finish, "warnings": c.warnings, "n_messages": len(msgs), "raw_text": out,
+               "canonical": self.t.encode(out) == body_ids, "common_prefix": lcp,
+               "diverged": {"had": was, "render": now} if kind in ("rollback", "rebuild") else None}
+        rec["seconds"] = dict(getattr(self.b, "seconds", {}))
+        rec["snapshot_bytes"] = getattr(self.b, "snapshot_bytes", 0)
         self.records.append(rec)
         return chunks, rec

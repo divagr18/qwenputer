@@ -12,13 +12,29 @@ import time
 import torch
 
 
+def size_of(obj, seen=None) -> int:
+    """Bytes of the tensors an object holds, each counted once."""
+    seen = set() if seen is None else seen
+    if id(obj) in seen:
+        return 0
+    seen.add(id(obj))
+    if isinstance(obj, torch.Tensor):
+        return obj.numel() * obj.element_size()
+    if isinstance(obj, dict):
+        return sum(size_of(v, seen) for v in obj.values())
+    if isinstance(obj, (list, tuple)):
+        return sum(size_of(v, seen) for v in obj)
+    return sum(size_of(v, seen) for v in vars(obj).values()) if hasattr(obj, "__dict__") else 0
+
+
 class HfBackend:
     def __init__(self, model, device=None, temperature=0.0, top_k=0, top_p=1.0, seed=0) -> None:
         self.m = model.eval()
         self.dev = device or next(model.parameters()).device
         self.temperature, self.top_k, self.top_p = temperature, top_k, top_p
         self.gen = torch.Generator(device=self.dev).manual_seed(seed)
-        self.seconds = {"feed": 0.0, "generate": 0.0}
+        self.seconds = {"feed": 0.0, "generate": 0.0, "snapshot": 0.0, "restore": 0.0}
+        self.snapshot_bytes = 0
         self.reset()
 
     @classmethod
@@ -56,11 +72,16 @@ class HfBackend:
 
     def snapshot(self, n: int) -> None:
         assert n == self.pos
+        t0 = time.perf_counter()
         self.snaps[n] = (copy.deepcopy(self.cache), self.logits.clone())
+        self.seconds["snapshot"] += time.perf_counter() - t0
+        self.snapshot_bytes = size_of(self.cache)
 
     def restore(self, n: int) -> None:
+        t0 = time.perf_counter()
         cache, logits = self.snaps[n]
         self.cache, self.logits, self.pos = copy.deepcopy(cache), logits.clone(), n
+        self.seconds["restore"] += time.perf_counter() - t0
         for k in [k for k in self.snaps if k > n]:
             del self.snaps[k]
 
