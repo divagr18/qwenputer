@@ -137,6 +137,21 @@ def test_a_wrong_chip_token_is_reported(session):
     assert r["wrong"] is not None
 
 
+def test_a_launch_boundary_loses_no_token():
+    """A run cut into launches gives the same chip tokens (the last prediction of a launch is the
+    next one's first row), so the instruction count stays right."""
+    out = []
+    for chunk in (1 << 20, 7):
+        m = machine()
+        cpu = FL.LiveCPU(FL.RefBackend(m), BIOS, BIG)
+        cpu.chunk = chunk
+        chip, stop = cpu.go()
+        out.append((chip.tolist(), stop))
+        cpu.parse_stop(chip, stop)
+        out.append(cpu.instr)
+    assert out[0] == out[2] and out[1] == out[3]
+
+
 def test_capture_is_one_token_a_byte():
     """A 3.3 KB reply (the largest real one, docs/fx/io.md) as SS records, no window."""
     n = 830

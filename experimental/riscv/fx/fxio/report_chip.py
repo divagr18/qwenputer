@@ -14,12 +14,17 @@ def row(p: str) -> dict:
     r = json.load(open(p))
     c, q, e, a = r["chip"], r["qwen"], r.get("emu", {}), r.get("audit", {})
     mc = r["model_calls"]
+    if r["host_s"] > r.get("build_s", 1e9):  # (the first run's host seconds held the circuit's build)
+        r["host_s"] = round(r["host_s"] - r["build_s"], 3)
     return {
         "file": os.path.basename(p), "task": r["task"], "rep": r["rep"], "turns": r.get("turns", 1),
         "solved": r["solved"], "check": r["check"], "stopped": r["stopped"], "steps": r["steps"],
         "tool_calls": sum(len(m["tool_calls"]) for m in mc),
         "chip_tokens_fx": c["tokens"]["fx"], "chip_tokens_io": c["tokens"]["io"], "chip_tokens_audit": c["tokens"]["audit"],
-        "instructions": c["instructions"], "ecalls": c["ecalls"], "launches": c["launches"],
+        # (runs from before the launch-boundary fix counted one instruction short per cut token;
+        # rv32emu's count at the last ecall gives the true figure, the tokens themselves were right)
+        "instructions": c["instructions"] + 1 + max((int(k) for k in e.get("ic_minus_chip", {"-1": 1})), default=-1),
+        "instructions_counted": c["instructions"], "ecalls": c["ecalls"], "launches": c["launches"],
         "pages_mapped": c.get("pages_mapped"), "tok_s_fx": c["tok_s_fx"],
         "qwen_fed": q["fed"], "qwen_generated": q["generated"], "rollbacks": q.get("rollbacks", 0),
         "chip_s_fx": c["seconds"]["fx"], "chip_s_io": c["seconds"]["io"], "chip_s_audit": c["seconds"]["audit"],

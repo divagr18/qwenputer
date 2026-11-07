@@ -230,6 +230,7 @@ class LiveCPU:
         self.instr = 0
         self.n_stops = 0
         self.ok_forced = 0
+        self.chunk = CHUNK
         n = S.VOCAB2
         fin = np.zeros(n, bool)
         for fam, (b_, sz) in list(S.FAMILIES.items()) + list(S.NEW_FAMILIES.items()):
@@ -249,9 +250,10 @@ class LiveCPU:
     def _is_stop(self, t: int) -> bool:
         return t == self.halt or self.fam_byte[0] <= t < self.fam_byte[0] + self.fam_byte[1]
 
-    def run(self, forced: list[int], kind: str = "io", budget: int = CHUNK, fkind: str = "io") -> tuple:
+    def run(self, forced: list[int], kind: str = "io", budget: int | None = None, fkind: str = "io") -> tuple:
         """Forced tokens, then the chip until a stop. (the chip's tokens, the stop token)."""
         chip, rows, is_forced = [], forced, True
+        budget = budget or self.chunk
         while True:
             n = len(rows)
             t0 = time.perf_counter()
@@ -261,6 +263,8 @@ class LiveCPU:
             self.launches[kind] += 1
             k = len(ids)
             self._note(rows, is_forced, fkind if is_forced else kind)
+            if not is_forced:  # the last launch's final prediction, fed as this one's first row
+                chip.append(np.asarray(rows, np.int64))
             got = np.asarray(ids[n - 1:k - 1], np.int64)
             if len(got):
                 self._note(got, False, kind)
