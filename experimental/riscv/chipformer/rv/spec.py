@@ -76,6 +76,9 @@ checkpoint's ids do not move):
   RF    final; far refresh when the PC crosses a 64K-word window: payload = low 6 bits of the word
         | high bits << 6 (the word's bits 6..15 are 0 there)
 
+  M     not final; the hot-code units' control family (chipformer/rv/hot.py, docs/fx/circuits2.md):
+        payload tag (bits 12..13) | fields. One family, so the output code keeps its 5 family bits
+
   a store to an unmapped page    PA(f), then the store's record
   a jump leaving the window      V(lo) JF(hi) instead of J
   n == 63, crossing a window     RF instead of R
@@ -122,7 +125,7 @@ TEXT_TOKEN = 1 << 24  # (P3) a Qwen text token in the circuit's token stream: TE
 
 
 # --- the paged map's tokens: after the legacy ids, which stay put ------------------------------
-NEW_FAMILY_SIZES = [("PA", 1 << 12), ("JF", 1 << 6), ("RF", 1 << 11)]
+NEW_FAMILY_SIZES = [("PA", 1 << 12), ("JF", 1 << 6), ("RF", 1 << 11), ("M", 1 << 14)]
 NEW_FAMILIES = {}
 _base = VOCAB
 for _n, _s in NEW_FAMILY_SIZES:
@@ -144,7 +147,9 @@ class MemCfg:
     rw       writable windows, (base, log2 size): each is direct-mapped by a page table
     frames   RAM frames (ids 1..frames-1, so this many value heads, half as many key heads)
     image    window numbers (address >> WIN_BITS) of the read-only image
-    sp       the initial stack pointer"""
+    sp       the initial stack pointer
+    units    the hot-code units built in (hot.Unit): fixed ROM PCs, see chipformer/rv/hot.py
+    absent   uops no ROM word holds: core.build leaves their logic out (hot.rom_absent)"""
 
     name: str
     rom_bit: int
@@ -154,6 +159,8 @@ class MemCfg:
     frames: int
     image: tuple
     sp: int = 0
+    units: tuple = ()
+    absent: tuple = ()
 
     @property
     def rom_base(self) -> int:

@@ -17,11 +17,12 @@ import argparse
 import json
 import pickle
 import time
+from dataclasses import replace
 
 import numpy as np
 
 from chipformer.q35.ir import HD
-from chipformer.rv import core, elf, ref
+from chipformer.rv import core, elf, hot, ref
 from chipformer.rv import spec as S
 
 ROM_BIT, WBITS = 25, 21  # the row-11 / row-24 images: code at 0x02000000
@@ -42,12 +43,15 @@ def windows(ad_words: np.ndarray, data_segs, code_end: int) -> tuple:
     return tuple(sorted(out))
 
 
-def fx_cfg(image, frames=FRAMES, rom_kh=ROM_KH) -> S.MemCfg:
-    return S.MemCfg("fx", ROM_BIT, WBITS, rom_kh, RW, frames, image)
+def fx_cfg(image, frames=FRAMES, rom_kh=ROM_KH, units=()) -> S.MemCfg:
+    return S.MemCfg("fx", ROM_BIT, WBITS, rom_kh, RW, frames, image, units=tuple(units))
 
 
-def load(log_path, elf_path, from_reset=False, frames=FRAMES):
-    """(cfg, a PagedMachine at the start, the log's entries left to serve, the log's end state)."""
+def load(log_path, elf_path, from_reset=False, frames=FRAMES, units=()):
+    """(cfg, a PagedMachine at the start, the log's entries left to serve, the log's end state).
+    units: names in hot.FX_R24 (checked against the image's words)."""
+    if units:
+        units = hot.fx_units(elf_path, units)
     z = np.load(log_path)
     log = pickle.loads(z["log"].tobytes())
     entry, segs = elf.segments(elf_path)
@@ -56,15 +60,17 @@ def load(log_path, elf_path, from_reset=False, frames=FRAMES):
     code_end = (1 << ROM_BIT) + len(rom_seg[0][1])
     data = [(va, b) for va, b in segs if va != 1 << ROM_BIT]
     if from_reset:
-        cfg = fx_cfg(windows(np.zeros(0, np.int64), data, code_end), frames)
+        cfg = fx_cfg(windows(np.zeros(0, np.int64), data, code_end), frames, units=units)
         m = ref.PagedMachine.from_segments(cfg, entry, rom_seg + data, x=[0] * 32, code_end=code_end)
         m.code_end = code_end
         return cfg, m, log, z
     ad, val = z["boot_ad"], z["boot_val"]
-    cfg = fx_cfg(windows(ad, data, code_end), frames)
+    cfg = fx_cfg(windows(ad, data, code_end), frames, units=units)
     m = ref.PagedMachine.from_segments(cfg, entry, rom_seg, x=[int(v) for v in z["boot_x"]],
                                        code_end=code_end)
     m.code_end = code_end
+    if units:
+        cfg = m.cfg = replace(cfg, absent=hot.rom_absent(m.rom, cfg))
     for a, v in zip(ad.tolist(), val.tolist()):
         if not cfg.rom_base <= a << 2 < code_end:
             m.image[a] = v
@@ -94,12 +100,19 @@ def serve(m, e) -> dict:
     return touched
 
 
+DEAD_OK = 0  # register mask left out of the ecall comparison (a log from units-off rv32emu)
+
+
+def same_regs(a, b, dead) -> bool:
+    return all(a[i] == b[i] or dead >> i & 1 for i in range(32))
+
+
 def segments(m, log, max_tokens=None, boot_stands_on_ecall=True):
     """Reference segments: yields (tokens from GO, the fault / exit), serving the log in between."""
     i = 0
     total = 0
     if boot_stands_on_ecall and log and m.pc == log[0]["pc"]:
-        assert m.x == log[0]["x"], "boot registers"
+        assert same_regs(m.x, log[0]["x"], DEAD_OK), "boot registers"
         t = serve(m, log[0])
         m.n += 1  # (before the yield: the consumer pokes the resumed state)
         i = 1
@@ -125,7 +138,7 @@ def segments(m, log, max_tokens=None, boot_stands_on_ecall=True):
         else:
             e = log[i]
             i += 1
-            assert e["pc"] == pc and e["x"] == m.x, (i, hex(pc), hex(e["pc"]))
+            assert e["pc"] == pc and same_regs(e["x"], m.x, DEAD_OK), (i, hex(pc), hex(e["pc"]))
             if e.get("exit"):
                 return
             t = serve(m, e)
@@ -244,9 +257,15 @@ def main():
     ap.add_argument("--no-banks", action="store_true")
     ap.add_argument("--check", type=int, default=0, help="ir: exactness asserts on the first N tokens")
     ap.add_argument("--chunk", type=int, default=1024)
+    ap.add_argument("--units", default="", help="unit names (hot.FX_R24), comma-separated, or all")
+    ap.add_argument("--dead", type=lambda v: int(v, 0), default=0,
+                    help="register mask left out of the ecall comparison (units-off log)")
     a = ap.parse_args()
     t0 = time.time()
-    cfg, m, log, z = load(a.log, a.elf, a.from_reset, a.frames)
+    global DEAD_OK
+    DEAD_OK = a.dead
+    units = [u for u in a.units.split(",") if u]
+    cfg, m, log, z = load(a.log, a.elf, a.from_reset, a.frames, units)
     print("cfg image windows", len(cfg.image), "rom words", len(m.rom), "image words", len(m.image), flush=True)
     res = {"frames": a.frames, "from_reset": a.from_reset, "image_windows": len(cfg.image)}
     if a.mode == "ref":
@@ -282,7 +301,7 @@ def main():
     c = core.build(cfg=cfg)
     print("built", c.stats(), round(time.time() - t0, 1), flush=True)
     res["stats"] = c.stats()
-    m0 = load(a.log, a.elf, a.from_reset, a.frames)[1]
+    m0 = load(a.log, a.elf, a.from_reset, a.frames, units)[1]
     if a.mode == "plan":
         from chipformer.rv import exec4
 
