@@ -431,8 +431,9 @@ Result, with test_rv_circ.py in the same run: **287 passed, 14 skipped, 4 failed
   work:
   - three `test_rv_hf.py` tests: this machine's transformers has no `Qwen3_5ForCausalLM`;
   - `test_fuzz_free_running_cpu`: `fastexec.FreeRun` looks up the bridge family `Q`
-    as a chip family (`KeyError: 'Q'`). The suites caught one bug of mine on the way: a variable in the MEQL
-code shadowed the digit file's zero-length check (`test_faults[illegal]`). It was fixed
+    as a chip family (`KeyError: 'Q'`).
+
+The suites caught one bug of mine on the way: a variable in the MEQL code shadowed the digit file's zero-length check (`test_faults[illegal]`). It was fixed
 before the final run.
 
 
