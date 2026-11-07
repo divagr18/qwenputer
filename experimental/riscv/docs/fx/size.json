@@ -1,7 +1,24 @@
 {
  "note": "M measured, E estimated (see docs/fx/size.md)",
  "circuits_M": {
-  "q4p2": null,
+  "q4p2": {
+   "stats": {
+    "layers": 11,
+    "dims": 2918,
+    "heads": 103,
+    "ffn_units": 42114,
+    "max_units": 8149,
+    "max_heads": 16
+   },
+   "slots": 1265,
+   "hidden": 3968,
+   "m": 62,
+   "total": 1044349,
+   "distinct": 796,
+   "vocab": 230324,
+   "peakC": 342,
+   "zero_mlp_layers": 1
+  },
   "fxint": null,
   "fx": {
    "stats": {
@@ -126,7 +143,12 @@
   }
  },
  "sparse_chip_M": {
-  "q4p2": null,
+  "q4p2": {
+   "palette": 796,
+   "raw_bytes": 6281219,
+   "zstd_bytes": 173273,
+   "terms": 1044349
+  },
   "fx": {
    "palette": 809,
    "raw_bytes": 38958588,
@@ -134,11 +156,15 @@
    "terms": 6480659
   }
  },
- "sparse_verify_M": null,
+ "sparse_verify_M": {
+  "tensors_identical": 154,
+  "tensors_different": 0,
+  "bytes_compared": 3850304128
+ },
  "sparse_verify_progress_M": {
-  "tensors": 66,
-  "identical": 66,
-  "gb": 1.531,
+  "tensors": 154,
+  "identical": 154,
+  "gb": 3.85,
   "of_tensors": 154
  },
  "sample_base_M": {

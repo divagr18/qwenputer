@@ -168,7 +168,7 @@ this, so its 314 chip-only dims are a lower bound, not a result. Hidden 3072 is 
 
 | | what | result |
 |---|---|---|
-| **Sparse is the published file** | rv-q4p2's circuit through the repo's own `emit_layers` with a sparse tensor swapped in, expanded chunk by chunk and compared with the Hub | __VERIFY__ |
+| **Sparse is the published file** | rv-q4p2's circuit through the repo's own `emit_layers` with a sparse tensor swapped in, expanded chunk by chunk and compared with the Hub | **154 of 154 tensors identical, 3,850,304,128 bytes, 0 different** (M) |
 | Sparse size | 1,044,349 terms | 6.28 MB raw, **173 KB** zstd (M) |
 | Sparse size, fx | 6,480,659 terms | 39.0 MB raw, **296 KB** zstd (M) |
 | P1 sparse forward | Linears replaced in a stock model, small circuit | residual and logits bit-identical; 5.4 MB to 2.1 KB (M) |
