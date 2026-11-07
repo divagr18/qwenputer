@@ -361,6 +361,7 @@ def main():
         print(json.dumps({"tf_positions": len(stream), "dims": ex.D, "differing": bad, "first": first}))
         return
     known = set()
+    cum = []  # (tokens so far, instructions so far) at each segment's end
     steps = gpu = 0.0
     wrong = None
     seg = 0
@@ -388,6 +389,7 @@ def main():
         gpu += time.perf_counter() - t1
         steps += n
         seg += 1
+        cum.append((int(steps), int(m.steps - instr0)))
         want = np.asarray(toks[1:], np.int64)
         if len(ids) != n or (ids != want).any():
             k = int(np.argmax(ids[:n] != want[:len(ids)])) if len(ids) else 0
@@ -400,7 +402,7 @@ def main():
                   f"gpu {gpu:.1f}s {steps / max(gpu, 1e-9):.0f} tok/s", flush=True)
     res.update(tokens=int(steps), instructions=int(m.steps - instr0), segments=seg, gpu_s=round(gpu, 2),
                ref_s=round(t_ref, 2), tok_s=round(steps / max(gpu, 1e-9)), wrong=wrong,
-               us_step=round(1e6 * gpu / max(steps, 1), 2), pages=len(m.pt))
+               us_step=round(1e6 * gpu / max(steps, 1), 2), pages=len(m.pt), cum=cum)
     if not wrong and not a.max_tokens:
         res["end"] = end_check(m, z)
     print(json.dumps(res), flush=True)

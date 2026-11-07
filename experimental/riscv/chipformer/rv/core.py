@@ -833,7 +833,7 @@ def build(target: Target | None = None, text=None, cfg=None) -> RvCore:
     md = {"ADD": any_of("ADD"),
           "ADDI": any_of("ADDI", "LB", "LH", "LW", "LBU", "LHU", "SB", "SH", "SW", "JALR")
           + (hot.ea - hot.sub_k if hot else 0),
-          "SUB": any_of("SUB", "SLT", "SLTU", *RF.BRANCH_OPS) + mj0 + (hot.first_all if hot else 0),
+          "SUB": any_of("SUB", "SLT", "SLTU", *RF.BRANCH_OPS) + mj0 + (hot.sub_r if hot else 0),
           "SUBI": any_of("SLTI", "SLTIU") + (hot.sub_k if hot else 0)}
     bsrc = {"ADD": (B, False, 0), "ADDI": (imm, False, 0), "SUB": (B, True, 1),
             "SUBI": (imm, True, 1)}
@@ -968,6 +968,8 @@ def build(target: Target | None = None, text=None, cfg=None) -> RvCore:
 
     # ---------------------------------------------------------------- L5-10: DIV digits
     # |B| = B' + sb with B' = B xor sb (as 8 nibbles, the +1 folded into nibble 0: 0..16)
+    floor_div = c.at_least(48 if hot else 0)  # (hot: above the multiplier, so the residual's peak is lower)
+    floor_div.__enter__()
     bp = [c.node(c.t_and([B[i]]) + c.t_and([B[i], signed, B[31]], -1)
                  + c.t_and([1 - B[i], signed, B[31]]), f"div.bp{i}") for i in range(32)]
     bm = [nib(bp, 0) + sbn] + [nib(bp, j) for j in range(1, 8)]
@@ -1084,6 +1086,7 @@ def build(target: Target | None = None, text=None, cfg=None) -> RvCore:
         qs.append(c.node(c.t_and([1 - sigma, qal[i]]) + c.t_and([sigma, qal[i]] + zero_below)
                          + c.t_and([sigma, 1 - qal[i]])
                          + c.t_and([sigma, 1 - qal[i]] + zero_below, -1), f"div.qs{i}"))
+    floor_div.__exit__(None, None, None)
 
     # ---------------------------------------------------------------- L7-8: Zba, branch target
     zres = add_nibbles(c, shift, B, 8, [any_of(*RF.ZBA)], "zba")
@@ -1567,7 +1570,8 @@ def build(target: Target | None = None, text=None, cfg=None) -> RvCore:
     case(ine + [fam["EC1"], eq_last], "J", mtgt)
     case(nr + [uops["FENCE"]], "NT")
     if hot:
-        hot.top(A, B, C, r, eq, sltu, mem, fb, mapped, anext, af, EA, in_ram, case)
+        with c.at_least(46):  # (above L22, where the residual is fullest: hidden size)
+            hot.top(A, B, C, r, eq, sltu, mem, fb, mapped, anext, af, EA, in_ram, case)
     # digit-file ops: BD per digit (j < n), then rd = the last carry (or NT)
     for start in ([j0, one - at_max], [one - j0]):
         case(start + [bnrow, lt_n], "BD", bd_dig + bd_car)

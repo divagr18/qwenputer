@@ -14,12 +14,12 @@ The trace of a unit. Tokens come from the family M (spec.py), the data family CW
 
   copy:  MP [PA] MH [MR] { CW(lo) CW(hi) }* { MC [PA] MH { CW(lo) CW(hi) }* }* J(ret)
          (descending: MP MC [PA] MH [MR] ...)
-  scan:  MP [CW(start)] MF { SC.. CW(idx) MR }* SC.. CW(k) MK { value record }+ [PA] [MH CW CW] J(pc)
+  scan:  MP [CW(start)] MF { SC.. EC1 CW(idx) MR }* SC.. EC0 CW(k) MK { value record }+ [PA MH CW CW] J(pc)
          a compiled byte loop's plain iterations: it exits at its own head, before the iteration
          that leaves the loop (which then runs as compiled), so the unit declines at k = 0
   fill:  the same, no source (memset)
-  eql:   MP { SC SC }* [MC { SC SC }*].. J(ret), or at a mismatch F0(0) J(ret), or MD when a byte
-         is outside every load region (eql has written nothing: the original then faults as
+  eql:   MP { EB(a[k]) EC1 }* [MC { EB EC1 }*].. J(ret), or at a mismatch F0(0) J(ret), or MD when a
+         byte is outside every load region (eql has written nothing: the original then faults as
          compiled)
 
 Why a chunk: the record counter j is the position in a chunk (2^-j, 66 at most), and a write's value
@@ -48,7 +48,8 @@ from chipformer.q35.ir import Chan
 from chipformer.q35.prims import from_bits, thead
 from chipformer.rv import spec as S
 
-CHUNK_J = 62  # positions in a chunk: 31 words
+CHUNK_J = 62  # positions in a chunk: 31 words (eql: bytes)
+CHUNK_S = 31  # a byte loop's chunk, in bytes
 NMAX = 0x3FFC  # a call copies fewer bytes than this
 FRAME_RESERVE = 34
 TAG_OP, TAG_MP, TAG_MC, TAG_MH = 0, 1, 2, 3
@@ -139,6 +140,8 @@ def move_record(m, u: Unit, d: int, s: int, n: int, dr: int, fill: int | None = 
     r = (sl - dl) & 3
     f = int(sl < dl) if dr else int(sl > dl)
     toks = [mp_tok(0, f, dr, uid(m, u))]
+    if u.kind == "bcopy":  # (n is not in a register: it goes down in a token)
+        toks.append(S.tok("CW", n))
     if dr:
         toks.append(m_tok(TAG_MC, last))
     c = last if dr else 0
@@ -185,7 +188,6 @@ def move_record(m, u: Unit, d: int, s: int, n: int, dr: int, fill: int | None = 
 def eql_record(m, u: Unit, a: int, b: int, n: int) -> list:
     """a0 is 1 at the trigger. A byte outside every load region: MD, nothing committed."""
     toks = [mp_tok(0, 0, 0, uid(m, u))]
-    res = 1
     j = c = 0
 
     def byte(ea):
@@ -203,17 +205,16 @@ def eql_record(m, u: Unit, a: int, b: int, n: int) -> list:
         if not m.cfg.in_load(ea):
             m.skip_unit = True
             return toks + [tok_decline()]
-        toks.append(S.tok("SC"))
+        toks.append(S.tok("EB", byte(ea)))
         if not m.cfg.in_load(eb):
             m.skip_unit = True
             return toks + [tok_decline()]
         if byte(ea) != byte(eb):
-            res = 0
             m.n += 1
             toks.append(S.tok("F0", 0))
             m.x[10] = 0
             break
-        toks.append(S.tok("SC"))
+        toks.append(S.tok("EC1"))
         j += 2
     m.steps += 1
     return toks + m.jump_tokens(u.ret)
@@ -279,14 +280,14 @@ def scan_record(m, u: Unit) -> list | None:
             break
         idx += 1
         first = False
-        if j >= CHUNK_J:
-            toks += [S.tok("CW", idx), m_tok(TAG_OP, OP_MR)]
+        if j >= CHUNK_S:
+            toks += [S.tok("EC1"), S.tok("CW", idx), m_tok(TAG_OP, OP_MR)]
             j = 0
             continue
         toks.append(S.tok("SC"))
         j += 1
     k = idx if not t["start"] else idx - 1
-    toks += [S.tok("CW", k), m_tok(TAG_OP, OP_MK)]
+    toks += [S.tok("EC0"), S.tok("CW", k), m_tok(TAG_OP, OP_MK)]
     for r, sg in t["commits"]:
         v = (x[r] + sg * k if sg else k) & 0xFFFFFFFF
         toks += S.value_record(v)
@@ -362,15 +363,17 @@ def fx_units(elf_path, names) -> tuple:
     return tuple(out)
 
 
+COPY_KINDS = {"move", "cpy", "set", "bcopy"}
 PORTS = {"move": (10, 11, 12), "cpy": (10, 11, 12), "set": (10, 11, 12), "bcopy": (12, 27, 11),
          "eql": (11, 13, 12)}  # the registers a unit reads: rs1, rs2, rd ports
 
 
 class Hot:
     """The circuit (see the module doc). A unit's address goes through the core's own adder: the
-    ports read the base (rs1) and the ROM's immediate is off, so EA = A + 4 * offset; the trigger
-    position uses it as d - s. Everything else runs every step, whether a unit is active or not,
-    so a unit's cost is its units: keep them few."""
+    ports read the base (rs1) and the ROM's immediate is off, so EA = A + off; the trigger position
+    uses it as d - s. All of this runs every step whether a unit is active or not, so a unit costs
+    its MLP units, and an MLP or head that must wait for another one costs a phase of Executor v4:
+    nothing here may stand in the chain from the registers to the exit."""
 
     def __init__(self, c, cfg) -> None:
         self.c, self.cfg = c, cfg
@@ -388,46 +391,59 @@ class Hot:
                 return int(nm == "M" and p >> 12 == tg)
             return fn
 
+        def head(name, vhs):
+            out = thead(c, name, {0: one}, {0: one}, vhs)
+            self.tables.append(name)
+            c.tables[name] = c.nodes[-1]
+            return out
+
+        self.head = head
         self.tMP = f("m.mp", tag_is(TAG_MP), full=True)
         self.tMC = f("m.mc", tag_is(TAG_MC), full=True)
         self.tMH = f("m.mh", tag_is(TAG_MH), full=True)
         self.tOP = f("m.op", tag_is(TAG_OP), full=True)
-        self.tMD = c.and_([self.tOP, 1 - pay["M"][0], 1 - pay["M"][1]], "m.md")
-        self.tMR = c.and_([self.tOP, pay["M"][0], 1 - pay["M"][1]], "m.mr")
-        self.tMF = c.and_([self.tOP, 1 - pay["M"][0], pay["M"][1]], "m.mf")
-        self.tMK = c.and_([self.tOP, pay["M"][0], pay["M"][1]], "m.mk")
-        self.tpre = c.and_([self.tMH, pay["M"][1]], "m.pre")
         mp = pay["M"]
+        b0, b1 = mp[0], mp[1]
+        self.tMD = c.and_([self.tOP, 1 - b0, 1 - b1], "m.md")
+        self.tMR = c.and_([self.tOP, b0, 1 - b1], "m.mr")
+        self.tMF = c.and_([self.tOP, 1 - b0, b1], "m.mf")
+        self.tMK = c.and_([self.tOP, b0, b1], "m.mk")
+        self.tpre = c.and_([self.tMH, b1], "m.pre")
         # the unit's flags, for the whole record
-        (hl,) = thead(c, "h.l", {0: one}, {0: one},
-                      [{"data": {2 + i: e for i, e in enumerate([self.tMP] + mp[1:7])}, "ref": one,
-                        "beta": self.tMP + fam["J"] + self.tMD}])
-        self.tables.append("h.l")
-        c.tables["h.l"] = c.nodes[-1]
+        (hl,) = head("h.l", [{"data": {2 + i: e for i, e in enumerate([self.tMP] + mp[1:7])}, "ref": one,
+                              "beta": self.tMP + fam["J"] + self.tMD}])
         self.inm, self.hf, self.hdir, self.hu = hl[0], hl[1], hl[2], hl[3:7]
-        ((self.hx,),) = thead(c, "h.x", {0: one}, {0: one},
-                              [{"data": {2: mp[0]}, "ref": one, "beta": self.tMH}])
-        self.tables.append("h.x")
-        c.tables["h.x"] = c.nodes[-1]
+        ((self.hx,),) = head("h.x", [{"data": {2: mp[0]}, "ref": one, "beta": self.tMH}])
         self.scans = [u for u, un in enumerate(cfg.units) if un.kind in SCAN]
         huc = [c.and_([self.inm] + _lits(self.hu, u), f"h.uc{u}") for u in self.scans]
         self.iscan = sum(huc, Expr())
         self.tscw = c.and_([self.iscan, fam["CW"]], "h.tscw") if self.scans else Expr()
         cw_ = pay["CW"]
-        (self.hc,) = thead(c, "h.c", {0: one}, {0: one},
-                           [{"data": {2 + i: (mp[i] if i < 12 else Expr()) + (cw_[i] if self.scans else Expr())
-                                      for i in range(16)}, "ref": one,
-                             "beta": self.tMC + fam["J"] + fam["R"] + fam["JF"] + fam["RF"] + self.tscw}])
-        self.tables.append("h.c")
-        c.tables["h.c"] = c.nodes[-1]
-        if self.scans:  # a unit's commits so far, since MK (cleared by MP)
-            ((self.incm,),) = thead(c, "h.kf", {0: one}, {0: one},
-                                    [{"data": {2: self.tMK}, "ref": one, "beta": self.tMK + self.tMP + fam["J"]}])
-            self.tables.append("h.kf")
-            c.tables["h.kf"] = c.nodes[-1]
+        (self.hc,) = head("h.c", [{"data": {2 + i: (mp[i] if i < 12 else Expr()) + (cw_[i] if self.scans else Expr())
+                                            for i in range(16)}, "ref": one,
+                                   "beta": self.tMC + fam["J"] + fam["R"] + fam["JF"] + fam["RF"] + self.tscw}])
+        self.pMP = self.pEC0 = Expr()
+        if self.scans:
+            lag = (0, 1, 0, 0)  # what the token before was (a head written at every position)
+            ((self.pMP, self.pEC0),) = head("h.p", [{"data": {2: Chan(self.tMP, lag), 3: Chan(fam["EC0"], lag)},
+                                                     "ref": one}])
+            # a unit's commits so far, since MK
+            ((self.incm,),) = head("h.kf", [{"data": {2: self.tMK}, "ref": one, "beta": self.tMK + self.tMP + fam["J"]}])
             xk = c.counter("h.k", self.tMK, c.final)
             self.kt = c.thermo(xk, self.tMK, 3, "h.k")
             self.tables.append("h.k")
+        self.hn = [Expr()] * 16
+        self.pH = Expr()
+        if "bcopy" in self.kinds:  # the byte loop's length, read once
+            lag = (0, 1, 0, 0)
+            ((self.pMPb,),) = head("h.pb", [{"data": {2: Chan(self.tMP, lag)}, "ref": one}])
+            self.pH = 1 - self.pMPb
+            ibc_ = sum((c.and_([self.inm] + _lits(self.hu, u), f"h.ubc{u}") for u, un in enumerate(cfg.units)
+                        if un.kind == "bcopy"), Expr())
+            (self.hn,) = head("h.n", [{"data": {2 + i: cw_[i] for i in range(16)}, "ref": one, "gate": ibc_,
+                                       "beta": c.and_([self.inm, fam["CW"], self.pMPb], "h.bn")}])
+        if "eql" in self.kinds:
+            (self.he,) = head("h.e", [{"data": {2 + i: pay["EB"][i] for i in range(8)}, "ref": one, "beta": fam["EB"]}])
 
     def setup(self, w, jt, j0, at_max, isJA) -> None:
         from chipformer.rv import core as C
@@ -440,20 +456,21 @@ class Hot:
         def jeq(v):
             return (one if v == 0 else jt[v - 1]) - (jt[v] if v < jmax else 0)
 
-        jint = sum(jt, Expr())
+        ij = sum(jt, Expr())  # j
+        iw = sum(jt[1::2], Expr())  # j >> 1
         self.jodd = sum((jeq(v) for v in range(1, jmax + 1, 2)), Expr())
         self.first, self.hun, self.act = [], [], []
         for u, un in enumerate(self.units):
             wi = (un.pc - cfg.rom_base) >> 2
             assert wi >> 16 == (un.ret - cfg.rom_base) >> 18, "a unit's exit leaves its 64K-word window"
-            trig = c.and_(C.lits_of(w, wi), f"h.t{u}")
-            fi = c.and_([trig, j0, 1 - at_max, 1 - self.inm, 1 - self.tMD], f"h.first{u}")
+            fi = c.and_(C.lits_of(w, wi) + [j0, 1 - at_max, 1 - self.inm, 1 - self.tMD], f"h.first{u}")
             hu = c.and_([self.inm] + C.lits_of(self.hu, u), f"h.u{u}")
             self.first.append(fi)
             self.hun.append(hu)
             self.act.append(fi + hu)
         self.mact = sum(self.act, Expr())
         self.first_all = sum(self.first, Expr())
+        self.sub_r = self.first_all
         # the roles
         cw = c.fam["CW"]
         COPY = ("move", "cpy", "set", "bcopy")
@@ -465,40 +482,46 @@ class Hot:
         tmp, tmh, tmc, tmr = self.tMP, self.tMH, self.tMC, self.tMR
         tpa = c.fam["PA"]
         sc = c.fam["SC"]
+        ec0, ec1 = c.fam["EC0"], c.fam["EC1"]
         self.regk = {}
+        self.re1 = self.re2 = self.rx = zero
         if "eql" in self.kinds:
-            self.re2 = c.and_([ieq, sc, self.jodd], "h.re2")
-            self.re1 = c.and_([ieq, sc, 1 - self.jodd], "h.re1a") + c.and_([ieq, tmp + tmc], "h.re1b")
+            self.re2 = c.and_([ieq, c.fam["EB"]], "h.re2")
+            self.re1 = c.and_([ieq, ec1 + tmp + tmc], "h.re1")
             self.rx = c.and_([ieq, c.fam["F0"]], "h.rx")
-            self.regk = {10: ieq}
-        else:
-            self.re1 = self.re2 = self.rx = zero
+            self.regk = {10: self.re2}
+        ibc = sum((h for h, un in zip(self.hun, self.units) if un.kind == "bcopy"), Expr())
+        self.rN = zero
+        if "bcopy" in self.kinds:
+            self.rN = c.and_([ibc, tmp], "h.rN")  # MP stands here: CW(n) comes next
+            self.sub_r = self.sub_r + self.rN
+            jn = c.and_([ibc, cw, 1 - self.pH], "h.jn")  # (the token after MP, once: pH is set by it)
         self.rC = c.and_([imv, tmp, self.hdir], "h.rC")
         self.rR = c.and_([imv, self.tpre], "h.rR")
-        self.rH = c.and_([imv, tmc + tpa], "h.rH") + c.and_([imv, tmp, 1 - self.hdir], "h.rH1")
-        self.rb = c.and_([imv, cw, self.jodd], "h.rb")
-        self.rhi = c.and_([imv, cw, 1 - self.jodd], "h.rhi")
-        self.ra = self.rhi + c.and_([imv, tmr], "h.ra1") + c.and_([imv, tmh, 1 - self.tpre], "h.ra2")
+        self.rH = (c.and_([imv, tmc + tpa + tmp - self.rC - self.rN], "h.rH")
+                   + (jn if "bcopy" in self.kinds else zero))
+        cwb = (cw - jn) if "bcopy" in self.kinds else cw
+        self.rb = c.and_([imv, cwb, self.jodd], "h.rb")
+        self.rhi = c.and_([imv, cwb, 1 - self.jodd], "h.rhi")
+        self.ra = self.rhi + c.and_([imv, tmr + tmh - self.tpre], "h.ra1")
         self.ead = self.rb + self.rH + self.re1
         self.eas = self.ra + self.rR + self.re2
         self.ea = self.ead + self.eas
         self.store = self.rb + self.rH
         self.cv = zero  # a scan unit's commit (of the value A +- k)
         self.sub_k = zero
-        self.rbyte = zero
+        self.rbyte = self.rse = zero
         js = [u for u in self.scans if self.units[u].kind == "jscan"]
         if self.scans:
             iscan, incm = self.iscan, self.incm
             kt = self.kt
             mq = [1 - kt[0], kt[0] - kt[1], kt[1] - kt[2], kt[2]]
-            self.rbyte = c.and_(
-                [iscan, 1 - incm, self.tMF + self.tMR + sc], "h.rbyte")
-            self.rcm = []  # per scan unit, per commit: a position of that record
-            self.rend = []
-            self.ports_cm = []
+            self.rbyte = c.and_([iscan, 1 - incm, self.tMF + self.tMR + sc], "h.rbyte")
+            self.rse = c.and_([iscan, 1 - incm, ec0 + ec1], "h.rse")  # the stop's or the chunk's index
+            self.rcm, self.rend = [], []
             for u in self.scans:
                 cm = SCAN[self.units[u].kind]["commits"]
-                rc = [c.and_([self.hun[u], incm, 1 - c.fam["PA"], 1 - tmh, 1 - cw, mq[i]], f"h.rc{u}.{i}")
+                rc = [c.and_([self.hun[u], incm, 1 - tpa, 1 - tmh, 1 - cw, mq[i]], f"h.rc{u}.{i}")
                       for i in range(len(cm))]
                 self.rcm.append(rc)
                 self.rend.append(c.and_([self.hun[u], incm, mq[len(cm)]], f"h.rend{u}"))
@@ -507,7 +530,7 @@ class Hot:
                     self.cv = self.cv + rc[i]
                     if sg < 0:
                         self.sub_k = self.sub_k + rc[i]
-            self.ea = self.ea + self.rbyte + self.cv
+            self.ea = self.ea + self.rbyte + self.rse + self.cv
         self.jsH = self.jsa = self.jsb = self.jsw = zero
         if js:  # the cursor's store: H, then its word
             je = self.rend[self.scans.index(js[0])]
@@ -542,56 +565,88 @@ class Hot:
             d_, s_, n_ = PORTS[un.kind]
             sw = zero if un.kind == "set" else c.and_([self.hun[u], self.eas], f"h.swap{u}")
             self.swap = self.swap + sw
+            if un.kind == "bcopy":  # trigger and MP's position: end - s by the core's adder, d in rd
+                rn = c.and_([self.hun[u], tmp], f"h.rn{u}")
+                add("rs1", n_, self.first[u] + rn)
+                add("rs2", s_, self.first[u] + rn)
+                add("rd", d_, self.first[u] + rn)
+                add("rs1", d_, self.hun[u] - sw - rn)
+                add("rs1", s_, sw)
+                add("rs2", s_, self.hun[u] - sw - rn)
+                add("rs2", d_, sw)
+                continue
             add("rs1", d_, self.act[u] - sw)
             add("rs1", s_, sw)
             add("rs2", s_, self.act[u] - sw)
             add("rs2", d_, sw)
             add("rd", n_, self.act[u])
-        # the word index ci = c +- (j >> 1), and the source word's offset
-        ib = [c.node(t, f"h.i{b}") for b, t in
-              enumerate(c.fn_bits(jint, 0, jmax, lambda v: v >> 1, 5, "h.i"))]
-        if self.scans:  # a byte loop's index is c + j (a commit's: c)
-            jb = [c.node(t, f"h.jb{b}") for b, t in
-                  enumerate(c.fn_bits(jint, 0, jmax, lambda v: v, 6, "h.jb"))]
-            ib = [c.node(c.t_and([1 - self.iscan, b_]) if b_ else [], f"h.ib{i}") if b_ else zero
-                  for i, b_ in enumerate(ib + [zero])]
-            ib = [i_ + c.and_([self.rbyte, b_], f"h.ib2{k}") for k, (i_, b_) in enumerate(zip(ib, jb))]
-        cb = self.hc
-        ci_f = C.add_nibbles(c, cb, (ib + [zero] * 16)[:16], 4, [1 - self.hdir], "h.cif")
+        # the offset, in one MLP stage: c + j (or j >> 1), carry or borrow into the high bits. The
+        # copy's source word is one off (f); the true word index ci is for the top, not the adder
+        hc = self.hc
+        cl = from_bits(hc[:5])
+        dirn, hf = self.hdir, self.hf
+        wf = self.ra + self.rR + self.rb + self.rH  # (eas's and ead's word roles)
+        sel_p = c.node(c.t_and([self.ra, 1 - dirn, hf]) + c.t_and([self.rR, dirn, 1 - hf]), "h.selp")
+        sel_m = c.and_([self.ra, dirn, hf], "h.selm") if "move" in self.kinds else zero
+        modes = []
+        if COPY_KINDS & self.kinds:
+            modes.append((cl + iw + sel_p, 0, 63, [wf, 1 - dirn], 2, False))
+            if "move" in self.kinds:
+                modes.append((cl - iw - sel_m + sel_p, -32, 32, [wf, dirn], 2, True))
+        if "eql" in self.kinds:
+            modes.append((cl + iw, 0, 63, [self.re1 + self.re2], 0, False))
+        if self.scans:
+            modes.append((cl + ij, 0, 31 + jmax, [self.rbyte + self.rse], 0, False))
+        oterm = [[] for _ in range(18)]
+        for z, lo, hi, lits, sh, back in modes:
+            for b in range(5):
+                f_ = lambda v, b=b: ((v & 31) >> b) & 1
+                for v in range(lo + 1, hi + 1):
+                    if f_(v) != f_(v - 1):
+                        oterm[b + sh] += c.t_ge(z, v, lo, hi, f_(v) - f_(v - 1), lits=lits)
+                if f_(lo):
+                    oterm[b + sh] += c.t_and(lits)
+            for b in range(5, 16):
+                lows = [(1 - x if back else x) for x in hc[5:b]]
+                carry = lambda co, ex: (c.t_lt(z, 0, lo, hi, co, lits=lits + lows + ex) if back
+                                        else c.t_ge(z, 32, lo, hi, co, lits=lits + lows + ex))
+                oterm[b + sh] += c.t_and(lits + [hc[b]]) + carry(1, [1 - hc[b]]) + carry(-1, [hc[b]])
+        for b in range(16):
+            if self.cv.terms:
+                oterm[b] += c.t_and([self.cv, hc[b]])
+        self.off = [c.node(t, f"h.off{b}") if t else zero for b, t in enumerate(oterm)] + [zero] * 14
+        if js:  # the cursor's offset
+            self.off[2] = self.off[2] + self.jsH + self.jsb
+            self.off[5] = self.off[5] + self.jsH + self.jsb
+        # the word index, for the top (its depth does not matter there)
+        ib = [c.node(t, f"h.i{b}") for b, t in enumerate(c.fn_bits(iw, 0, 40, lambda v: v, 6, "h.i"))]
+        cb = hc
+        ci_f = C.add_nibbles(c, cb, (ib + [zero] * 16)[:16], 4, [1 - dirn], "h.cif")
         if "move" in self.kinds:
-            nib_ = [1 - b for b in ib] + [one] * 11
+            nib_ = [1 - b for b in ib] + [one] * 10
             sums = [[(from_bits(cb[4 * k:4 * k + 4]) + from_bits(nib_[4 * k:4 * k + 4]) + (1 if k == 0 else 0),
-                      [self.hdir])] for k in range(4)]
+                      [dirn])] for k in range(4)]
             g, p_, d = C.stage1_digits(c, sums, "h.cib", 31)
             ci_b = C.adder_stage2(c, g, p_, d, 4, "h.cib")[0]
             self.ci = [ci_f[b] + ci_b[b] for b in range(14)] + ci_f[14:]  # (bit 13: negative, dir = 1)
         else:
             self.ci = ci_f
         ci = self.ci
-        cp1, cm1 = [], []
-        for b in range(16):
-            low = ci[:b]
-            cp1.append(c.node(c.t_and([ci[b]]) + c.t_and(low + [1 - ci[b]]) + c.t_and(low + [ci[b]], -1)
-                              if b else c.t_const(1) + c.t_and([ci[0]], -1), f"h.cp{b}"))
-            if "move" in self.kinds:
-                nlow = [1 - e for e in low]
-                cm1.append(c.node(c.t_and([ci[b]]) + c.t_and(nlow + [1 - ci[b]]) + c.t_and(nlow + [ci[b]], -1)
-                                  if b else c.t_const(1) + c.t_and([ci[0]], -1), f"h.cm{b}"))
-        self.cp1 = cp1
-        sel_p = c.node(c.t_and([self.ra, 1 - self.hdir, self.hf]) + c.t_and([self.rR, self.hdir, 1 - self.hf]),
-                       "h.selp")
-        sel_m = c.and_([self.ra, self.hdir, self.hf], "h.selm") if cm1 else zero
-        wordrole = self.ead + self.eas
-        sel_z = wordrole - self.re1 - self.re2 - sel_p - sel_m
-        self.off = [zero, zero] + [
-            c.node(c.t_and([sel_z, ci[b]]) + c.t_and([sel_p, cp1[b]])
-                   + (c.t_and([sel_m, cm1[b]]) if cm1 else []), f"h.off{b}") for b in range(14)] + [zero] * 16
-        byt = self.re1 + self.re2 + self.rbyte + self.cv
-        if self.scans or "eql" in self.kinds:  # a byte index
-            self.off = [o + c.and_([byt, ci[b]], f"h.offb{b}") if b < 16 else o for b, o in enumerate(self.off)]
-        if js:  # the cursor's offset
-            self.off[2] = self.off[2] + self.jsH + self.jsb
-            self.off[5] = self.off[5] + self.jsH + self.jsb
+        self.cp1 = [self.incr(ci, b, f"h.cp{b}") for b in range(14)]
+        # the parity of the source word (which of the two stash heads it goes to)
+        self.par = c.node(c.t_and([ci[0], 1 - hf]) + c.t_and([1 - ci[0], hf]), "h.par")
+
+    def incr(self, x, b, name):
+        c = self.c
+        low = x[:b]
+        return c.node(c.t_and([x[b]]) + c.t_and(low + [1 - x[b]]) + c.t_and(low + [x[b]], -1)
+                      if b else c.t_const(1) + c.t_and([x[0]], -1), name)
+
+    def _decr(self, x, b, name):
+        c = self.c
+        low = [1 - e for e in x[:b]]
+        return c.node(c.t_and([x[b]]) + c.t_and(low + [1 - x[b]]) + c.t_and(low + [x[b]], -1)
+                      if b else c.t_const(1) + c.t_and([x[0]], -1), name)
 
     def port(self, pname, r):
         return self.ports[pname].get(r, Expr())
@@ -629,48 +684,53 @@ class Hot:
         def or_(lits, name):
             return one - c.and_([1 - e for e in lits], name)
 
+        def pay_const(tag, vbits):
+            return list(vbits) + [zero] * (12 - len(vbits)) + [one if tag >> b & 1 else zero for b in range(2)]
+
+        def ubits(u):
+            return [one if u >> b & 1 else zero for b in range(4)]
+
+        decline = pay_const(TAG_OP, [zero])  # OP_MD
         # the two buffers' low bits at any position: the ports swap on source reads
         swap = self.swap
         dv = [c.node(c.t_and([swap, B[i]]) + c.t_and([1 - swap, A[i]]), f"h.dv{i}") for i in range(2)]
         sv = [c.node(c.t_and([swap, A[i]]) + c.t_and([1 - swap, B[i]]), f"h.sv{i}") for i in range(2)]
         isset, isbc = self.kact["set"], self.kact["bcopy"]
-        if "bcopy" in kinds:  # n = end - s
-            s32 = [c.node(c.t_and([swap, A[i]]) + c.t_and([1 - swap, B[i]]), f"h.s32{i}") for i in range(32)]
-            ns = [[(nib(CR, k) + 15 - nib(s32, k) + (1 if k == 0 else 0), [])] for k in range(8)]
-            g, p_, d = C.stage1_digits(c, ns, "h.ns", 31)
-            sub = C.adder_stage2(c, g, p_, d, 8, "h.ns")[0]
-            CR = [c.node(c.t_and([1 - isbc, CR[i]]) + c.t_and([isbc, sub[i]]), f"h.nv{i}") for i in range(32)]
+        C0 = CR
+        if "bcopy" in kinds:  # n came down in a token (rd holds nothing there)
+            CR = [e + (self.hn[i] if i < 16 else zero) for i, e in enumerate(CR)]
         n_ok = c.and_([1 - b for b in CR[14:32]] + [1 - c.and_(CR[2:14], "h.ntop")], "h.nok")
         n_nz = or_(CR[:14], "h.nnz")
         d_ne = 1 - eq
-        copy = kinds & {"move", "cpy", "set", "bcopy"}
+        copy = kinds & COPY_KINDS
         if copy:
             # n's arithmetic: U = (d & 3) + n + 3: K = U >> 2 words, e = U & 3 the last byte's lane
             sums = [[(nib(CR, 0) + from_bits(dv) + 3, [])]] + [[(nib(CR, k), [])] for k in range(1, 4)]
             g, p_, d = C.stage1_digits(c, sums, "h.u", 30)
             U = C.adder_stage2(c, g, p_, d, 4, "h.u")[0]
             Kb, e2 = U[2:16], U[0:2]
-            eq_k = eqbits(ci, Kb, "h.eqk")
+            eq_k = eqbits(ci[:14], Kb, "h.eqk")
             lastw = eqbits(self.cp1, Kb, "h.last")
-            first0 = c.and_([1 - b for b in ci], "h.first0")
+            first0 = c.and_([1 - b for b in ci[:14]], "h.first0")
             rr = [c.node([t for sl in range(4) for dl in range(4) if (sl - dl) & 3 == rv
                           for t in c.t_and(lits_of(sv, sl) + lits_of(dv, dl) + [1 - isset])], f"h.r{rv}")
                   for rv in range(4)]
-            e_ne3 = 1 - c.and_(list(e2), "h.e3")
-            d_ne0 = or_(list(dv), "h.dz")
-            # the byte mask of word ci
+            # the byte mask of word ci (one MLP stage from first0 and lastw)
             dint, eint = from_bits(dv), from_bits(e2)
             mask = []
             for b in range(4):
                 ge = c.node(c.t_ge(b - dint, 0, -3, 3), f"h.ge{b}")
                 le = c.node(c.t_ge(eint - b, 0, -3, 3), f"h.le{b}")
-                m1 = or_([1 - first0, ge], f"h.m1{b}")
-                m2 = or_([1 - lastw, le], f"h.m2{b}")
-                mask.append(c.and_([m1, m2], f"h.mask{b}"))
+                mask.append(c.node(c.t_const(1) + c.t_and([first0, 1 - ge], -1) + c.t_and([lastw, 1 - le], -1)
+                                   + c.t_and([first0, 1 - ge, lastw, 1 - le]), f"h.mask{b}"))
+            edge = c.node(c.t_and([1 - hdir, lastw] + [1 - c.and_(list(e2), "h.e3")])
+                          + c.t_and([hdir, first0, or_(list(dv), "h.dz")]), "h.edge")
+            done = c.node(c.t_and([1 - hdir, eq_k]) + c.t_and([hdir, ci[13]]), "h.done")
         # the conditions at the trigger: r = d - s (the core's adder)
         lg = cfg.rw[0][1]
         wok = lambda v, nm: c.and_([1 - b for b in v[lg:32]] + [1 - c.and_(v[14:lg], nm + "t")], nm)
         lim = (self.frames - FRAME_RESERVE) >> 5
+        self.nb = r[:16]  # (at the position after MP a bcopy's ports are the trigger's again: below)
         gt = [c.node(c.t_lt(nib(CR, k) - nib(r, k), 0, -15, 15), f"h.gt{k}") for k in range(4)]
         eqn = {k: c.node(c.t_eq(nib(CR, k) - nib(r, k), 0, -15, 15), f"h.eq{k}") for k in (1, 2, 3)}
         r_ge = c.node(c.t_and([gt[3]]) + c.t_and([eqn[3], gt[2]]) + c.t_and([eqn[3], eqn[2], gt[1]])
@@ -689,70 +749,75 @@ class Hot:
         fok = c.node(c.t_lt(from_bits(af[5:]), lim, 0, (self.frames - 1) >> 5), "h.fok")
         wa = wok(A, "h.wa")
         common = c.and_([wa, wok(B, "h.wb"), n_ok, n_nz, d_ne, fok], "h.common") if copy else zero
-        self.fok = fok
-        # stashes: prev (the source word read last), old (the destination word of the header)
-        vhs = [{"data": {2 + i: Chan(mem[i], lag) for i in range(32)}, "ref": one,
-                "beta": self.rb + c.and_([imv, self.tMR], "h.bm") + self.re2}]
+        if "bcopy" in kinds:
+            # first: A = end, B = s, C0 = d, r = n: forward iff d < s or d >= end
+            def below(x, y, name):  # x < y, unsigned
+                gt_ = [c.node(c.t_lt(nib(x, k) - nib(y, k), 0, -15, 15), f"{name}g{k}") for k in range(8)]
+                eq_ = [c.node(c.t_eq(nib(x, k) - nib(y, k), 0, -15, 15), f"{name}e{k}") for k in range(8)]
+                t = []
+                for k in range(8):
+                    t += c.t_and(eq_[k + 1:] + [gt_[k]])
+                return c.node(t, name)
+
+            r_ok = c.and_([1 - b for b in r[14:32]] + [1 - c.and_(r[2:14], "h.rtop"), or_(r[:14], "h.rnz")], "h.rok")
+            fire_bc = c.and_([wok(C0, "h.wd"), wok(B, "h.ws"), r_ok, fok, or_([below(C0, B, "h.ls"), 1 - below(C0, A, "h.le2")], "h.bf")],
+                             "h.firebc")
+            bcf = c.node(c.t_lt(from_bits(C0[:2]) - from_bits(B[:2]), 0, -3, 3), "h.bcf")  # (s & 3) > (d & 3)
         if copy:
-            vhs.append({"data": {2 + i: Chan(mem[i], lag) for i in range(32)}, "ref": one,
-                        "beta": c.and_([imv, self.tMH], "h.bo")})
-        outs = thead(c, "h.s", {0: one}, {0: one}, vhs)
-        prev = outs[0]
-        self.tables.append("h.s")
-        c.tables["h.s"] = c.nodes[-1]
-
-        def pay_const(tag, vbits):
-            return list(vbits) + [zero] * (12 - len(vbits)) + [one if tag >> b & 1 else zero for b in range(2)]
-
-        def ubits(u):
-            return [one if u >> b & 1 else zero for b in range(4)]
-
-        decline = pay_const(TAG_OP, [zero])  # OP_MD
-        if copy:
-            old = outs[1]
-            # the funnel, merged with old
+            # the source words: two stash heads by parity, so W(k) and W(k + 1) survive a chunk
+            # boundary; x1 is the word read last, x0 the one before; old: the header's word; pg: is
+            # this word the last of its page, in the copy's direction (at b, EA is the word)
+            par = self.par
+            x0, x1 = c.zeros(32, "h.x0"), c.zeros(32, "h.x1")
+            cols = {2 + i: Chan(mem[i], lag) for i in range(32)} | {34 + i: Chan(mem[i], lag) for i in range(32)}
+            vhs = []
+            for p in (0, 1):
+                gate_new, gate_old = (par if p else 1 - par), (1 - par if p else par)
+                v_ = {col: C.chan(e, C.A_BIT) for col, e in cols.items()}
+                for rc in C.REF_COLS:
+                    v_[rc] = C.chan(one, C.A_REF)
+                outs_ = [(2 + i, C.OUT_W) for i in range(32)] + [(34 + i, C.OUT_W) for i in range(32)]
+                z_ = {2 + i: C.K * gate_new for i in range(32)} | {34 + i: C.K * gate_old for i in range(32)}
+                vhs.append({"v": v_, "z": z_, "outs": outs_, "into": x1 + x0,
+                            "beta": c.and_([self.rb, gate_new], f"h.bp{p}") + c.and_([imv, self.tMR, gate_old], f"h.bm{p}")})
+            c.table("h.s", {0: one}, {0: one}, vhs)
+            self.tables.append("h.s")
+            pe = c.node(c.t_and([1 - hdir] + EA[2:9]) + c.t_and([hdir] + [1 - x for x in EA[2:9]]), "h.pe")
+            old, (pgedge,) = self.head("h.o", [{"data": {2 + i: Chan(mem[i], lag) for i in range(32)}, "ref": one,
+                                                "beta": c.and_([imv, self.tMH], "h.bo")},
+                                               {"data": {2: Chan(pe, lag)}, "ref": one, "beta": self.rhi}])
+            # the funnel, merged with old: the low half at a (mem, x0 + x1 of the words before),
+            # the high half at b (the word a read is in x1 by then)
             vt = [[] for _ in range(32)]
             for b in range(4):
                 for t in range(8):
                     i = 8 * b + t
-                    vt[i] += c.t_and([rr[0], mask[b], mem[i]])
+                    nw = mem if i < 16 else x1  # the newest source word at this position
+                    pv = x0                     # the one before it
+                    vt[i] += c.t_and([rr[0], mask[b], nw[i]])
                     vt[i] += c.t_and([isset, mask[b], B[t]])
                     for rv in (1, 2, 3):
                         if b + rv < 4:
                             src = 8 * (b + rv) + t
-                            vt[i] += c.t_and([rr[rv], mask[b], 1 - hdir, prev[src]])
-                            vt[i] += c.t_and([rr[rv], mask[b], hdir, mem[src]])
+                            vt[i] += c.t_and([rr[rv], mask[b], 1 - hdir, pv[src]])
+                            vt[i] += c.t_and([rr[rv], mask[b], hdir, nw[src]])
                         else:
                             src = 8 * (b + rv - 4) + t
-                            vt[i] += c.t_and([rr[rv], mask[b], 1 - hdir, mem[src]])
-                            vt[i] += c.t_and([rr[rv], mask[b], hdir, prev[src]])
+                            vt[i] += c.t_and([rr[rv], mask[b], 1 - hdir, nw[src]])
+                            vt[i] += c.t_and([rr[rv], mask[b], hdir, pv[src]])
                     vt[i] += c.t_and([1 - mask[b], old[i]])
             v = [c.node(t, f"h.v{i}") for i, t in enumerate(vt)]
-            # is this word the last of its page, in the copy's direction (at b: EA is the word)
-            pe = c.node(c.t_and([1 - hdir] + EA[2:9]) + c.t_and([hdir] + [1 - x for x in EA[2:9]]), "h.pe")
-            hi, (pgedge,) = thead(c, "h.hi", {0: one}, {0: one},
-                                  [{"data": {2 + i: Chan(e, lag) for i, e in enumerate(v[16:])},
-                                    "ref": one, "beta": self.rb},
-                                   {"data": {2: Chan(pe, lag)}, "ref": one, "beta": self.rhi}])
-            self.tables.append("h.hi")
-            c.tables["h.hi"] = c.nodes[-1]
             full = self.jt[CHUNK_J - 1]
-            edge = c.node(c.t_and([1 - hdir, lastw, e_ne3]) + c.t_and([hdir, first0, d_ne0]), "h.edge")
             bnd = c.node(c.t_and([self.jt[0]]) + c.t_and([self.jt[0], 1 - full, 1 - pgedge, 1 - edge], -1), "h.bnd")
-            done = c.node(c.t_and([1 - hdir, eq_k]) + c.t_and([hdir, ci[13]]), "h.done")
         if "eql" in kinds:
-            # the bytes at a + ci (read one position ago, in prev) and b + ci
-            ca, cb = self._add2(dv, ci[0:2], "h.laa"), self._add2(sv, ci[0:2], "h.lab")
-            la = [c.and_(lits_of(ca, k), f"h.la{k}") for k in range(4)]
-            lb = [c.and_(lits_of(cb, k), f"h.lb{k}") for k in range(4)]
-            ab = [c.node([x for k in range(4) for x in c.t_and([la[k], prev[8 * k + t]])], f"h.ab{t}")
+            # a byte of a came down as EB; compare it with the byte of b at this position
+            lk = [c.and_(_lits(EA[0:2], k), f"h.ek{k}") for k in range(4)]
+            bb = [c.node([x for k in range(4) for x in c.t_and([lk[k], mem[8 * k + t]])], f"h.bb{t}")
                   for t in range(8)]
-            bb = [c.node([x for k in range(4) for x in c.t_and([lb[k], mem[8 * k + t]])], f"h.bb{t}")
-                  for t in range(8)]
-            same = c.node(c.t_eq(from_bits(ab) - from_bits(bb), 0, -255, 255), "h.same")
-            eq_n = eqbits(ci, CR[:14], "h.eqn")
+            same = c.node(c.t_eq(from_bits(bb) - from_bits(self.he), 0, -255, 255), "h.same")
+            eq_n = eqbits(ci[:14], CR[:14], "h.eqn")
             fire_eql = c.and_([d_ne, n_ok, n_nz], "h.feql")
-            full = self.jt[CHUNK_J - 1]
+            full_e = self.jt[CHUNK_J - 1]
         for u, un in enumerate(self.units):
             fi = self.first[u]
             t = (un.ret - cfg.rom_base) >> 2 & 0xFFFF
@@ -770,23 +835,22 @@ class Hot:
                 flags = [zero, zero]
             elif un.kind == "move":
                 fire, flags = common, [f_now, 1 - fwd]
+            elif un.kind == "bcopy":
+                fire, flags = fire_bc, [bcf, zero]
             else:
                 fire = c.and_([common, fwd], f"h.fire{u}")
                 flags = [f_now, zero]
             case([fi, 1 - fire], "M", decline)
             case([fi, fire], "M", pay_const(TAG_MP, [zero] + flags + ubits(u)))
             case([self.hun[u], self.ra, done], "J", jbits)
+        if "bcopy" in kinds:
+            case([self.rN], "CW", self.nb)
         if copy:
             case([self.ra, 1 - done, bnd], "M", pay_const(TAG_MC, ci[:12]))
             case([self.ra, 1 - done, 1 - bnd], "CW", v[:16])
-            case([self.rb], "CW", hi)
+            case([self.rb], "CW", v[16:])
             if "move" in kinds:  # K - 1, the descending copy's first MC
-                k1 = []
-                for b in range(12):
-                    nl = [1 - x for x in Kb[:b]]
-                    k1.append(c.node(c.t_and([Kb[b]]) + c.t_and(nl + [1 - Kb[b]]) + c.t_and(nl + [Kb[b]], -1)
-                                     if b else c.t_const(1) + c.t_and([Kb[0]], -1), f"h.k1{b}"))
-                case([self.rC], "M", pay_const(TAG_MC, k1))
+                case([self.rC], "M", pay_const(TAG_MC, [self._decr(Kb, b, f"h.k1{b}") for b in range(12)]))
             case([self.rR], "M", pay_const(TAG_OP, [one]))  # OP_MR
             r_int = rr[1] + 2 * rr[2] + 3 * rr[3]
             pre = c.node(c.t_ge(eint + r_int, 4, 0, 6, lits=[hdir, lastw, 1 - rr[0]])
@@ -798,11 +862,11 @@ class Hot:
                           decline, wok, fok)
         if "eql" in kinds:
             bad = 1 - in_load
-            case([self.re1, 1 - eq_n, 1 - full, in_load], "SC")
-            case([self.re1, 1 - eq_n, full], "M", pay_const(TAG_MC, ci[:12]))
-            case([self.re1, 1 - eq_n, 1 - full, bad], "M", decline)
+            case([self.re1, 1 - eq_n, 1 - full_e, in_load], "EB", bb)
+            case([self.re1, 1 - eq_n, full_e], "M", pay_const(TAG_MC, ci[:12]))
+            case([self.re1, 1 - eq_n, 1 - full_e, bad], "M", decline)
             case([self.re2, bad], "M", decline)
-            case([self.re2, in_load, same], "SC")
+            case([self.re2, in_load, same], "EC1")
             case([self.re2, in_load, 1 - same], "F0", [zero] * 15)
 
     def top_scan(self, A, B, CR, r, sltu, mem, fb, mapped, anext, EA, in_load, case, pay_const, ubits, or_, eqbits,
@@ -810,65 +874,61 @@ class Hot:
         """A byte loop: the byte's class at the top, the index through tokens (module doc)."""
         c, cfg = self.c, self.cfg
         one, zero = c.one, Expr()
-        ci, cp1 = self.ci, self.cp1
+        idx = self.off[:16]  # (a byte role: c + j)
         lane = EA[0:2]
         lk = [c.and_(_lits(lane, k), f"h.lk{k}") for k in range(4)]
-        by = [c.node([x for k in range(4) for x in c.t_and([lk[k], mem[8 * k + t]])], f"h.by{t}") for t in range(8)]
-        bint = from_bits(by)
+        bytes_ = [from_bits(mem[8 * k:8 * k + 8]) for k in range(4)]
+
+        def on_lane(tf, name):
+            return c.node([x for k in range(4) for x in tf(bytes_[k], [lk[k]])], name)
+
         n_hi0 = c.and_([1 - b for b in CR[16:32]], "h.n16")
         rs = self.rbyte
         kinds = {self.units[u].kind for u in self.scans}
-        eq_e = eqbits(ci[:16], CR[:16], "h.eqe") if kinds & {"ascii", "jscan"} else zero
-        eq_l = eqbits(cp1[:16], CR[:16], "h.eql2") if kinds & {"tok", "chr"} else zero
+        eq_e = eqbits(idx, CR[:16], "h.eqe") if kinds & {"ascii", "jscan"} else zero
+        ip1 = [self.incr(idx, b, f"h.ip{b}") for b in range(16)]
+        eq_l = eqbits(ip1, CR[:16], "h.eql2") if kinds & {"tok", "chr"} else zero
         cls = {}
         if "tok" in kinds:
-            cls["tok"] = c.node(c.t_in(bint, 9, 14, 0, 255) + c.t_eq(bint, 32, 0, 255), "h.ctok")
+            cls["tok"] = on_lane(lambda z, l: c.t_in(z, 9, 14, 0, 255, lits=l) + c.t_eq(z, 32, 0, 255, lits=l), "h.ctok")
         if "chr" in kinds:
             bh0 = c.and_([1 - x for x in B[8:32]], "h.b8")
-            cls["chr"] = c.node(c.t_eq(bint - from_bits(B[:8]), 0, -255, 255, lits=[bh0]), "h.cchr")
+            bl = from_bits(B[:8])
+            cls["chr"] = on_lane(lambda z, l: c.t_eq(z - bl, 0, -255, 255, lits=l + [bh0]), "h.cchr")
         if "ascii" in kinds:
-            cls["ascii"] = by[7]
+            cls["ascii"] = on_lane(lambda z, l: c.t_ge(z, 128, 0, 255, lits=l), "h.casc")
         if "jscan" in kinds:
-            cls["jscan"] = c.node(c.t_lt(bint, 0x20, 0, 255) + c.t_ge(bint, 0x80, 0, 255) + c.t_eq(bint, 0x22, 0, 255)
-                                  + c.t_eq(bint, 0x5C, 0, 255), "h.cjs")
-        stop_u, full = [], self.jt[CHUNK_J - 1]
-        idx_top = c.and_(ci[:16], "h.itop")
+            cls["jscan"] = on_lane(lambda z, l: c.t_lt(z, 0x20, 0, 255, lits=l) + c.t_ge(z, 0x80, 0, 255, lits=l)
+                                   + c.t_eq(z, 0x22, 0, 255, lits=l) + c.t_eq(z, 0x5C, 0, 255, lits=l), "h.cjs")
+        full = self.jt[CHUNK_S - 1]
+        idx_top = c.and_(idx, "h.itop")
         n_nz = or_(CR[:16], "h.nnz2")
+        stop = zero
         for x_, u in enumerate(self.scans):
             k = self.units[u].kind
-            st = or_([cls[k], eq_l if k in ("tok", "chr") else eq_e, idx_top], f"h.st{u}")
-            stop_u.append(c.and_([self.hun[u], rs, st], f"h.stop{u}"))
-        stop = sum(stop_u, Expr())
+            stop = stop + c.node(c.t_and([self.hun[u], rs]) + c.t_and(
+                [self.hun[u], rs, 1 - cls[k], 1 - (eq_l if k in ("tok", "chr") else eq_e), 1 - idx_top], -1), f"h.stop{u}")
         keep = rs - stop
         bad = 1 - in_load
-        k_end = []
-        for b in range(16):  # the loops with a start index keep idx - 1 in their register
-            low = [1 - e for e in ci[:b]]
-            k_end.append(c.node(c.t_and([ci[b]]) + c.t_and(low + [1 - ci[b]]) + c.t_and(low + [ci[b]], -1)
-                                if b else c.t_const(1) + c.t_and([ci[0]], -1), f"h.ke{b}"))
         ks = sum((self.hun[u] for u in self.scans if SCAN[self.units[u].kind]["start"]), Expr())
-        kv = [c.node(c.t_and([1 - ks, ci[b]]) + c.t_and([ks, k_end[b]]), f"h.kv{b}") for b in range(16)]
-        lag = (0, 1, 0, 0)
-        # what a CW stands for at the next position: the stop, or a start
-        (st0, st1), = thead(c, "h.st", {0: one}, {0: one},
-                            [{"data": {2: Chan(stop, lag), 3: Chan(self.tMP, lag)}, "ref": one, "beta": self.tscw}])
-        self.tables.append("h.st")
-        c.tables["h.st"] = c.nodes[-1]
+        # at the position after EC0, index = stop + 1: the loop's count of plain bytes k
+        m1 = [self._decr(idx, b, f"h.im{b}") for b in range(16)]
+        m2 = [self._decr(m1, b, f"h.jm{b}") for b in range(16)]
+        kv = [c.node(c.t_and([1 - ks, m1[b]]) + c.t_and([ks, m2[b]]), f"h.kv{b}") for b in range(16)]
+        tf = self.tMF
         case([rs, bad], "M", decline)
-        case([rs, in_load, stop, self.tMF], "M", decline)
-        case([rs, in_load, stop, 1 - self.tMF], "CW", kv)
+        case([rs, in_load, stop, tf], "M", decline)
+        case([rs, in_load, stop, 1 - tf], "EC0")
         case([rs, in_load, keep, 1 - full], "SC")
-        case([rs, in_load, keep, full], "CW", cp1[:16])
-        rcw = self.tscw
-        case([rcw, 1 - self.incm, st0], "M", pay_const(TAG_OP, [one, one]))  # OP_MK
-        case([rcw, 1 - self.incm, 1 - st0, st1], "M", pay_const(TAG_OP, [zero, one]))  # OP_MF
-        case([rcw, 1 - self.incm, 1 - st0, 1 - st1], "M", pay_const(TAG_OP, [one, zero]))  # OP_MR
+        case([rs, in_load, keep, full], "EC1")
+        case([self.rse, c.fam["EC0"]], "CW", kv)
+        case([self.rse, c.fam["EC1"]], "CW", idx)
+        rcw = c.and_([self.tscw, 1 - self.incm], "h.rcw")
+        case([rcw, self.pEC0], "M", pay_const(TAG_OP, [one, one]))  # OP_MK
+        case([rcw, self.pMP], "M", pay_const(TAG_OP, [zero, one]))  # OP_MF
+        case([rcw, 1 - self.pEC0, 1 - self.pMP], "M", pay_const(TAG_OP, [one, zero]))  # OP_MR
         lim_b = c.and_([1 - b for b in B[16:32]], "h.b16")
-        bp1 = []
-        for b in range(16):
-            low = B[:b]
-            bp1.append(c.node(c.t_and([B[b]]) + c.t_and(low + [1 - B[b]]) + c.t_and(low + [B[b]], -1)
-                              if b else c.t_const(1) + c.t_and([B[0]], -1), f"h.bp{b}"))
+        bp1 = [self.incr(B, b, f"h.bp{b}") for b in range(16)]
         b_carry = c.and_(B[:16], "h.bc")
         for x_, u in enumerate(self.scans):
             un = self.units[u]

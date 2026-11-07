@@ -27,7 +27,7 @@ CFG_IMG = 0x10000
 RES = 0x18000  # eql results, one word per call
 
 
-def prog_lines(calls):
+def prog_lines(calls, readback=()):
     src = ["_start:", "    j main"]
     src += ["fx_set:", "    addi sp, sp, -16", "    mv t0, a0", "    beq a2, zero, set_e", "set_l:", "    sb a1, 0(t0)",
             "    addi t0, t0, 1", "    addi a2, a2, -1", "    bne a2, zero, set_l", "set_e:", "    addi sp, sp, 16"]
@@ -94,19 +94,22 @@ def prog_lines(calls):
             src += [f"    li a1, {a:#x}", f"    li a2, {n}", f"    li a3, {b:#x}", f"    li a4, {bn}",
                     "    call fx_eql", f"    li t0, {RES + 4 * k:#x}", "    sw a0, 0(t0)"]
             k += 1
+    if readback:  # the words a run changed, through loads: their values are tokens the circuit predicts
+        for a in readback:
+            src += [f"    li t0, {a << 2:#x}", "    lw t1, 0(t0)"]
     src += ["    li a7, 93", "    ecall"]
     return src
 
 
-def build_prog(calls, seed=0, ram_seed=None):
+def build_prog(calls, seed=0, readback=()):
     rng = random.Random(seed)
-    p = assemble("\n".join(prog_lines(calls)), base=BASE.rom_base)
+    p = assemble("\n".join(prog_lines(calls, readback)), base=BASE.rom_base)
     image = rng.randbytes(0x10000)
     return p, [(BASE.rom_base, b"".join(w.to_bytes(4, "little") for w in p.text)), (CFG_IMG, image)]
 
 
-def machine(calls, units=True, seed=0):
-    p, segs = build_prog(calls, seed)
+def machine(calls, units=True, seed=0, readback=()):
+    p, segs = build_prog(calls, seed, readback)
     cfg = BASE
     if units:
         mb, eq = FX["move_block"], FX["eql"]
@@ -220,8 +223,12 @@ def circ():
 
 
 def check_ir(c, calls, seed=0, kernel=True):
+    m0 = machine(calls, False, seed)[0]
+    m0.run(10**7)
+    rb = sorted(a for a, v in m0.wr.items() if a < 0x40000 >> 2 and v != m0.image.get(a, 0))[:400]
+
     def mk():
-        m, cfg = machine(calls, True, seed)
+        m, cfg = machine(calls, True, seed, rb)
         assert cfg.units == c.cfg.units
         return m
 
@@ -247,7 +254,7 @@ def test_ir_pruned():
     assert "BMAC" in c.absent and c.stats()["ffn_units"] < 40000
 
     def mk():
-        m2 = machine(FIXED)[0]
+        m2 = machine(FIXED, True, 0)[0]
         m2.cfg = cfg
         return m2
 
