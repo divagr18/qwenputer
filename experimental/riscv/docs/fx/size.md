@@ -121,7 +121,7 @@ the weights are gone and a generator replaces them. **C** Qwen's weights change.
 | Base Qwen by reference, not re-uploaded | 0 to -8.4 GB download | 0 | | T or X | F | do it; see Honesty |
 | Lossless compression of Qwen (byte split + entropy) | -2.9 GB on the wire, 0.67 (M, sampled) | 0 | decode cost | wire only | L | optional |
 | Quantise Qwen, per-row int8 | -4.2 GB (M KL, E size) | -4.2 GB | | T, X or S | C | **do it if a 2x smaller model is worth a 2.7x-floor change** |
-| Quantise Qwen, int4 or mixed | -5 to -6 GB | same | | T, X or S | C | no: 25x to 150x the floor (M) |
+| Quantise Qwen, int4 or mixed | -5 to -6 GB | same | | T, X or S | C | no: 56x to 150x the floor (M) |
 | Drop CW and EB rows | -0.54 GB (E) | -0.54 GB | | S | L | **do it**: 0 uses in fx (M) |
 | `R` as a 2-token record | -0.54 GB (E) | -0.54 GB | | S | L | stock path only, +0.08% tokens (M) |
 | `J` as `V JF` | -0.54 GB (E) | -0.54 GB | | S | L | no: +6.2% tokens (M) |
@@ -191,8 +191,8 @@ already proven at scale by rv-tiny (R).
 
 The user allowed this. Chip weights stay bf16 and bit-exact in every scheme.
 
-**Per-row int8 is the one to take.** It halves Qwen to 4.21 GB at 2.7x the noise floor. Everything using
-int4 is 25x to 150x above the floor, and the FFN is why.
+**Per-row int8 is the one to take.** It halves Qwen to 4.21 GB at 2.7x the noise floor. Every whole-model
+scheme using int4 is 56x to 150x above the floor, and the FFN is the largest single reason.
 
 **How this was measured.** Real stock `Qwen3_5DecoderLayer`s, all 32, range-read from the Hub one at a
 time and run on every scheme's activations (`fx/size/qstream.py`), then the real 248,320-row output head.
@@ -228,12 +228,12 @@ side matters.
 | embedding, input side | 1.27 GB (tied) | 4.84e-4 | 1.47e-3 |
 | `lm_head`, output side | (tied) | 3.09e-4 | 8.56e-3 |
 
-- At int8 every family is within 1.6x of the floor. At int4 the FFN alone costs more than every other
-  family together, and it is 54% of the weights, so no mix built on int4 FFN gets near the floor.
+- At int8 every family is within 1.6x of the floor. At int4 the FFN is the worst single family, and it is
+  54% of the weights, so no mix built on int4 FFN gets near the floor.
 - A mix that spares the FFN would be 3.64 GB at best (int8 FFN, int4 GDN and attention) and would inherit
   about 2.5e-2 from GDN and attention (E, by adding). That is not worth 0.57 GB.
 - Protecting the first and last two layers took 15% off the KL for 0.12 GB (`mix_a` to `mix_c`).
-- One whole-tensor int8 scale, `bnb_i8` in `size.json`, scored 2.76e-2: per-row scales matter by 20x. It is
+- One whole-tensor int8 scale, `bnb_i8` in `size.json`, scored 2.76e-2: per-row scales matter by about 24x. It is
   a proxy for a scale choice, not a measurement of real bitsandbytes int8, whose scales I did not check.
 - Better int4 exists: AWQ-style calibration and Q4_K_M's mixed format. Neither was tried here.
 
@@ -289,6 +289,8 @@ Three steps. The first needs no new file.
 chip layers and slices Qwen's layers and the embedding to 2,560 columns, taking the two norm gains from
 base (the widened gains do not invert exactly). Nothing there reads the rest: `Exec4` runs the IR, and
 `_qwen_step` only ever sees text tokens, so mute columns never fire. No new file, no change to the claim.
+This applies to rv-q4p2 today. fx has no dense file yet (the merge was not attempted, R), so on fx the first
+step is simply not to build one.
 
 **Step 2, ship the chip as sparse tensors beside base's weights.**
 - `chip.safetensors`: index and value arrays for the chip layers, the embedding's chip columns as a
