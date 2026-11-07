@@ -304,7 +304,7 @@ class RvCore(Circ):
             xb, kb = [ab[b] for b in leaf["x"]], [ab[b] for b in leaf["kh"]]
             gl = list(gate) + [ab[b] for b in leaf["gates"]]
             nslot = 31 if leaf["kind"] == "dense" else 16
-            nrow = 127 if leaf["kind"] == "dense" else 64
+            nrow = 127 if leaf["kind"] == "dense" else 1 << len(rw)  # (a query stays 2-hot)
             nx = 1 << len(xb)
             vhs = []
             for x in range(nx):
