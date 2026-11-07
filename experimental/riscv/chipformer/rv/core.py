@@ -560,11 +560,22 @@ def build(target: Target | None = None, text=None) -> RvCore:
     # BLD's address: rs1 - 1 - j (the digit chars end at rs1 - 1); BSCAN's: rs1 + j
     bscan = uops["BSCAN"]
     notj, jj = [1 - b for b in jbin] + [one] * 9, jbin + [Expr()] * 9
-    moff4z = moff4 + [Expr()] * 9
-    koffz = koff + [Expr()] * 11
+    # the macros' two streaming modes: A + offA and B + offB, the offsets picked at L4 (MMOVE
+    # 4i, MEQL k) so that the shared adder takes two modes, not four
+    def moff_sel(dst_lits, eq_lits, name):
+        bits = []
+        for b in range(7):
+            t = []
+            if b >= 2 or moff4[b].terms:
+                t += uop_terms("MMOVE", dst_lits + [moff4[b]])
+            if b < 5:
+                t += uop_terms("MEQL", eq_lits + [koff[b]])
+            bits.append(c.node(t, f"{name}.b{b}"))
+        return bits + [Expr()] * 9
+    off_a = moff_sel([one - j0, mph[2]], [one - j0, fam["MP"] + fam["EC1"]], "mc.offa")
+    off_b = moff_sel([one - j0, mph[0] + mph[1]], [one - j0, fam["EB"]], "mc.offb")
     ea_sums = [[(nib(A, k) + nib(notj, k), [uops["BLD"]]), (nib(A, k) + nib(jj, k), [bscan]),
-                (nib(B, k) + nib(moff4z, k), [mv_src]), (nib(A, k) + nib(moff4z, k), [mv_dst]),
-                (nib(A, k) + nib(koffz, k), [eq_a]), (nib(B, k) + nib(koffz, k), [eq_b])]
+                (nib(B, k) + nib(off_b, k), [mv_src + eq_b]), (nib(A, k) + nib(off_a, k), [mv_dst + eq_a])]
                for k in range(4)]
     eg, ep, ed = stage1_digits(c, ea_sums, "bn.ea", 30)
     eab, _ = adder_stage2(c, eg, ep, ed, 4, "bn.ea")
