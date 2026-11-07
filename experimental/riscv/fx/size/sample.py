@@ -76,7 +76,7 @@ emb = H["qp"]["model.embed_tokens.weight"]
 if "--base-only" not in sys.argv:
     out["qp_chip"] = run("qp", chip_keys)
     out["qp_qwen"] = run("qp", qwen_keys)
-base_keys = [(f"base {f}", f"model.language_model.layers.{L}.{f}.weight") for L in (0, 9, 30) for f in fams]
+base_keys = [(f"base {f}", f"model.language_model.layers.{L}.{f}.weight") for L in (9,) for f in fams]
 base_keys += [("base embed", "model.language_model.embed_tokens.weight")]
 out["base"] = run("base", base_keys)
 
