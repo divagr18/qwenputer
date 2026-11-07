@@ -276,8 +276,62 @@ static int u_bcopy(trig_t* t, ures_t* r) {
   return 1;
 }
 
+/* The units as built in the circuit (chipformer/rv/hot.py): the plain iterations of a byte loop,
+ * exiting at the loop's own head before the iteration that would leave it, which runs as
+ * compiled. tok2: the run of non-whitespace bytes of the token estimate (the whitespace path stays
+ * compiled); chr2: writeOneLine's search; asc2: the ASCII run. */
+static int u_tok2(trig_t* t, ures_t* r) {
+  uint32_t p = X[R_S5], n = X[R_A6], k = 0;
+  if (n >> 16 || X[R_A2] >> 31 || n == 0) return 0;
+  while (k + 1 < n) {
+    if (!inmem(p + k, 1)) return 0;
+    uint32_t b = rd8(p + k);
+    if (b - 9 < 5 || b == 0x20) break;
+    k++;
+  }
+  if (k == 0) return 0;
+  X[R_A2] += k; X[R_S5] += k; X[R_A6] -= k;
+  r->exit_pc = t->p[0]; r->xi = 0; r->creg = R_A6; r->cval = n - k;
+  r->data = k;
+  r->bytes = k;
+  return 1;
+}
+static int u_chr2(trig_t* t, ures_t* r) {
+  uint32_t p = X[R_A1], n = X[R_A2], c = X[R_A0], k = 0;
+  if (n >> 16 || n == 0) return 0;
+  while (k + 1 < n) {
+    if (!inmem(p + k, 1)) return 0;
+    if (rd8(p + k) == c) break;
+    k++;
+  }
+  if (k == 0) return 0;
+  X[R_A1] += k; X[R_A2] -= k;
+  r->exit_pc = t->p[0]; r->xi = 0; r->creg = R_A2; r->cval = n - k;
+  r->data = k;
+  r->bytes = k;
+  return 1;
+}
+static int u_asc2(trig_t* t, ures_t* r) {
+  uint32_t base = X[R_S4], end = X[R_S3], i = X[R_A0] + 1, k = 0;
+  if (end >> 16 || i >> 16) return 0;
+  while (i != end) {
+    if (!inmem(base + i, 1)) return 0;
+    if (rd8(base + i) >= 128) break;
+    i++; k++;
+  }
+  if (k == 0) return 0;
+  X[R_A0] = i - 1;
+  r->exit_pc = t->p[0]; r->xi = 0; r->creg = R_A0; r->cval = i - 1;
+  r->data = k;
+  r->bytes = k;
+  return 1;
+}
+
 static int loop_unit_run(trig_t* t, ures_t* r) {
   switch (t->kind) {
+    case U_TOK2: return u_tok2(t, r);
+    case U_CHR2: return u_chr2(t, r);
+    case U_ASC2: return u_asc2(t, r);
     case U_TOKEST: return u_tokest(t, r);
     case U_JSCAN: return u_jscan(t, r);
     case U_JESC: return u_jesc(t, r);

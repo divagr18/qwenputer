@@ -49,6 +49,7 @@ from chipformer.q35.ir import A_BIT, A_REF, HD, REF_COLS, Chan, K, Target
 from chipformer.q35.prims import Circ, chan, from_bits, sel, thead
 from chipformer.rv import ref as RF
 from chipformer.rv import spec as S
+from chipformer.rv.hot import Hot
 
 T4B = Target(key_heads=16, value_heads=32, intermediate=9216)  # Qwen3.5-4B's layers
 # output family ids: the chip families and controls, then Q (P3: a printable Qwen token, the echo
@@ -63,7 +64,7 @@ CODE_AMP = 128  # a token's code in its (tied) embedding row: CODE_AMP * (2 * bi
 KAPPA = 2.0**-20  # the predicted code after the exit: KAPPA * (2 * bit - 1)
 TAU_TEXT = 2.0**-40  # (P3) tau on text tokens; -1 on chip tokens (see q35.merge)
 PAY_W = {"V": 15, "F0": 15, "F1": 15, "F2": 2, "J": 16, "R": 16, "BYTE": 9, "FLT": 3, "HEX": 4,
-         "QS": 4, "QD": 7, "BD": 8, "CW": 16, "EB": 8, "PA": 12, "JF": 6, "RF": 11}
+         "QS": 4, "QD": 7, "BD": 8, "CW": 16, "EB": 8, "PA": 12, "JF": 6, "RF": 11, "M": 14}
 
 
 def code_bits(fam: str, p: int) -> list[int]:
@@ -180,12 +181,18 @@ def dense_fill(plan, addr: np.ndarray, val: np.ndarray) -> dict:
     return out
 
 
+def _dead(lits) -> bool:
+    """A literal that is the empty Expr (constant 0) makes an AND 0."""
+    return any(isinstance(e, Expr) and not e.terms for e in lits)
+
+
 class RvCore(Circ):
     def __init__(self, target: Target | None = None, text=None, cfg=None) -> None:
         """``text`` (P3, bridge.Text): the Qwen vocabulary the bridge reads and prints; None
         builds the standalone machine. ``cfg`` (spec.MemCfg): the paged map; None: the legacy
         map (the rv-q4p2 circuit)."""
         super().__init__(target or T4B)
+        self.absent = frozenset(cfg.absent) if cfg else frozenset()
         f = self.token_feature
         self.text = text
         self.cfg = cfg
@@ -244,6 +251,33 @@ class RvCore(Circ):
                        for k in range(S.TEXT_ROW)]
 
     floor = 0  # no node goes below this level (see at_least)
+    absent = frozenset()  # (cfg.absent) uops the ROM never holds: their logic is left out
+
+    def t_and(self, lits, coef=1, a=None):
+        if self.absent and (_dead(lits) or (a is not None and not a.terms)):
+            return []
+        return super().t_and(lits, coef, a)
+
+    def t_ge(self, z, theta, lo, hi, coef=1, lits=()):
+        if self.absent:
+            if _dead(lits):
+                return []
+            if not z.terms and theta > 0:
+                return []
+        return super().t_ge(z, theta, lo, hi, coef, lits)
+
+    def t_lt(self, z, theta, lo, hi, coef=1, lits=()):
+        if self.absent:
+            if _dead(lits):
+                return []
+            if not z.terms and theta <= 0:
+                return []
+        return super().t_lt(z, theta, lo, hi, coef, lits)
+
+    def node(self, terms, name):
+        if self.absent and not terms:
+            return Expr()
+        return super().node(terms, name)
 
     def ffn(self, terms, name="ffn", into=None, min_level=0):
         return super().ffn(terms, name, into, max(min_level, self.floor))
@@ -256,6 +290,22 @@ class RvCore(Circ):
             yield
         finally:
             self.floor = old
+
+    def sweep(self) -> None:
+        """Drop MLP nodes nothing reads (a pruned build leaves some: REM's columns, say)."""
+        from chipformer.q35.emit import reads
+        from chipformer.q35.ir import FFN, ONE
+
+        live = {d for es in (self.code, self.out_fam or [], self.out_pay or []) for e in es for d in e.terms}
+        live |= set(self.keep)
+        keep = []
+        for n in reversed(self.nodes):
+            if isinstance(n, FFN) and n.out not in live:
+                self.units[n.level] -= len(n.terms)
+                continue
+            keep.append(n)
+            live.update(reads(n))
+        self.nodes = keep[::-1]
 
     def fn_bits(self, z, lo: int, hi: int, f, n: int, name: str, lits=()) -> list:
         """Bits of f(z) for an integer z in [lo, hi] (AND lits), by thresholds at its flips."""
@@ -465,7 +515,8 @@ def build(target: Target | None = None, text=None, cfg=None) -> RvCore:
         c.tables["pc"] = c.nodes[-1]
     isJA = isJR + isJF + isRF  # the anchor is written
     xn = c.counter("count", isJA, c.final - isJA)
-    rec_start = c.final + fam["GO"] + (fam["PA"] if cfg else Expr())
+    rec_start = c.final + fam["GO"] + (fam["PA"] + fam["M"] if cfg else Expr())
+    hot = c.hot = Hot(c, cfg) if cfg and cfg.units else None
     xj = c.counter("j", rec_start, one - rec_start - no_text)
     v_reset = rec_start + isQ
     xv = c.counter("vcnt", v_reset, one - v_reset - no_text)
@@ -522,6 +573,8 @@ def build(target: Target | None = None, text=None, cfg=None) -> RvCore:
         return bits
 
     w = add_small(anchor, 0, W, "w")
+    if hot:
+        hot.setup(w, jt, j0, at_max, isJA)
     w1 = add_small(anchor, 1, W + 1, "w+1")  # the link: PC + 4 = ROM_BASE + 4 * (w + 1)
     assert S.ROM_BASE == 1 << 18 and S.ROM_WORDS == 1 << 16
     rbit = cfg.rom_bit if cfg else 18
@@ -566,8 +619,13 @@ def build(target: Target | None = None, text=None, cfg=None) -> RvCore:
     B0, B1, B2, B3 = (256 * d for d in fdims)  # the word's bytes
 
     # ---------------------------------------------------------------- L4: decode
+    hot_off = [one - hot.mact] if hot else []  # a unit's positions run no decoded instruction
+
     def uop_terms(u, lits=()):
+        if u in c.absent:
+            return []
         v = RF.U[u]
+        lits = list(lits) + hot_off
         return c.t_eq(B0, v, 0, 255, lits=list(lits)) + c.t_eq(B0, v + 128, 0, 255, lits=list(lits))
 
     uops = {u: c.node(uop_terms(u), f"uop={u}") for u in RF.UOPS}
@@ -575,16 +633,23 @@ def build(target: Target | None = None, text=None, cfg=None) -> RvCore:
     def any_of(*names):
         return sum((uops[n] for n in names), Expr())
 
-    s0 = c.node(c.t_ge(B0, 128, 0, 255), "rom.S0")
-    bits1, bits2, bits3 = (c.int_bits(Bx, 255, f"rom.b{i}", 8)
-                           for i, Bx in ((1, B1), (2, B2), (3, B3)))
+    s0 = c.node(c.t_ge(B0, 128, 0, 255, lits=hot_off), "rom.S0")
+    if hot:  # (a unit's immediate is its offset: the word's fields are off)
+        bits1, bits2, bits3 = ([c.node(t, f"rom.b{i}.{b}") for b, t in
+                                enumerate(c.fn_bits(Bx, 0, 255, lambda v: v, 8, f"rom.b{i}", hot_off))]
+                               for i, Bx in ((1, B1), (2, B2), (3, B3)))
+    else:
+        bits1, bits2, bits3 = (c.int_bits(Bx, 255, f"rom.b{i}", 8)
+                               for i, Bx in ((1, B1), (2, B2), (3, B3)))
     spare = [s0] + bits1[0:3] + bits2[0:3] + bits3[0:3]  # S0..S9
     RDb, RS1b, RS2b = bits1[3:8], bits2[3:8], bits3[3:8]
-    rd = {r: c.node(c.t_in(B1, 8 * r, 8 * r + 8, 0, 255), f"rd={r}") for r in range(1, 32)}
-    rs1 = {r: c.node(c.t_in(B2, 8 * r, 8 * r + 8, 0, 255), f"rs1={r}") for r in range(1, 32)}
-    rs2 = {r: c.node(c.t_in(B3, 8 * r, 8 * r + 8, 0, 255), f"rs2={r}") for r in range(1, 32)}
-    rdw_any = sum(rd.values(), Expr())
+    rd = {r: c.node(c.t_in(B1, 8 * r, 8 * r + 8, 0, 255, lits=hot_off), f"rd={r}") for r in range(1, 32)}
+    rs1 = {r: c.node(c.t_in(B2, 8 * r, 8 * r + 8, 0, 255, lits=hot_off), f"rs1={r}") for r in range(1, 32)}
+    rs2 = {r: c.node(c.t_in(B3, 8 * r, 8 * r + 8, 0, 255, lits=hot_off), f"rs2={r}") for r in range(1, 32)}
+    rdw_any = sum(rd.values(), Expr()) + (hot.cv if hot else 0)
     imm = RS2b + spare[0:7] + [spare[6]] * 20  # I-type (and stores): sign-extended imm12
+    if hot:
+        imm = [e + o for e, o in zip(imm, hot.off)]
     boff = RDb + spare[0:6] + [spare[5]] * 5  # branch: word offset, sign-extended to 16 bits
     bbad, jbad = spare[6], spare[6]
     jtgt = RS1b + RS2b + spare[0:6]  # JAL: target word index
@@ -646,9 +711,12 @@ def build(target: Target | None = None, text=None, cfg=None) -> RvCore:
         vcols[i] = cs
     reg_beta = fam["F0"] + fam["F1"] + fam["F2"] + fam["J"] + isJF
     nw = stores + branches + macro  # the RD slot holds a store's data register / a branch offset
-    reg_keys = {r: Chan(rd[r] - nw + (2 * meq_in if r == 10 else 0), (0, 1, 0, 0)) for r in range(1, 32)}
+    reg_keys = {r: Chan(rd[r] - nw + (2 * meq_in if r == 10 else 0) + (hot.regkey(r) if hot else 0),
+                        (0, 1, 0, 0)) for r in range(1, 32)}
     ports = []
     for pname, rq in (("rs1", rs1), ("rs2", rs2), ("rd", rd)):
+        if hot:  # a unit's position reads its own registers
+            rq = {r: e + hot.port(pname, r) for r, e in rq.items()}
         dims = c.zeros(32, f"x.{pname}")
         v, z, outs, into, col = {}, {}, [], [], 2
         c.reg_cols = {}
@@ -736,7 +804,10 @@ def build(target: Target | None = None, text=None, cfg=None) -> RvCore:
     eg, ep, ed = stage1_digits(c, ea_sums, "bn.ea", 30)
     eab, _ = adder_stage2(c, eg, ep, ed, 4, "bn.ea")
     dig = {1: {}, 2: {}}
-    for port in (1, 2):
+    digits = "BMAC" not in c.absent
+    if not digits:  # (no digit op in the ROM: no digit file)
+        dig = {p: {R: [Expr()] * 4 for R in range(8)} for p in (1, 2)}
+    for port in (1, 2) if digits else ():
         for h in range(4):
             vhs = []
             for x in range(2):
@@ -760,12 +831,14 @@ def build(target: Target | None = None, text=None, cfg=None) -> RvCore:
 
     # ---------------------------------------------------------------- L5-6: adder
     md = {"ADD": any_of("ADD"),
-          "ADDI": any_of("ADDI", "LB", "LH", "LW", "LBU", "LHU", "SB", "SH", "SW", "JALR"),
-          "SUB": any_of("SUB", "SLT", "SLTU", *RF.BRANCH_OPS) + mj0,
-          "SUBI": any_of("SLTI", "SLTIU")}
+          "ADDI": any_of("ADDI", "LB", "LH", "LW", "LBU", "LHU", "SB", "SH", "SW", "JALR")
+          + (hot.ea - hot.sub_k if hot else 0),
+          "SUB": any_of("SUB", "SLT", "SLTU", *RF.BRANCH_OPS) + mj0 + (hot.sub_r if hot else 0),
+          "SUBI": any_of("SLTI", "SLTIU") + (hot.sub_k if hot else 0)}
     bsrc = {"ADD": (B, False, 0), "ADDI": (imm, False, 0), "SUB": (B, True, 1),
             "SUBI": (imm, True, 1)}
-    sums = [[(nib(A, k) + nib(bsrc[m][0], k, bsrc[m][1]) + (bsrc[m][2] if k == 0 else 0), [lit])
+    sums = [[(nib(A, k) + (nib(hot.xa, k) if hot and m == "ADDI" else 0) + nib(bsrc[m][0], k, bsrc[m][1])
+              + (bsrc[m][2] if k == 0 else 0), [lit])
              for m, lit in md.items()] for k in range(8)]
     g, p_, d = stage1_digits(c, sums, "add", 31)
     r, c32 = adder_stage2(c, g, p_, d, 8, "add")
@@ -892,10 +965,12 @@ def build(target: Target | None = None, text=None, cfg=None) -> RvCore:
     mul_lo, mul_hi = mres[:32], mres[32:]
 
     # store data for SW (0 on V tokens, so an SB/SH record's last V does not leak it)
-    sd = [c.and_([C[i], one - isV, one - macro], f"sd.b{i}") for i in range(32)]
+    sd = [c.and_([C[i], one - isV, one - macro] + hot_off, f"sd.b{i}") for i in range(32)]
 
     # ---------------------------------------------------------------- L5-10: DIV digits
     # |B| = B' + sb with B' = B xor sb (as 8 nibbles, the +1 folded into nibble 0: 0..16)
+    floor_div = c.at_least(48 if hot else 0)  # (hot: above the multiplier, so the residual's peak is lower)
+    floor_div.__enter__()
     bp = [c.node(c.t_and([B[i]]) + c.t_and([B[i], signed, B[31]], -1)
                  + c.t_and([1 - B[i], signed, B[31]]), f"div.bp{i}") for i in range(32)]
     bm = [nib(bp, 0) + sbn] + [nib(bp, j) for j in range(1, 8)]
@@ -1012,6 +1087,7 @@ def build(target: Target | None = None, text=None, cfg=None) -> RvCore:
         qs.append(c.node(c.t_and([1 - sigma, qal[i]]) + c.t_and([sigma, qal[i]] + zero_below)
                          + c.t_and([sigma, 1 - qal[i]])
                          + c.t_and([sigma, 1 - qal[i]] + zero_below, -1), f"div.qs{i}"))
+    floor_div.__exit__(None, None, None)
 
     # ---------------------------------------------------------------- L7-8: Zba, branch target
     zres = add_nibbles(c, shift, B, 8, [any_of(*RF.ZBA)], "zba")
@@ -1032,6 +1108,9 @@ def build(target: Target | None = None, text=None, cfg=None) -> RvCore:
     # value head wi[4] = EA[6], row wi[11:5] = EA[13:7]
     EA = [r[i] + eab[i] if i < 15 else r[i] for i in range(32)]  # (BLD: r = 0; else eab = 0)
     is_store = stores + mv_dst  # (a macro's CWW writes the word read the position before)
+    is_store_arch = is_store  # (faults: the units decline ahead of them)
+    if hot:
+        is_store = is_store + hot.store
     mem = c.zeros(32, "mem")
     n_ram_heads = 0 if cfg else S.RAM_WORDS >> 8
     if cfg:
@@ -1096,15 +1175,20 @@ def build(target: Target | None = None, text=None, cfg=None) -> RvCore:
                 v[34 + i] = chan(Chan(-1 * P[i % 15 if i < 30 else i - 30] + isSS + isV,
                                       tuple(taps)), A_BIT)
             v[66] = chan(one, A_BIT)
+            if hot:  # block C: a unit's word from its two CW tokens (lo at t-1, hi at t)
+                for i in range(32):
+                    v[67 + i] = chan(Chan(pay["CW"][i % 16], (0, 1, 0, 0) if i < 16 else (1, 0, 0, 0)),
+                                     A_BIT)
             for rc in REF_COLS:
                 v[rc] = chan(one, A_REF)
             ze = K * (fb[0] if x else 1 - fb[0])
-            for col in range(2, 67):
+            for col in range(2, 99 if hot else 67):
                 z[col] = ze
                 outs.append((col, OUT_W))
-                into.append(mem[(col - 2) % 32] if col < 66 else valid)
+                into.append(mem[(col - 2) % 32] if col < 66 else valid if col == 66
+                            else mem[(col - 67) % 32])
             vhs.append({"v": v, "z": z, "outs": outs, "into": into,
-                        "beta": fam[f"ST{x}"] + fam[f"SS{x}"]})
+                        "beta": fam[f"ST{x}"] + fam[f"SS{x}"] + (hot.wbeta(x) if hot else 0)})
         for h in range(nkh):
             hl = lits_of(fb[1:], h) + [mapped]
             keys = {r: Chan(andpre(lits_of(rowb, r) + hl + [is_store]), (0, 1, 0, 0))
@@ -1290,9 +1374,9 @@ def build(target: Target | None = None, text=None, cfg=None) -> RvCore:
     oor_ld = c.node(c.t_and([loads, 1 - mis_ld]) + c.t_and([loads, 1 - mis_ld, in_ram], -1)
                     + (c.t_and([loads, 1 - mis_ld, in_drom], -1) if not cfg else [])
                     + (c.t_and([loads, 1 - mis_ld, in_text], -1) if text else []), "fault.oorld")
-    oor_st = c.node(c.t_and([is_store, 1 - mis_st])
-                    + c.t_and([is_store, 1 - mis_st, in_rw], -1)
-                    + (c.t_and([is_store, 1 - mis_st, in_rw, 1 - mapped, afull]) if cfg else []),
+    oor_st = c.node(c.t_and([is_store_arch, 1 - mis_st])
+                    + c.t_and([is_store_arch, 1 - mis_st, in_rw], -1)
+                    + (c.t_and([is_store_arch, 1 - mis_st, in_rw, 1 - mapped, afull]) if cfg else []),
                     "fault.oorst")  # (paged: also a store that needs a frame when none is left)
     jalr = uops["JALR"]
     # a bad JALR target (EA & ~1): misaligned, or outside the ROM (EA[31:19] = 0, EA[18] = 1)
@@ -1310,7 +1394,7 @@ def build(target: Target | None = None, text=None, cfg=None) -> RvCore:
                     + c.t_and([ecall, a7_is[93]], -1), "fault.7")}
 
     # ---------------------------------------------------------------- rd value, size, branch
-    addish = any_of("ADD", "ADDI", "SUB")
+    addish = any_of("ADD", "ADDI", "SUB") + (hot.cv if hot else 0)
     sltish, sltuish = any_of("SLT", "SLTI"), any_of("SLTU", "SLTIU")
     logicops = any_of("AND", "ANDI", "OR", "ORI", "XOR", "XORI")
     shiftops = any_of("SLL", "SLLI", "SRL", "SRLI", "SRA", "SRAI")
@@ -1380,6 +1464,8 @@ def build(target: Target | None = None, text=None, cfg=None) -> RvCore:
         far_r = c.node(c.t_const(1) + c.t_eq(from_bits(EA[18:W + 2]) - ah_i, 0, -M_, M_, -1), "far.r")
         far_w = c.node(c.t_const(1) + c.t_eq(from_bits(w[16:W]) - ah_i, 0, -M_, M_, -1), "far.w")
     nr = [j0, one - at_max, ok]  # the first token of a record (no refresh, no fault)
+    if hot:  # (a unit's commits restart j and move n: never a refresh in there)
+        nr = [j0, 1 - c.and_([at_max, 1 - hot.inm], "h.amx"), ok]
     cases = []  # (literals, family, payload bits or int)
     # P3: at a BYTE / HALT the next token is the echo (a Qwen token), at </tool_call> it is GO;
     # every other case is off there
@@ -1398,8 +1484,9 @@ def build(target: Target | None = None, text=None, cfg=None) -> RvCore:
             case(nr + lits, "J", tg)
 
     if wide:
-        case([j0, at_max, 1 - far_w], "R", w[:16])
-        case([j0, at_max, far_w], "RF", w[:6] + w[16:W])
+        off_ = [1 - hot.inm] if hot else []  # (a unit's chunks restart j at any n)
+        case([j0, at_max, 1 - far_w] + off_, "R", w[:16])
+        case([j0, at_max, far_w] + off_, "RF", w[:6] + w[16:W])
     else:
         case([j0, at_max], "R", w[:16])
     case(nr + [valc, rdw_any, k0], "F0", val[0:15])
@@ -1466,9 +1553,11 @@ def build(target: Target | None = None, text=None, cfg=None) -> RvCore:
     case(inm + [1 - mv_last, mph[2], 1 - EA[6]], "CWW0")
     case(inm + [1 - mv_last, mph[2], EA[6]], "CWW1")
     case(inm + [mv_last], "J", mtgt)
-    ((eqa,),) = [thead(c, "eqa", {0: one}, {0: one},
-                       [{"data": {2 + i: pay["EB"][i] for i in range(8)}, "ref": one, "beta": fam["EB"]}])]
-    c.tables["eqa"] = c.nodes[-1]
+    eqa = [Expr()] * 8
+    if "MEQL" not in c.absent:
+        ((eqa,),) = [thead(c, "eqa", {0: one}, {0: one},
+                           [{"data": {2 + i: pay["EB"][i] for i in range(8)}, "ref": one, "beta": fam["EB"]}])]
+        c.tables["eqa"] = c.nodes[-1]
     bsel = [c.node([t for k in range(4) for t in c.t_and([mem[8 * k + b]] + lits_of(EA[0:2], k))],
                    f"eq.byte{b}") for b in range(8)]
     eqb = c.node(c.t_eq(from_bits(bsel) - from_bits(eqa), 0, -255, 255), "eq.same")
@@ -1481,6 +1570,9 @@ def build(target: Target | None = None, text=None, cfg=None) -> RvCore:
     case(ine + [fam["EC0"]], "J", mtgt)
     case(ine + [fam["EC1"], eq_last], "J", mtgt)
     case(nr + [uops["FENCE"]], "NT")
+    if hot:
+        with c.at_least(46):  # (above L22, where the residual is fullest: hidden size)
+            hot.top(A, B, C, r, eq, sltu, mem, fb, mapped, anext, af, EA, in_ram, case)
     # digit-file ops: BD per digit (j < n), then rd = the last carry (or NT)
     for start in ([j0, one - at_max], [one - j0]):
         case(start + [bnrow, lt_n], "BD", bd_dig + bd_car)
@@ -1546,6 +1638,8 @@ def build(target: Target | None = None, text=None, cfg=None) -> RvCore:
         c.ffn([(1, c.mu, one)] + c.t_and([owner, c.is_text], -TAU_TEXT), "exit.tau",
               into=c.tau, min_level=exit_min)
         c.keep += [next(iter(c.tau.terms)), next(iter(c.mu.terms))]
+    if c.absent:
+        c.sweep()
     c.probe = {"w": w, "anchor": anchor, "cnt": cnt, "jt": jt, "vt": vt, "A": A, "B": B, "C": C,
                "imm": imm, "r": r, "val": val, "mem": mem, "ld": ld, "k0": k0, "k1": k1,
                "taken": taken, "logic": logic, "shift": shift, "merged": merged,
@@ -1611,10 +1705,11 @@ def snapshot(c: RvCore, m: "RF.Machine") -> None:
         c.tables[f"quo{h}"].init = [{0: quo.copy()} for _ in range(2)]
     if "eqa" in c.tables:
         c.tables["eqa"].init = [{0: quo.copy()}]
+    for nm in c.hot.tables if getattr(c, "hot", None) else ():
+        c.tables[nm].init = [{0: quo.copy()} for _ in c.tables[nm].vheads()]
     macros = getattr(m, "macros", {}) or {}
     key = (hash(tuple(m.rom)), hash(m.drom), tuple(sorted(macros.items())))
     if cfg:
-        assert not macros, "the macro units do not run on the paged map"
         snapshot_paged(c, m, key)
     elif _ROM_CACHE.get("key") != key:
         rom = np.array([RF.rom_word(wd, S.ROM_BASE + 4 * i, macros.get(i)) if wd else 0
@@ -1626,7 +1721,7 @@ def snapshot(c: RvCore, m: "RF.Machine") -> None:
         c.tables[f"rom{h}"].init = vh
     for h, vh in enumerate(_ROM_CACHE["drom"] if not cfg else []):
         c.tables[f"drom{h}"].init = vh
-    for port in (1, 2):
+    for port in (1, 2) if "bn1.0" in c.tables else ():
         for h in range(4):
             vh = []
             for x in range(2):

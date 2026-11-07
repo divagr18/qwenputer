@@ -95,7 +95,7 @@ take frames: 704 instead of 1,458.
 - The image and the frame budget are sized on this program. The image windows are built from its
   snapshot; 1,023 frames is 1.45x the 704 this session mapped. A longer session can run out, and then
   faults.
-- The macro units (MMOVE / MEQL) do not run on the paged map. Their limit (both buffers below 0x7F80)
+- The macro units (MMOVE / MEQL) do not run on the paged map; `circuits2.md` has the units that do. Their limit (both buffers below 0x7F80)
   already excludes fx's buffers, so nothing changes here; widening them is separate work.
 - Between ecalls the machine runs alone. At an ecall the host serves the import from a recorded log
   and resumes the CPU, as an OS would, by writing registers and memory into the state. The real I/O
@@ -214,4 +214,4 @@ counts neither the host's time at ecalls nor Qwen's text. This is row 24 with no
    above are Executor v4's, the IR-equivalent path.
 4. The IR has checked fx over only the positions above; the rest of the session is checked by
    the reference.
-5. MMOVE / MEQL do not run on this map.
+5. MMOVE / MEQL do not run on this map. Their successors do: `circuits2.md`.

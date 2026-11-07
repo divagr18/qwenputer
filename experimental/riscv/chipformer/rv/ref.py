@@ -695,6 +695,7 @@ class PagedMachine(Machine):
     wr: dict = field(default_factory=dict)
     pt: dict = field(default_factory=dict)
     nf: int = 0
+    skip_unit: bool = False  # a unit just declined at this PC: its original instruction runs
 
     @classmethod
     def from_segments(cls, cfg, entry: int, segs, sp: int | None = None, x=None,
@@ -723,7 +724,32 @@ class PagedMachine(Machine):
             xs[2] = cfg.sp if sp is None else sp
         m = cls(rom=rom, ram=[], x=xs, anchor=(entry - cfg.rom_base) >> 2, cfg=cfg, image=image)
         m.rom_base = cfg.rom_base
+        m.macros = {(u.pc - cfg.rom_base) >> 2: u for u in cfg.units}
         return m
+
+    def macro_record(self, macro, ins, pc):
+        """A hot-code unit at its trigger (hot.py): its record; a decline is one token, then the
+        original instruction runs."""
+        from chipformer.rv import hot
+
+        if self.skip_unit:
+            self.skip_unit = False
+            return None
+        toks = hot.record(self, macro)
+        if toks is None:
+            self.skip_unit = True
+            return [hot.tok_decline()]
+        return toks
+
+    def alloc(self, ea: int) -> list[int]:
+        """The PA token (with the allocation) if ea's page has no frame yet."""
+        pg = ea >> S.PAGE_BITS
+        if pg in self.pt:
+            return []
+        assert self.nf + 1 < self.cfg.frames, "a unit fired without frames left"
+        self.nf += 1
+        self.pt[pg] = self.nf
+        return [S.tok("PA", self.nf)]
 
     @classmethod
     def from_elf(cls, cfg, path) -> "PagedMachine":

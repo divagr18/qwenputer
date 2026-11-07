@@ -353,6 +353,17 @@ REF_IMAGE = os.environ.get("FXCIRC_REF_ELF")
 _SIGS = os.path.join(os.path.dirname(os.path.abspath(__file__)), "signatures.json")
 
 
+# row 24's byte loops as built in the circuit (their exit is their own head; chipformer/rv/hot.py)
+TWINS = {"tok2": (0x22BF6C0, "U_TOK2"), "chr2a": (0x20CF5E8, "U_CHR2"), "chr2b": (0x20CF610, "U_CHR2"),
+         "asc2": (0x2649914, "U_ASC2")}
+TWIN_KIND = {"U_TOK2": 16, "U_CHR2": 17, "U_ASC2": 18, "U_SHA2": 19}
+
+
+def twin_specs(names):
+    return [{"name": n, "label": n, "kind": TWIN_KIND[TWINS[n][1]], "pc": TWINS[n][0], "params": [TWINS[n][0]],
+             "dead": [0], "returns": False} for n in names if n in TWINS]
+
+
 def load_sigs():
     import json
     return json.load(open(_SIGS)) if os.path.exists(_SIGS) else {}

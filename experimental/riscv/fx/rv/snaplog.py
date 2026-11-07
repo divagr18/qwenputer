@@ -2,10 +2,12 @@
 every import (the a0 it returned, the bytes it wrote into guest memory), the registers at every
 ecall, and the machine state at boot's end (the first stdin read).
 
-    python -I snaplog.py RV32EMU_DLL FX_ELF IMPORTS_JSON OUT.npz [--opt KEY=VALUE ...]
+    python -I snaplog.py RV32EMU_DLL FX_ELF IMPORTS_JSON OUT.npz [--opt KEY=VALUE ...] [--units a,b]
 
 Runs the same host as rvhost.py. The replay checks the CPU's registers against this log at every
-ecall, so it also proves the log complete.
+ecall, so it also proves the log complete. --units: the named circ units (the emulator's twins of
+the units built in the circuit, chipformer/rv/hot.py) go on at boot's end, where the replay starts,
+so the log holds the registers and memory of a run with those units.
 """
 from __future__ import annotations
 
@@ -71,6 +73,8 @@ class LogHost(RH.RvHost):
         self.cur = None
         if self.snap == len(self.elog) - 1 + 0 and snap_ad is not None and not hasattr(self, "boot"):
             self.boot = dict(ic=ic, pc=pc, x=x, ad=snap_ad[0], val=snap_ad[1], index=len(self.elog) - 1)
+            if getattr(self, "unit_specs", None):
+                self.e.rv_units_mode(1)
         return r
 
 
@@ -81,12 +85,28 @@ def main():
     ap.add_argument("imports")
     ap.add_argument("out")
     ap.add_argument("--opt", action="append")
+    ap.add_argument("--units", default="")
     a = ap.parse_args()
     H.set_opts(**RH.parse_opts(a.opt))
     dll = ctypes.CDLL(os.path.abspath(a.dll))
     tmp = H.repo_dir(tempfile.mkdtemp(prefix="fxrepo-"))
     tinyrepo.make_repo(tmp)
     h = LogHost(dll, a.elf, json.load(open(a.imports)), tmp, 2, log=lambda *x: None, memtrace=False)
+    if a.units:
+        sys.path.insert(0, os.path.join(os.path.dirname(HERE), "circ"))
+        import run as CR  # noqa: E402
+        import units as CU  # noqa: E402
+
+        names = a.units.split(",")
+        h.unit_specs, skipped = CU.specs_for(a.elf, ",".join(n for n in names if n not in CU.TWINS))
+        assert not skipped, skipped
+        h.unit_specs += CU.twin_specs(names)
+        for sp in h.unit_specs:
+            if sp["name"] == "sha":  # as built: message words aligned
+                sp["kind"] = CU.TWIN_KIND["U_SHA2"]
+        CR.setup_dll(dll)
+        CR.install(dll, h.unit_specs)
+        dll.rv_units_mode(0)
     h.run()
     end_ad, end_val = h.mem_words()
     x_end = [h.regs[i] for i in range(32)]
