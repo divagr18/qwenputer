@@ -28,7 +28,10 @@ from chipformer.rv import spec as S
 ROM_BIT, WBITS = 25, 21  # the row-11 / row-24 images: code at 0x02000000
 ROM_KH = 224  # 224 << 13 = 1.835M words (row 24: 1.743M)
 FRAMES = 1024  # the measured session maps 704 pages (docs/fx/memory.md)
-RW = ((0, 22), (0x07FC0000, 18), (0x026C0000, 18), (0x02700000, 18))  # linear, C stack, .bss
+# linear, C stack, .bss. Linear memory is 16 MB: a long session grows fx's wasm memory past 4 MB
+# (docs/fx/one.md: a store at 0x40fffc after 7 turns' steps); the frames, not the window, bound RAM
+RW = ((0, 24), (0x07FC0000, 18), (0x026C0000, 18), (0x02700000, 18))
+RW_4MB = ((0, 22),) + RW[1:]  # (live.md's and circuits2.md's map)
 TEXT_FX = 0x04000000  # the text buffer: fx's map has nothing there (spec.TEXT_ADDR is inside linear memory)
 
 
@@ -44,8 +47,8 @@ def windows(ad_words: np.ndarray, data_segs, code_end: int) -> tuple:
     return tuple(sorted(out))
 
 
-def fx_cfg(image, frames=FRAMES, rom_kh=ROM_KH, units=()) -> S.MemCfg:
-    return S.MemCfg("fx", ROM_BIT, WBITS, rom_kh, RW, frames, image, units=tuple(units), text_addr=TEXT_FX)
+def fx_cfg(image, frames=FRAMES, rom_kh=ROM_KH, units=(), rw=None) -> S.MemCfg:
+    return S.MemCfg("fx", ROM_BIT, WBITS, rom_kh, rw or RW, frames, image, units=tuple(units), text_addr=TEXT_FX)
 
 
 def load(log_path, elf_path, from_reset=False, frames=FRAMES, units=()):

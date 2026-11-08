@@ -98,15 +98,23 @@ def wide_chat(src, c, T, dev: str = "cuda") -> tuple:
     """An RvChat whose layers are Qwen's merged ones alone (n_chip = 0: the executor is the chip).
     (chat, meta). chat has _qwen_step, _qwen_prefill, _text_hc, _exec_hc."""
     from transformers import Qwen3_5ForCausalLM, Qwen3_5TextConfig
-    from transformers.modeling_utils import no_init_weights
+    try:
+        from transformers.initialization import no_init_weights
+    except ImportError:  # (older transformers)
+        from transformers.modeling_utils import no_init_weights
 
     from chipformer.q35.fast import exact_matmuls
     from chipformer.rv.chat import RvChat
 
     exact_matmuls()
     sd, tc, meta = wide_state(src, c, T, dev)
-    with no_init_weights(), torch.device(dev):
-        m = Qwen3_5ForCausalLM(Qwen3_5TextConfig(**tc)).to(torch.bfloat16)
+    old = torch.get_default_dtype()
+    torch.set_default_dtype(torch.bfloat16)  # (built in fp32 it is 31 GB: it does not fit an L4)
+    try:
+        with no_init_weights(), torch.device(dev):
+            m = Qwen3_5ForCausalLM(Qwen3_5TextConfig(**tc))
+    finally:
+        torch.set_default_dtype(old)
     bad = m.load_state_dict(sd, strict=False)
     assert not bad.unexpected_keys, bad.unexpected_keys[:4]
     miss = [k for k in bad.missing_keys if k != "lm_head.weight"]
