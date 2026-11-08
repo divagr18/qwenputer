@@ -178,6 +178,7 @@ class ChipCircuit:
         for k in ("rom_plan", "img_plan"):
             if k in snap:
                 setattr(self, k, snap[k])
+        self.hot_tables = list(snap.get("hot_tables", ()))  # the units' heads (core.snapshot)
         self.cfg = None
         if m.get("cfg"):
             cf = dict(m["cfg"])
@@ -189,6 +190,7 @@ class ChipCircuit:
         for g in m.get("banks", []):
             self._bank(g["name"], g["heads"])
         self.tables = {nm: self.by_name[nm] for nm in m["tables"]}
+        assert set(self.hot_tables) <= set(self.tables), "a unit head the file does not name"
         self.text = None  # (the decode table holds what a Q code means)
         self._tabs = None
 

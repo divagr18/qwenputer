@@ -264,3 +264,56 @@ def test_rvchat_runs_from_the_file_beside_base():
 def test_meta_is_json_with_no_python_objects(chip_paged):
     meta = F.ChipFile(chip_paged).meta
     assert json.loads(json.dumps(meta)) == meta
+
+
+def test_units_circuit_is_a_file(tmp_path):
+    """The hot-code units' circuit (tests/test_rv_hot.py's test map, every unit kind) writes as a
+    chip file and lifts back to itself (docs/fx/units-file.md): every weight a finite bf16 value
+    (SHA-256's step counter carries 2^16), the units' M family's rows stored whole. With a GPU, a
+    program of SHA-256 calls and copies runs from the file to the reference's tokens."""
+    sys.path.insert(0, str(Path(__file__).parent))
+    import test_rv_hot as H
+
+    from dataclasses import replace
+
+    from chipformer.rv import hot
+
+    calls = [("move", 0x11000, 0x12000, 16), ("sha", 0x11000, 0x12000, 0x10040, 0x12000),
+             ("eql", 0x13001, 40, 0x13001, 40)]
+    m0, cfg = H.machine(calls)
+    cfg = replace(cfg, absent=hot.rom_absent(m0.rom, cfg))  # ROM-specialized, as fx's: it fits an L4
+
+    def mk():
+        m = H.machine(calls)[0]
+        m.cfg = cfg
+        return m
+
+    c = core.build(cfg=cfg)
+    p = tmp_path / "units.safetensors"
+    chipbuild.standalone(c, p)
+    cf = F.load(p)
+    vals = cf.file.arr("weights.values")
+    assert np.isfinite(vals).all() and np.abs(vals).max() < 2.0**120
+    r = chipcheck.lint(cf, c)  # (pruning leaves dims no node reads or writes: they have no column)
+    assert r["heads"] == r["heads_lifted"]
+    assert r["ir_dims_with_no_lifted_dim"] == r["lifted_dims_with_no_ir_dim"] == 0
+    assert r["head_diffs"] == 0 and r["unit_group_diffs"] == 0, r["first"]
+    # a program loads onto the file as onto the Python circuit: the units' heads included
+    core.snapshot(c, mk())
+    core.snapshot(cf, mk())
+    assert cf.hot_tables and set(cf.hot_tables) == set(c.hot.tables)
+    for nm in c.hot.tables:
+        a, b = c.tables[nm].init, cf.tables[nm].init
+        assert a is not None and b is not None and len(a) == len(b), nm
+        for x, y in zip(a, b):
+            assert x.keys() == y.keys() and all((np.asarray(x[r]) == np.asarray(y[r])).all() for r in x), nm
+    if not torch.cuda.is_available():
+        return
+    toks = mk().run(10**7)
+    ex = exec4.Exec4(cf, text=None, v0=cf.v0, tables=cf.exec_tables())
+    core.snapshot(cf, mk())
+    ex.load_init()
+    ex.reset()
+    out = ex.run(ex.embed(toks[:1]).contiguous(), mode=1, max_steps=len(toks) - 1, keep=False)
+    assert out.tolist() == toks[1:]
+    assert sum(S.family(t)[0] == "M" for t in toks if t < S.VOCAB2) > 10

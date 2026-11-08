@@ -68,6 +68,7 @@ K256 = [int(x, 16) for x in """428a2f98 71374491 b5c0fbcf e9b5dba5 3956c25b 59f1
 1e376c08 2748774c 34b0bcb5 391c0cb3 4ed8aa4a 5b9cca4f 682e6ff3 748f82ee 78a5636f 84c87814 8cc70208 90befffa a4506ceb
 bef9a3f7 c67178f2""".split()]
 SHA_LOAD, SHA_ROUND, SHA_FINAL, SHA_END = 3, 11, 75, 83  # the steps
+SHA_SCALE = 16  # the step counter's output is 2^16 * 2^-step, so its thermometer's weights fit bf16
 A0, A1, A2, A3, A4, A6, S3, S4, S5 = 10, 11, 12, 13, 14, 16, 19, 20, 21
 A7, S0, S6, S7, S8, S10 = 17, 8, 22, 23, 24, 26
 JESC_Q, JESC_B = 0x22, 0x5C  # '"' and '\\' in s3 and s7: fx's only order at this head (M)
@@ -560,9 +561,9 @@ class Hot:
         self.inm, self.hf, self.hdir, self.hu = hl[0], hl[1], hl[2], hl[3:7]
         self.gcopy, self.geq, self.gbc, self.gsh = hl[7], hl[8], hl[9], hl[10]
         if "sha" in self.kinds:  # the step, as a thermometer: everything else of it is linear in it
-            xs = c.counter("h.ri", self.tMP, self.tMN)
+            xs = c.counter("h.ri", self.tMP, self.tMN, SHA_SCALE)  # 2^16 * 2^-step: see core.thermo
             self.tables.append("h.ri")
-            self.st = c.thermo(xs, self.tMP, SHA_END + 1, "h.ri")
+            self.st = c.thermo(xs, self.tMP, SHA_END + 1, "h.ri", SHA_SCALE)
         ((self.hx,),) = head("h.x", [{"data": {2: mp[0]}, "ref": one, "beta": self.tMH}])
         self.scans = [u for u, un in enumerate(cfg.units) if un.kind in SCAN]
         self.iscan = c.and_([self.inm, 1 - self.gcopy, 1 - self.geq, 1 - self.gsh], "h.iscan")

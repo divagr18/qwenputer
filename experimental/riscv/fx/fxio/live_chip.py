@@ -18,7 +18,8 @@ the repository at the issue's base commit as fx's file store, and fx's open_pull
 to the tools the ACP client declares in initialize. The tool's calls go to the handler at the job's
 pr_url (an SSH reverse tunnel to the laptop); the lockstep hosts replay the chip host's answers.
 --chip-file: the circuit and the boot state are lifted from a chip file (chipformer/rv/chipfile.py),
-not built in Python. --write-chip-file writes that file for this run's configuration and exits.
+not built in Python. --write-chip-file writes that file for this run's configuration and exits. With
+--text the file carries the text bridge, and Qwen's merged side (wide.py) is built from it too.
 
 The host is rvhost's with its memory, registers and run loop replaced by chipformer.rv.fxlive
 (tokens, no pokes): the same import handlers, file store and model link. rv32emu boots fx to the
@@ -361,12 +362,15 @@ class Chip:
         self.c = core.build(target, T, self.cfg, go_on_tcc=self.go_on_tcc)
         self.log("built", self.c.stats(), round(time.time() - t0, 1))
         if self.write_file:
-            assert not self.model_dir, "--write-chip-file: the circuit without the text bridge"
             from chipformer.rv import chipbuild
 
-            r = chipbuild.standalone(self.c, self.write_file, m, {"boot_sha256": self.boot_hash,
-                                                                 "elf_sha256": _sha(self.elf),
-                                                                 "frames": self.frames, "units": list(self.units)})
+            extra = {"boot_sha256": self.boot_hash, "elf_sha256": _sha(self.elf), "frames": self.frames,
+                     "units": list(self.units)}
+            if self.model_dir:  # with the text bridge (docs/fx/units-file.md): v0 is base's vocabulary
+                assert v0 == 248320, v0  # (chipbuild.merged_fx's)
+                r = chipbuild.merged_fx(self.c, T, self.write_file, m, T.n, {**extra, "text": True})
+            else:
+                r = chipbuild.standalone(self.c, self.write_file, m, extra)
             self.log("chip file", self.write_file, json.dumps({k: v for k, v in r.items() if k != "arrays"}),
                      round(time.time() - t0, 1))
             raise ChipFileWritten(self.write_file)
@@ -389,6 +393,12 @@ class Chip:
 
         cf = CF.load(self.chip_file)
         meta = cf.file.meta
+        if bool(self.model_dir) != cf.file.has("text.plain.cols"):
+            raise RuntimeError("--text needs a chip file with the text bridge, and only --text runs one")
+        if self.model_dir:  # Qwen's merged side is built from the file (wide.wide_state with cf)
+            from chipformer.rv import bridge as BR
+
+            self.T = BR.Text(os.path.join(self.model_dir, "tokenizer.json"))
         if meta.get("boot_sha256") != self.boot_hash:
             raise RuntimeError("the chip file's boot state is not this run's boot snapshot")
         if meta.get("elf_sha256") != _sha(self.elf):
@@ -405,7 +415,7 @@ class Chip:
                  "phases", self.ex.NPH, "slots", self.ex.n_slots, "layers", cf.n_layers())
         FL.install_stops(self.ex)
         self.S0 = self.ex.S.clone()
-        self.c = None
+        self.c, self.cf = None, cf
         self.file_info = {"path": os.path.basename(self.chip_file), "bytes": os.path.getsize(self.chip_file),
                           "sha256": _sha(self.chip_file), "layers": cf.n_layers(), "phases": self.ex.NPH,
                           "lift_s": round(t1 - t0, 1), "plan_s": round(t2 - t1, 1)}
@@ -434,7 +444,8 @@ class Chip:
         if getattr(self, "_wide", None) is None:
             from chipformer.rv import wide
 
-            self._wide = wide.wide_chat(self.model_dir, self.c, self.T)
+            self._wide = wide.wide_chat(self.model_dir, self.c, self.T,
+                                        cf=getattr(self, "cf", None) if self.c is None else None)
         return self._wide
 
     def machine(self):

@@ -41,6 +41,7 @@ sign) through the multiplier.
 """
 
 from contextlib import contextmanager
+from fractions import Fraction
 
 import numpy as np
 
@@ -387,21 +388,33 @@ class RvCore(Circ):
             out.append(self.node(terms, f"{name}.b{j}"))
         return out
 
-    def counter(self, name, reset, step):
-        """A 2^-k counter head: k = the `step` tokens since the latest `reset` token (0 there)."""
+    def counter(self, name, reset, step, scale=0):
+        """A 2^-k counter head: k = the `step` tokens since the latest `reset` token (0 there).
+        ``scale``: the head's output is 2^scale * 2^-k instead (its out weight carries the 2^scale;
+        the state rows are the same), for a thermometer that reads far down (``thermo``)."""
         one = self.one
         ((x,),) = thead(self, name, {0: reset, 1: one - reset}, {0: one - reset, 1: one - reset},
                         [{"data": {2: reset}, "ref": one - reset,
                           "a": 110 * step + 238 * reset}], tiny=2.0**-90)
-        self.tables[name] = self.nodes[-1]
-        self.nodes[-1].levels = "decay"  # a snapshot mid-count holds 2^-k
+        n = self.nodes[-1]
+        if scale:
+            n.out = [(col, d, w * 2.0**scale) for col, d, w in n.out]
+        self.tables[name] = n
+        n.levels = "decay"  # a snapshot mid-count holds 2^-k
         return x
 
-    def thermo(self, x, reset, n, name):
-        """[k > m] for m < n, from x = 2^-k (0 at reset tokens)."""
+    def thermo(self, x, reset, n, name, scale=0):
+        """[k > m] for m < n, from x = 2^scale * 2^-k (0 at reset tokens).
+
+        A gate weight is K * 8 * 2^(m - scale) / c with 1/c up to 2^37 (emit.Layout.scale at D0 =
+        2560), so it leaves bf16's and fp32's range (2^128) once m - scale > 80: SHA-256's step
+        (m up to 83) counts with scale 16 (docs/fx/units-file.md)."""
         one = self.one
-        return [self.node([(1, one - reset, 7 * one - 8 * 2**m * x),
-                           (-1, one - reset, 6 * one - 8 * 2**m * x)], f"{name}>{m}")
+
+        def w(m):  # an int when unscaled, so every other circuit is node for node as before
+            return 8 * 2**m if not scale else 8 * Fraction(2)**(m - scale)
+        return [self.node([(1, one - reset, 7 * one - w(m) * x),
+                           (-1, one - reset, 6 * one - w(m) * x)], f"{name}>{m}")
                 for m in range(n)]
 
     def split(self, z: Expr, lo: int, hi: int, name: str) -> Expr:
@@ -1721,7 +1734,8 @@ def snapshot(c: RvCore, m: "RF.Machine") -> None:
         c.tables[f"quo{h}"].init = [{0: quo.copy()} for _ in range(2)]
     if "eqa" in c.tables:
         c.tables["eqa"].init = [{0: quo.copy()}]
-    for nm in c.hot.tables if getattr(c, "hot", None) else ():
+    # the units' heads (a chip file lists them: chipfile.ChipCircuit.hot_tables)
+    for nm in c.hot.tables if getattr(c, "hot", None) else getattr(c, "hot_tables", ()):
         c.tables[nm].init = [{0: quo.copy()} for _ in c.tables[nm].vheads()]
     macros = getattr(m, "macros", {}) or {}
     key = (hash(tuple(m.rom)), hash(m.drom), tuple(sorted(macros.items())))

@@ -5,6 +5,7 @@ file (chipfile.py) and never runs this.
         [--firmware tests/data/rv/calc-bridge.elf]
     python -m chipformer.rv.chipbuild paged --frames 1024 --out chip-paged.safetensors
     python -m chipformer.rv.chipbuild fx --log LOG.npz --elf FX.elf --out chip-fx.safetensors [--base BASE]
+        [--frames 4096 --units all+]   (fx: fxrun's map with these frames and units; default 1024, none)
 
 The chip layers are emit_layers itself, with its dense tensors swapped for dict-backed ones, so a
 term here is exactly a nonzero the dense emitter writes.
@@ -141,7 +142,7 @@ def _sparse(v, cols):
 
 def chip_basis(c, lay) -> dict:
     """The chip tokens' rows without the ballast. A family stores its base row and one delta per
-    payload bit when its rows are linear in the bits, else every row."""
+    payload bit when its rows are linear in the bits, else every row (up to 65,536 rows)."""
     feats = sorted(c.token_fns)
     cols = np.array([lay.dim(d) for d in feats], np.int64)
 
@@ -163,8 +164,8 @@ def chip_basis(c, lay) -> dict:
         if linear:
             table.append((first, size, nb, len(basis), F.LINEAR))
             basis += [v0, *deltas]
-        else:
-            assert size <= 4096, (first, size)
+        else:  # (the units' M family, 16,384 rows: its tag features are not linear in the bits)
+            assert size <= 1 << 16, (first, size)
             table.append((first, size, nb, len(basis), F.EXPLICIT))
             basis += [vec(first + i) for i in range(size)]
     for t in S.CONTROLS.values():
@@ -304,6 +305,8 @@ def build_file(c, lay, alloc, out, T=None, v0: int = 0, machine=None, extra_meta
     for k in ("pch_cols", "rom_plan", "img_plan"):
         if hasattr(c, k):
             snap[k] = getattr(c, k)
+    if getattr(c, "hot", None) and c.hot.tables:  # the units' heads, which core.snapshot gives a ballast row
+        snap["hot_tables"] = list(c.hot.tables)  # (table names, as meta.tables' keys)
     meta = {
         "layout": {"hidden": lay.hidden, "off": lay.off, "m": lay.m,
                    "log2_ballast": lay.log2_ballast},
@@ -367,18 +370,22 @@ def build_q4p2(dense, base, out, firmware=None) -> dict:
                       BR.Text(Path(base) / "tokenizer.json").n)
 
 
+def standalone_layout(c) -> tuple:
+    """(alloc, layout) of a circuit with no text bridge, its columns after Qwen's."""
+    al = allocate(c, None, set(c.keep), c.target.intermediate)
+    h, m = pick_hidden(D0, 1 + al.n_slots)
+    return al, Layout(hidden=h, off=D0, m=m, slots=al.slots)
+
+
 def standalone(c, out, machine=None, extra=None) -> dict:
     """A circuit with no text bridge (the paged checks, fx's session)."""
-    keep = set(c.keep)
-    al = allocate(c, None, keep, c.target.intermediate)
-    h, m = pick_hidden(D0, 1 + al.n_slots)
-    lay = Layout(hidden=h, off=D0, m=m, slots=al.slots)
+    al, lay = standalone_layout(c)
     code = [lay.dim(d) for d in c.keep]
     return build_file(c, lay, al, out, None, 0, machine,
                       {"code_dims": code, **(extra or {})})
 
 
-def merged_fx(c, T, out, machine, n_text: int) -> dict:
+def merged_fx(c, T, out, machine, n_text: int, extra=None) -> dict:
     """The fx-sized circuit with its text bridge, as a release would hold it. No dense file exists
     for it, so there is no mute column and nothing to compare with."""
     keep = set(c.keep)
@@ -389,7 +396,7 @@ def merged_fx(c, T, out, machine, n_text: int) -> dict:
     cols = [lay.dim(d) for d in c.keep]
     em = {"code_dims": cols[:core.NFAM + core.NPAY], "tau_dim": cols[-2], "mu_dim": cols[-1],
           "model_vocab": -(-(v0 + c.vocab) // 64) * 64, "base": "Qwen/Qwen3.5-4B",
-          "mute": {"col": cols[-1], "full_attention": [], "muted": False}}
+          "mute": {"col": cols[-1], "full_attention": [], "muted": False}, **(extra or {})}
     return build_file(c, lay, al, out, T, v0, machine, em, None, n_text)
 
 
@@ -400,25 +407,28 @@ def main() -> None:
     ap.add_argument("--dense", help="rv-q4p2: the dense checkpoint's directory")
     ap.add_argument("--base", help="rv-q4p2: base Qwen's directory")
     ap.add_argument("--firmware", help="rv-q4p2: an ELF, parked, as the file's state")
-    ap.add_argument("--frames", type=int, default=128)
+    ap.add_argument("--frames", type=int, default=0, help="paged: 128; fx: fxrun.FRAMES")
+    ap.add_argument("--units", default="", help="fx: unit names (hot.FX_R24), comma-separated, or all+")
     ap.add_argument("--log", help="fx: the session log")
     ap.add_argument("--elf", help="fx: the ELF")
     a = ap.parse_args()
     if a.what == "rv-q4p2":
         r = build_q4p2(a.dense, a.base, a.out, a.firmware)
     elif a.what == "paged":
-        r = standalone(core.build(cfg=S.small_cfg(a.frames)), a.out)
+        r = standalone(core.build(cfg=S.small_cfg(a.frames or 128)), a.out)
     else:
         from chipformer.rv import fxrun
 
-        cfg, m, log, _ = fxrun.load(a.log, a.elf)
+        units = [u for u in a.units.split(",") if u]
+        cfg, m, log, _ = fxrun.load(a.log, a.elf, frames=a.frames or fxrun.FRAMES, units=units)
         fxrun.serve(m, log[0])  # the boot snapshot stands on an ecall: the host serves it first
         m.n += 1
         if a.base:  # with the text bridge, as a release would have it
             T = BR.Text(Path(a.base) / "tokenizer.json")
             r = merged_fx(core.build(core.T4B, T, cfg=cfg, go_on_tcc=False), T, a.out, m, T.n)
         else:
-            r = standalone(core.build(cfg=cfg), a.out, m)
+            r = standalone(core.build(cfg=cfg), a.out, m, {"frames": cfg.frames, "units": units}
+                           if units or a.frames else None)
     print(json.dumps({k: v for k, v in r.items()}), flush=True)
 
 

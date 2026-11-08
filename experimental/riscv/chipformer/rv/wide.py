@@ -37,8 +37,44 @@ def target_of(src):
     return Target(t["linear_num_key_heads"], t["linear_num_value_heads"], t["intermediate_size"])
 
 
-def wide_state(src, c, T, dev: str) -> tuple:
-    """(state dict, config dict, layout) of Qwen's part of the merged model."""
+def file_text_rows(cf, base_emb: torch.Tensor, v0: int) -> torch.Tensor:
+    """merge.text_rows from a chip file's text arrays (chipbuild.text_arrays) instead of the
+    circuit: the plain row, its byte bits, the special rows whole; the ballast from the layout."""
+    import numpy as np
+
+    f = cf.file
+    h, d0 = cf.hidden, base_emb.shape[1]
+    assert d0 == cf.off, (d0, cf.off)
+    ballast = 2.0 ** f.meta["layout"]["log2_ballast"]
+    full = torch.zeros(v0, h, dtype=torch.bfloat16)
+    full[:, :d0] = base_emb[:v0, :d0]
+    full[:, cf.off:cf.off + cf.m] = ballast
+    full[:, torch.from_numpy(f.arr("text.plain.cols").astype(np.int64))] = torch.from_numpy(
+        f.arr("text.plain.values").astype(np.float32)).to(torch.bfloat16)
+    by = f.arr("text.bytes")
+    bc = f.arr("text.byte_cols").astype(np.int64)
+    n = min(len(by), v0)
+    for k in range(bc.shape[0]):
+        for i in range(8):
+            col = torch.zeros(v0, dtype=torch.bfloat16)
+            col[:n] = torch.from_numpy(((by[:n, k] >> i) & 1).astype(np.float32)).to(torch.bfloat16)
+            full[:, int(bc[k, i])] = col
+    ids, off = f.arr("text.special.ids"), f.arr("text.special.off")
+    cols, vals = f.arr("text.special.cols").astype(np.int64), f.arr("text.special.values")
+    for j, q in enumerate(ids.tolist()):
+        if q >= v0:
+            continue
+        a, b = int(off[j]), int(off[j + 1])
+        full[q, d0:] = 0
+        full[q, cf.off:cf.off + cf.m] = ballast
+        full[q, torch.from_numpy(cols[a:b])] = torch.from_numpy(vals[a:b].astype(np.float32)).to(torch.bfloat16)
+    return full
+
+
+def wide_state(src, c, T, dev: str, cf=None) -> tuple:
+    """(state dict, config dict, layout) of Qwen's part of the merged model. With ``cf`` (a chip
+    file with the text bridge, chipfile.load) the layout, the mute column, the output code's and
+    tau's columns and gains and the text rows come from the file, and ``c`` is not read."""
     from chipformer.q35.emit import Layout, allocate
     from chipformer.q35.mute import fit_anti_sink, mute
     from chipformer.q35.tiny import code_gain
@@ -46,12 +82,28 @@ def wide_state(src, c, T, dev: str) -> tuple:
     src = Path(src)
     tc0 = json.loads((src / "config.json").read_text())["text_config"]
     d0, v0, inter = tc0["hidden_size"], tc0["vocab_size"], tc0["intermediate_size"]
-    keep = set(c.keep)
-    alloc = allocate(c, None, keep, inter)
-    hidden, m = pick_hidden(d0, 1 + alloc.n_slots)
-    lay = Layout(hidden=hidden, off=d0, m=m, slots=alloc.slots)
-    assert d0 + m + 1 + alloc.n_slots <= hidden, (alloc.n_slots, hidden)
-    lay.scale  # noqa: B018 - asserts m * B^2 / hidden is a power of 4
+    if cf is not None:
+        fm = cf.file.meta
+        assert cf.file.has("text.plain.cols"), "the chip file has no text bridge"
+        assert cf.off == d0 and cf.v0 == v0, (cf.off, d0, cf.v0, v0)
+        hidden, m = cf.hidden, cf.m
+        mu_col, code_cols, tau_col = fm["mu_dim"], fm["code_dims"], fm["tau_dim"]
+        n_slots = hidden - d0 - m - 1  # (an upper bound: the file stores the layout, not the count)
+        lay = Layout(hidden=hidden, off=d0, m=m)
+        lay.scale  # noqa: B018
+        gains = dict(zip(cf.file.arr("norm.cols").astype(int).tolist(), cf.file.arr("norm.values").tolist()))
+    else:
+        keep = set(c.keep)
+        alloc = allocate(c, None, keep, inter)
+        hidden, m = pick_hidden(d0, 1 + alloc.n_slots)
+        lay = Layout(hidden=hidden, off=d0, m=m, slots=alloc.slots)
+        assert d0 + m + 1 + alloc.n_slots <= hidden, (alloc.n_slots, hidden)
+        lay.scale  # noqa: B018 - asserts m * B^2 / hidden is a power of 4
+        n_slots = alloc.n_slots
+        mu_col = lay.dim(next(iter(c.mu.terms)))
+        code_cols = [lay.dim(next(iter(e.terms))) for e in c.code]
+        tau_col = lay.dim(next(iter(c.tau.terms)))
+        gains = {**{x: code_gain(lay) for x in code_cols}, tau_col: TAU_GAIN}
     n0 = tc0["num_hidden_layers"]
     tc = {k: v for k, v in tc0.items() if k != "full_attention_interval"}
     tc.update(hidden_size=hidden, num_hidden_layers=n0, mtp_num_hidden_layers=0, vocab_size=v0,
@@ -78,23 +130,20 @@ def wide_state(src, c, T, dev: str) -> tuple:
                     w = torch.cat([g.to(w.dtype), w.new_zeros(hidden - d0)])
                 sd[DST + k[len(SRC_TEXT):]] = w
     assert base_emb is not None
-    mute(sd, tc, n0, lay.dim(next(iter(c.mu.terms))), hidden**0.5, prefix=DST, sinks=sinks, first=0)
-    sd[DST + "embed_tokens.weight"] = text_rows(c, lay, T, base_emb, v0)
-    code = [next(iter(e.terms)) for e in c.code]
-    tau = next(iter(c.tau.terms))
+    mute(sd, tc, n0, mu_col, hidden**0.5, prefix=DST, sinks=sinks, first=0)
+    sd[DST + "embed_tokens.weight"] = (text_rows(c, lay, T, base_emb, v0) if cf is None
+                                       else file_text_rows(cf, base_emb, v0))
     norm = sd[DST + "norm.weight"].float()
     norm[d0:] = -1.0
-    for d in code:
-        norm[lay.dim(d)] = code_gain(lay)
-    norm[lay.dim(tau)] = TAU_GAIN
+    for x, g in gains.items():
+        norm[x] = g
     sd[DST + "norm.weight"] = norm.to(torch.bfloat16)
     meta = {"hidden": hidden, "ballast_dims": m, "chip_dims_offset": d0, "chip_token_offset": v0,
-            "slots": alloc.n_slots, "code_dims": [lay.dim(d) for d in code], "tau_dim": lay.dim(tau),
-            "mu_dim": lay.dim(next(iter(c.mu.terms)))}
+            "slots": n_slots, "code_dims": code_cols, "tau_dim": tau_col, "mu_dim": mu_col}
     return sd, tc, meta
 
 
-def wide_chat(src, c, T, dev: str = "cuda") -> tuple:
+def wide_chat(src, c, T, dev: str = "cuda", cf=None) -> tuple:
     """An RvChat whose layers are Qwen's merged ones alone (n_chip = 0: the executor is the chip).
     (chat, meta). chat has _qwen_step, _qwen_prefill, _text_hc, _exec_hc."""
     from transformers import Qwen3_5ForCausalLM, Qwen3_5TextConfig
@@ -107,7 +156,7 @@ def wide_chat(src, c, T, dev: str = "cuda") -> tuple:
     from chipformer.rv.chat import RvChat
 
     exact_matmuls()
-    sd, tc, meta = wide_state(src, c, T, dev)
+    sd, tc, meta = wide_state(src, c, T, dev, cf)
     old = torch.get_default_dtype()
     torch.set_default_dtype(torch.bfloat16)  # (built in fp32 it is 31 GB: it does not fit an L4)
     try:

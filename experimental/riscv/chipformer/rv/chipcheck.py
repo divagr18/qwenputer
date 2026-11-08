@@ -8,6 +8,7 @@ Production never runs this: it is where the circuit builder may appear.
     python -m chipformer.rv.chipcheck tf   CHIP --frames 1024      # the paged circuit (small_cfg)
     python -m chipformer.rv.chipcheck fx   CHIP --log LOG --elf ELF   # fx's whole session
     python -m chipformer.rv.chipcheck fxtf CHIP --log LOG --elf ELF [--n 4000]
+        (fx, fxtf: --frames 4096 --units all+ for the 13-unit map, as fxrun; the file must be built so)
     python -m chipformer.rv.chipcheck vram CHIP --model BASE       # load time, VRAM, tok/s in RvChat
     python -m chipformer.rv.chipcheck qwen CHIP --base BASE [--model MERGED]  # text against base
 
@@ -196,10 +197,10 @@ class Rig:
         elif a.log:
             from chipformer.rv import fxrun
 
-            self.cfg, _, _, _ = fxrun.load(a.log, a.elf)
+            self.cfg, _, _, _ = fx_load(a)
             self.cp, self.T, self.v0 = core.build(cfg=self.cfg), None, 0
         else:
-            self.cfg = S.small_cfg(a.frames)
+            self.cfg = S.small_cfg(a.frames or 128)
             self.cp, self.T, self.v0 = core.build(cfg=self.cfg), None, 0
         ir_d, lift_d, missing, extra = dim_map(self.cf, self.cp)
         self.ir_d, self.lift_d, self.missing = ir_d, lift_d, np.asarray(missing, np.int64)
@@ -355,12 +356,20 @@ def timing(rig, names, reps=3) -> dict:
     return {"mode": "time", "per_program": res}
 
 
+def fx_load(a):
+    """fxrun.load with this command line's frames and units."""
+    from chipformer.rv import fxrun
+
+    return fxrun.load(a.log, a.elf, frames=a.frames or fxrun.FRAMES,
+                      units=[u for u in a.units.split(",") if u])
+
+
 def fx_session(rig, a) -> dict:
     """fxrun's run mode, on the file: the boot state comes from the file, each ecall's host service
     from the log, and every token is compared with the reference machine's."""
     from chipformer.rv import fxrun
 
-    cfg, m, log, z = fxrun.load(a.log, a.elf)
+    cfg, m, log, z = fx_load(a)
     cf = rig.cf
     assert cf.has_state(), "this chip file has no firmware state"
     t0 = time.time()
@@ -370,7 +379,7 @@ def fx_session(rig, a) -> dict:
     cf.load_state(ex)
     t_state = time.time() - t0
     # the file's state is the snapshot of the reference's own boot machine, bit for bit
-    m0 = fxrun.load(a.log, a.elf)[1]
+    m0 = fx_load(a)[1]
     fxrun.serve(m0, log[0])
     m0.n += 1
     core.snapshot(cf, m0)
@@ -420,8 +429,8 @@ def fx_tf(rig, a) -> dict:
     """The first segment of the session, teacher-forced: every IR dim against ir.evaluate."""
     from chipformer.rv import fxrun
 
-    cfg, m, log, z = fxrun.load(a.log, a.elf)
-    m0 = fxrun.load(a.log, a.elf)[1]
+    cfg, m, log, z = fx_load(a)
+    m0 = fx_load(a)[1]
     fxrun.serve(m0, log[0])
     m0.n += 1
     stream = []
@@ -595,7 +604,8 @@ def main() -> None:
                                      "qwen"))
     ap.add_argument("chip")
     ap.add_argument("--dense", default="")
-    ap.add_argument("--frames", type=int, default=128)
+    ap.add_argument("--frames", type=int, default=0, help="small_cfg's (128), or fx's (fxrun.FRAMES)")
+    ap.add_argument("--units", default="", help="fx: unit names (hot.FX_R24), comma-separated, or all+")
     ap.add_argument("--log", default="")
     ap.add_argument("--elf", default="")
     ap.add_argument("--progs", nargs="*")

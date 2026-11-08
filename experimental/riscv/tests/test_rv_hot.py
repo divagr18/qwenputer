@@ -328,6 +328,24 @@ def test_ir_random(circ4, seed):
     check_ir(c, random_calls(rng, 5, ("move", "cpy", "set", "eql", "scan", "scan")), seed, kernel=False)
 
 
+def test_unit_weights_fit_bf16(circ4):
+    """Every weight chipbuild emits for the units' circuit is a finite bf16 value, so it can be a
+    chip file (docs/fx/units-file.md). Without the step counter's 2^16 (hot.SHA_SCALE), SHA-256's
+    thermometer over 84 steps has gate weights of -2^128 and -2^129 at this layout: past bf16's and
+    fp32's range."""
+    from chipformer.rv import chipbuild as CB
+
+    c = circ4
+    assert "sha" in {u.kind for u in c.cfg.units}
+    al, lay = CB.standalone_layout(c)
+    tc = dict(hidden_size=lay.hidden, linear_num_key_heads=c.target.key_heads,
+              linear_num_value_heads=c.target.value_heads, intermediate_size=c.target.intermediate,
+              linear_conv_kernel_dim=4)
+    sd = CB.emit_sparse(c, lay, tc, al, set(c.keep))  # asserts every weight is a bf16 value
+    big = max(abs(v) for t in sd.values() for v in t.d.values())
+    assert big < 2.0**120, big
+
+
 def test_ir_sha():
     """The compression, circuit against reference against hashlib's state after one block."""
     calls = [("sha", 0x11000, 0x12000, 0x10040, 0x12000), ("sha", 0x11000, 0x13440, 0x10080, 0x13440),
