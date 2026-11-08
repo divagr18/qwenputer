@@ -5,6 +5,7 @@ P0c task from prompt to hidden check (docs/fx/live.md).
         [--backend hf:Qwen/Qwen3.5-4B | scripted | replay:RUN.json] [--turns 2] [--frames N]
         [--full-regs] [--no-audit] [--max-instr N] [--units all+] [--chain t1_bug t2_rename ..]
         [--text] [--probe K --base-lp BASE.pt --probe-out OUT.json]
+        [--job JOB.json] [--chip-file CHIP.safetensors | --write-chip-file CHIP.safetensors]
 
 --units: the hot-code units (chipformer/rv/hot.py) built into the circuit, firing at fixed ROM PCs.
 --chain: one long session, a turn per task's prompt on one repository; every task's hidden check
@@ -12,6 +13,12 @@ runs on the final repository.
 --text: the circuit with the text bridge. Qwen is its merged form (chipformer/rv/wide.py, with hf:
 backends), fx parks for every model call, and Qwen's tokens go through the circuit as model input.
 --probe K: at model call K run fx/fxio/text_paged.py's checks, the machine holding fx's state.
+--job: a GitHub issue run (fx/fxio/pr_driver.py writes the job, docs/fx/pr.md): the issue's prompt,
+the repository at the issue's base commit as fx's file store, and fx's open_pull_request tool added
+to the tools the ACP client declares in initialize. The tool's calls go to the handler at the job's
+pr_url (an SSH reverse tunnel to the laptop); the lockstep hosts replay the chip host's answers.
+--chip-file: the circuit and the boot state are lifted from a chip file (chipformer/rv/chipfile.py),
+not built in Python. --write-chip-file writes that file for this run's configuration and exits.
 
 The host is rvhost's with its memory, registers and run loop replaced by chipformer.rv.fxlive
 (tokens, no pokes): the same import handlers, file store and model link. rv32emu boots fx to the
@@ -51,6 +58,7 @@ import delta as D  # noqa: E402
 import host as H  # noqa: E402
 import run as RUN  # noqa: E402
 import rvhost as RH  # noqa: E402
+import pr_tool as PR  # noqa: E402
 import tasks as TK  # noqa: E402
 import wasifs  # noqa: E402
 
@@ -63,6 +71,10 @@ PA0 = FL.S.NEW_FAMILIES["PA"][0]
 
 class BootDone(BaseException):
     """The machine stands on its first stdin read (not served yet)."""
+
+
+class ChipFileWritten(Exception):
+    """--write-chip-file: the file is written, the run ends there."""
 
 
 class Divergence(RuntimeError):
@@ -316,8 +328,9 @@ class Chip:
     """The circuit, its kernel and the boot snapshot, kept across runs."""
 
     def __init__(self, elf: str, frames: int, full_regs: bool, log=print, ref: bool = False, units=(),
-                 model_dir: str | None = None) -> None:
+                 model_dir: str | None = None, chip_file: str | None = None, write_file: str | None = None) -> None:
         self.elf, self.frames, self.full, self.log, self.ref = elf, frames, full_regs, log, ref
+        self.chip_file, self.write_file, self.file_info = chip_file, write_file, None
         self.units = units
         self.model_dir = model_dir  # the text bridge: Qwen's tokenizer and config
         self.ex, self.build_s = None, 0.0
@@ -334,6 +347,8 @@ class Chip:
             return
         from chipformer.rv import exec4
 
+        if self.chip_file:
+            return self._load_file(t0)
         T, v0, target = None, 0, None
         if self.model_dir:
             from chipformer.rv import bridge as BR
@@ -344,12 +359,55 @@ class Chip:
             target = wide.target_of(self.model_dir)
         self.c = core.build(target, T, self.cfg)
         self.log("built", self.c.stats(), round(time.time() - t0, 1))
+        if self.write_file:
+            assert not self.model_dir, "--write-chip-file: the circuit without the text bridge"
+            from chipformer.rv import chipbuild
+
+            r = chipbuild.standalone(self.c, self.write_file, m, {"boot_sha256": self.boot_hash,
+                                                                 "elf_sha256": _sha(self.elf),
+                                                                 "frames": self.frames, "units": list(self.units)})
+            self.log("chip file", self.write_file, json.dumps({k: v for k, v in r.items() if k != "arrays"}),
+                     round(time.time() - t0, 1))
+            raise ChipFileWritten(self.write_file)
         core.snapshot(self.c, m)
         self.ex = exec4.Exec4(self.c, text=T, v0=v0, tables=exec4.cached_tables(self.c, T, v0))
         self.log("exec4 phases", self.ex.NPH, "slots", self.ex.n_slots, "smem", self.ex.smem, round(time.time() - t0, 1))
         self.ex.load_init()
         FL.install_stops(self.ex)
         self.S0 = self.ex.S.clone()
+        self.build_s = time.time() - t0
+
+    def _load_file(self, t0) -> None:
+        """The production path of docs/fx/chipfile.md: Executor v4's circuit lifted from the file's
+        weights, the boot state from the file's state. No circuit is built in Python. (cfg and the
+        reference machine still come from Python: LiveCPU's address map and the offline audit.)"""
+        import dataclasses
+
+        from chipformer.rv import chipfile as CF
+        from chipformer.rv import exec4
+
+        cf = CF.load(self.chip_file)
+        meta = cf.file.meta
+        if meta.get("boot_sha256") != self.boot_hash:
+            raise RuntimeError("the chip file's boot state is not this run's boot snapshot")
+        if meta.get("elf_sha256") != _sha(self.elf):
+            raise RuntimeError("the chip file was built for another ELF")
+        want = json.loads(json.dumps(dataclasses.asdict(self.cfg)))
+        if meta.get("cfg") != want:
+            raise RuntimeError("the chip file's memory map is not this run's")
+        assert cf.has_state(), "the chip file carries no boot state"
+        t1 = time.time()
+        self.ex = exec4.Exec4(cf, text=None, v0=cf.v0, tables=cf.exec_tables())
+        t2 = time.time()
+        cf.load_state(self.ex)
+        self.log("chip file", self.chip_file, "lift", round(t1 - t0, 1), "plan", round(t2 - t1, 1),
+                 "phases", self.ex.NPH, "slots", self.ex.n_slots, "layers", cf.n_layers())
+        FL.install_stops(self.ex)
+        self.S0 = self.ex.S.clone()
+        self.c = None
+        self.file_info = {"path": os.path.basename(self.chip_file), "bytes": os.path.getsize(self.chip_file),
+                          "sha256": _sha(self.chip_file), "layers": cf.n_layers(), "phases": self.ex.NPH,
+                          "lift_s": round(t1 - t0, 1), "plan_s": round(t2 - t1, 1)}
         self.build_s = time.time() - t0
 
     @staticmethod
@@ -383,6 +441,14 @@ class Chip:
         return FL.machine_at(self.elf, b["ad"], b["val"], b["x"], b["pc"], self.frames, self.bios, self.units)[1]
 
 
+def _sha(path: str) -> str:
+    h = hashlib.sha256()
+    with open(path, "rb") as f:
+        for blk in iter(lambda: f.read(1 << 20), b""):
+            h.update(blk)
+    return h.hexdigest()
+
+
 def stable_inodes(h, tmp) -> None:
     """A deterministic inode, as e2e / circ/run.py."""
     root = os.path.dirname(os.path.abspath(tmp))
@@ -401,12 +467,23 @@ def stable_inodes(h, tmp) -> None:
     h.fs._filestat = _filestat
 
 
+def write_files(root: str, files: dict) -> None:
+    for rel, data in files.items():
+        p = os.path.join(root, rel)
+        os.makedirs(os.path.dirname(p), exist_ok=True)
+        with open(p, "wb") as f:
+            f.write(data)
+
+
 def make_host(cls, dll_src, a, imports, workdir, name, link, twins=False):
     so = os.path.join(workdir, f"{name}.so")
     shutil.copy(dll_src, so)  # a host's emulator state lives in its own copy of the library
     dll = RUN.setup_dll(ctypes.CDLL(os.path.abspath(so)))
     repo = H.repo_dir(tempfile.mkdtemp(prefix=f"fxlive-{name}-", dir=workdir))
-    E.write_repo(repo)
+    if a.job:
+        write_files(repo, a.job["files"])  # the repository at the issue's base commit
+    else:
+        E.write_repo(repo)
     h = cls(dll, a.elf, imports, repo, a.turns, log=lambda *x: None, prof=False, memtrace=False)
     stable_inodes(h, repo)
     h.attach(link)
@@ -425,16 +502,23 @@ def session(a, chip: Chip, template, backend, task: str, rep: int, outdir: str, 
 
         probe = (a.probe, lambda cpu: TP.probe(*chip.wide(), cpu, chip.ex, chip.c, a.base_lp, a.probe_out, log))
     H.set_opts(**RH.parse_opts(E.GW + ["native=1", "fs=repo"]))
-    H.PROMPTS[:] = ([TK.TASKS[t]["prompt"] for t in a.chain] if a.chain
-                    else [TK.TASKS[task]["prompt"], E.SECOND_PROMPT][:a.turns])
+    if a.job:  # the issue's prompt, and open_pull_request among the tools initialize declares
+        H.PROMPTS[:] = [a.job["prompt"]]
+        H.TOOLS = list(TOOLS0) + [PR.TOOL]
+    else:
+        H.PROMPTS[:] = ([TK.TASKS[t]["prompt"] for t in a.chain] if a.chain
+                        else [TK.TASKS[task]["prompt"], E.SECOND_PROMPT][:a.turns])
+        H.TOOLS = list(TOOLS0)
     work = tempfile.mkdtemp(prefix="fxlive-", dir=a.tmp)
-    if backend is None:
+    if a.backend.startswith("replay:"):
         replay = a.backend.partition(":")[2].format(task=task, rep=rep)
         link = E.ReplayLink(replay)
     elif a.backend == "scripted":
         import scripted as SC
 
         link = D.DeltaLink(template, SC.ScriptedBackend(template, task, extra=a.turns - 1))
+    elif a.backend == "scripted-pr":  # (tests: the task's plan, then a call of open_pull_request)
+        link = D.DeltaLink(template, pr_scripted(template, a.job.get("task") or "t1_bug"))
     else:
         backend.reset()
         backend.gen.manual_seed(rep)
@@ -454,6 +538,13 @@ def session(a, chip: Chip, template, backend, task: str, rep: int, outdir: str, 
             orig.start()
     h, rec, repo = make_host(ChipHost, a.dll, a, imports, work, "chip", tee)
     h.attach_chip(chip, shadow, a.max_instr, orig)
+    prt = None
+    if a.job:
+        client = a.pr_client or PR.PrClient(a.job["pr_url"], a.job["run_id"])
+        prt = h.repo = PR.PrTools(h.repo, client)
+        for host, who in ((shadow, "rv32emu"), (orig, "rv32emu, original code")):
+            if host is not None:
+                host.repo = PR.ReplayPr(host.repo, prt, who)
     tee.host = h
     torch = None
     if not chip.ref:
@@ -469,7 +560,7 @@ def session(a, chip: Chip, template, backend, task: str, rep: int, outdir: str, 
             h.e._shadow(shadow.serve)
         if orig and orig.alive:
             h.e._shadow(orig.serve)
-    except KeyboardInterrupt:
+    except (KeyboardInterrupt, ChipFileWritten):
         raise
     except BaseException as e:  # (a wrong token, a divergence, anything: reported, not hidden)
         stopped = f"{type(e).__name__}: {e}"
@@ -479,7 +570,7 @@ def session(a, chip: Chip, template, backend, task: str, rep: int, outdir: str, 
     res = {"task": task, "rep": rep, "backend": a.backend, "elf": os.path.basename(a.elf),
            "elf_sha256": hashlib.sha256(open(a.elf, "rb").read()).hexdigest(), "stopped": stopped,
            "frames": a.frames, "turns": a.turns, "units": a.units, "chain": a.chain}
-    ok, why = E.solved(repo, task) if not stopped else (False, "")
+    ok, why = E.solved(repo, task) if not stopped and task in TK.TASKS else (False, "")
     if a.chain and not stopped:
         each = {t: E.solved(repo, t) for t in a.chain}
         ok, why = all(v[0] for v in each.values()), {t: v[1] for t, v in each.items()}
@@ -489,7 +580,17 @@ def session(a, chip: Chip, template, backend, task: str, rep: int, outdir: str, 
                packets_hex=b"".join(h.packets).hex(), host_calls=rec.calls, host_io_sha256=rec.sha.hexdigest(),
                import_calls=h.import_calls, unsupported_imports=h.unsupported, native_calls=h.native_calls,
                trap=[x for x in h.events if x[1] == "trap"],
-               boot={"instructions": h.boot["ic"], "state_sha256": chip.boot_hash})
+               boot={"instructions": h.boot["ic"], "state_sha256": chip.boot_hash},
+               chip_file=chip.file_info)
+    if a.job:
+        res["job"] = {k: v for k, v in a.job.items() if k != "files"}
+        res["prompt"] = H.PROMPTS[0]
+        res["tools_declared"] = [t["name"] for t in H.TOOLS]
+        res["pr"] = {"calls": [{"args": c["args"], "answer": c.get("answer"), "result": list(c["result"]),
+                                "store": c.get("store")} for c in prt.client.calls],
+                     "tool_calls_seen": [x[2] for x in h.events if x[1] == "tool_call"]}
+        res["pr"]["replayed"] = {who: host.repo.i for host, who in ((shadow, "rv32emu"), (orig, "orig"))
+                                 if host is not None and isinstance(host.repo, PR.ReplayPr)}
     b = getattr(tee.link, "b", None)
     qsec = dict(b.seconds) if b is not None and hasattr(b, "seconds") else {}
     t_model = tee.seconds
@@ -543,6 +644,22 @@ def session(a, chip: Chip, template, backend, task: str, rep: int, outdir: str, 
     return res
 
 
+TOOLS0 = list(H.TOOLS)
+
+
+def pr_scripted(template, task):
+    """The task's scripted plan with a call of open_pull_request before its final answer. Not Qwen
+    (scripted.py): it exercises the path and says nothing about the model."""
+    import scripted as SC
+
+    b = SC.ScriptedBackend(template, task)
+    final = b.steps[-1]
+    b.steps[-1:] = [("The change is done; opening the pull request.",
+                     (PR.NAME, {"title": "Scripted: " + task, "body": "A scripted test of the tool.\nLine 2."})),
+                    final]
+    return b
+
+
 def orig_memory(twin, orig) -> dict:
     """rv32emu with units against rv32emu on the original code: which words differ at the end."""
     a, b = twin.mem_array(), orig.mem_array()
@@ -574,7 +691,7 @@ def end_check(cpu, shadow, chip, boot, a) -> dict:
             "linear_top": top}
 
 
-def main():
+def parse(argv=None):
     ap = argparse.ArgumentParser()
     for x in ("dll", "elf", "imports", "model_dir", "out"):
         ap.add_argument(x)
@@ -598,17 +715,30 @@ def main():
     ap.add_argument("--probe", type=int, default=-1, help="text_paged's checks at this model call")
     ap.add_argument("--base-lp", default="")
     ap.add_argument("--probe-out", default="probe.json")
-    a = ap.parse_args()
+    ap.add_argument("--job", default=None, help="an issue run's job file (pr_driver.py)")
+    ap.add_argument("--chip-file", default=None, help="lift the circuit and boot state from this chip file")
+    ap.add_argument("--write-chip-file", default=None, help="write the chip file for this configuration, exit")
+    a = ap.parse_args(argv)
+    a.pr_client = None
+    if a.job:
+        a.job = load_job(a.job)
+        a.tasks = [a.job.get("task") or f"issue{a.job['issue']}"]
     a.tmp = a.tmp or tempfile.gettempdir()
     a.units = [u for u in a.units.split(",") if u]
     a.twins_all = "all+" in a.units or "jesc" in a.units
     if a.chain:
         a.turns = len(a.chain)
     os.makedirs(a.out, exist_ok=True)
+    return a
+
+
+def setup(a):
+    """(the chip, Qwen's template, the model backend) for a parsed command line."""
     template = None if a.backend.startswith("replay:") else D.QwenTemplate(a.model_dir)
     backend = None
     log = lambda *x: print(*x, flush=True)
-    chip = Chip(a.elf, a.frames, a.full_regs, log, a.cpu_ref, a.units, a.model_dir if a.text else None)
+    chip = Chip(a.elf, a.frames, a.full_regs, log, a.cpu_ref, a.units, a.model_dir if a.text else None,
+                a.chip_file, a.write_chip_file)
     if a.backend.startswith("hf:") and a.text:
         import qwen_wide as QW
 
@@ -619,11 +749,23 @@ def main():
         t0 = time.time()
         backend = QH.HfBackend.load(a.backend[3:], temperature=a.temperature, top_k=a.top_k, top_p=a.top_p, seed=0)
         print("qwen loaded", round(time.time() - t0, 1), flush=True)
+    return chip, template, backend
+
+
+def main():
+    a = parse()
+    chip, template, backend = setup(a)
+    log = lambda *x: print(*x, flush=True)
     for rep in a.reps:
         for task in a.tasks:
-            r = session(a, chip, template, backend, task, rep, a.out, log)
+            try:
+                r = session(a, chip, template, backend, task, rep, a.out, log)
+            except ChipFileWritten:
+                return
             r["build_s"] = round(chip.build_s, 1)
             p = os.path.join(a.out, f"live_{task}_{rep}{'_chain' if a.chain else '_t2' if a.turns == 2 else ''}.json")
+            if a.job:
+                p = os.path.join(a.out, f"pr_{a.job['run_id']}.json")
             json.dump(r, open(p, "w"))
             show = {k: r.get(k) for k in ("task", "rep", "solved", "check", "stopped", "steps", "chip", "qwen",
                                           "host_s", "shadow_s", "wall_s", "gpu_peak_bytes", "end")}
@@ -634,6 +776,14 @@ def main():
             if "audit" in r:
                 show["audit"] = r["audit"]
             log(json.dumps(show, default=str))
+
+
+def load_job(path: str) -> dict:
+    import base64
+
+    j = json.load(open(path))
+    j["files"] = {p: base64.b64decode(v) for p, v in j["files"].items()}
+    return j
 
 
 if __name__ == "__main__":
