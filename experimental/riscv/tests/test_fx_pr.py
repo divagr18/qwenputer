@@ -167,10 +167,30 @@ def test_github_error_text_goes_back_to_fx(tmp_path, remote):
     h, _ = handler(tmp_path, remote, gh=FakeGitHub(fail="GitHub: Validation Failed (A pull request already exists)"))
     ans = h.handle(req(FIXED))
     assert ans == {"ok": False, "text": "GitHub: Validation Failed (A pull request already exists)"}
-    # an attempt that failed at GitHub does not count as the run's pull request; the cap on attempts holds
+    # an attempt that failed at GitHub does not count as the run's pull request: the retry opens it
+    # on the branch the first attempt pushed, which holds exactly this change
     h.create_pr = FakeGitHub()
     ok = h.handle(req(FIXED))
-    assert ok["ok"] and ok["branch"] == "fx/issue-1-r1-2"
+    assert ok["ok"] and ok["branch"] == "fx/issue-1-r1" and h.calls[-1]["push"] == "reused"
+
+
+def test_a_lost_answer_is_recovered_without_a_second_branch(tmp_path, remote):
+    """The handler pushed, then died before answering (a restart). The same call again opens the PR
+    on that branch: same tree, same parent, same author. A different change on it is never touched."""
+    bare, base = remote
+    h, gh = handler(tmp_path, remote)
+    c = h.git.commit(base, {"inventory/money.py": FIXED["inventory/money.py"]}, "Fix total()")
+    assert h.git.push_new_branch(c, "fx/issue-1-r1") == "pushed"
+    ans = h.handle(req(FIXED))
+    assert ans["ok"] and ans["branch"] == "fx/issue-1-r1" and h.calls[-1]["push"] == "reused"
+    assert git("--git-dir", bare, "rev-parse", "refs/heads/fx/issue-1-r1").strip() == c
+    h2, gh2 = handler(tmp_path / "b", remote)
+    h2.runs["r1"]["slug"] = "issue-1-r1"
+    other = dict(FIXED)
+    other["inventory/parse.py"] = b"x = 1\n"
+    ans = h2.handle(req(other))
+    assert ans["ok"] and ans["branch"] == "fx/issue-1-r1-2"
+    assert git("--git-dir", bare, "rev-parse", "refs/heads/fx/issue-1-r1").strip() == c
 
 
 def test_footer_does_not_repeat_an_issue_link(tmp_path, remote):
@@ -178,6 +198,8 @@ def test_footer_does_not_repeat_an_issue_link(tmp_path, remote):
     h.handle(req(FIXED, body="Fixes #1: the loop skipped the last price."))
     assert gh.prs[0]["body"].count("#1") == 1
     assert "Fixes #3" in PS.footer("r", 3, "nothing") and "Fixes" not in PS.footer("r", None, "x")
+    assert "Fixes #4" in PS.footer("r", 4, "as requested in issue #4")  # a mention does not close it
+    assert "Fixes" not in PS.footer("r", 4, "Resolves #4.") and "Fixes #4" in PS.footer("r", 4, "fixes #41")
 
 
 def test_title_and_body_checks(tmp_path, remote):

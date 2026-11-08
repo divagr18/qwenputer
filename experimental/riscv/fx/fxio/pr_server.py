@@ -53,7 +53,8 @@ class PrError(Exception):
 
 def footer(run_id: str, issue: int | None, body: str) -> str:
     f = FOOTER.format(run_id=run_id)
-    if issue is not None and not re.search(rf"#{issue}\b", body):
+    # GitHub's closing keywords: a bare mention of #N links the issue but does not close it
+    if issue is not None and not re.search(rf"\b(close[sd]?|fix(e[sd])?|resolve[sd]?)\s+#{issue}\b", body, re.I):
         f += f"\nFixes #{issue}"
     return f
 
@@ -125,13 +126,24 @@ class Git:
     def branch_exists(self, branch: str) -> bool:
         return bool(self.run("ls-remote", "--heads", self.remote, f"refs/heads/{branch}").strip())
 
-    def push_new_branch(self, commit: str, branch: str) -> None:
+    def same_change(self, a: str, b: str) -> bool:
+        """The same tree on the same parent by the same author: one change, pushed twice."""
+        fmt = ["log", "-1", "--format=%T %P %an %ae"]
+        return self.run(*fmt, a) == self.run(*fmt, b)
+
+    def push_new_branch(self, commit: str, branch: str) -> str:
+        """'pushed', or 'reused' when the branch already holds exactly this change (an earlier
+        attempt of the same run pushed it, then lost its answer). Anything else on it is left alone."""
         if not BRANCH_RE.match(branch):
             raise PrError(f"refusing to push to {branch!r}: only fx/... branches")
         if self.branch_exists(branch):
+            self.run("fetch", "-q", self.remote, f"+refs/heads/{branch}:refs/remotes/pr/{branch}")
+            if self.same_change(commit, f"refs/remotes/pr/{branch}"):
+                return "reused"
             raise PrError(f"branch {branch} already exists; not overwriting it")
         # a plain push of a new ref: no --force, no + in the refspec, never main
         self.run("push", "-q", self.remote, f"{commit}:refs/heads/{branch}")
+        return "pushed"
 
 
 def gh_create_pr(repo: str, head: str, base: str, title: str, body: str) -> dict:
@@ -225,11 +237,18 @@ class Handler:
         if not changes:
             raise PrError("there are no changes to commit: the files are the same as on main")
         # an attempt is a push: checks that fail before here cost nothing and reach no remote
-        n = self.attempts[run_id] = self.attempts.get(run_id, 0) + 1
+        self.attempts[run_id] = self.attempts.get(run_id, 0) + 1
         commit = self.git.commit(base, changes, title)
-        branch = f"fx/{run['slug']}" + ("" if n == 1 else f"-{n}")
-        self.git.push_new_branch(commit, branch)
-        rec.update(commit=commit, branch=branch)
+        # the run's branch, or -2, -3: the first that is new or already holds exactly this change
+        for k in range(1, MAX_ATTEMPTS_PER_RUN + 1):
+            branch = f"fx/{run['slug']}" + ("" if k == 1 else f"-{k}")
+            try:
+                how = self.git.push_new_branch(commit, branch)
+                break
+            except PrError:
+                if k == MAX_ATTEMPTS_PER_RUN:
+                    raise
+        rec.update(commit=commit, branch=branch, push=how)
         pr = self.create_pr(REPO, branch, BASE_BRANCH, title, body + footer(run_id, run.get("issue"), body))
         self.count[run_id] = self.count.get(run_id, 0) + 1
         run["url"] = pr["url"]
