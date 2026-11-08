@@ -102,7 +102,9 @@ def test_opens_one_pull_request_with_exactly_the_changed_file(tmp_path, remote):
     pr = gh.prs[0]
     assert pr["repo"] == PS.REPO and pr["head"] == "fx/issue-1-r1" and pr["base"] == "main"
     assert pr["title"] == "Fix total()"
-    assert pr["body"].startswith("The loop skipped the last price.\n\n---\n*Added by the host, not by fx:*")
+    assert pr["body"].startswith("The loop skipped the last price.\n\n---\nThis pull request was opened by [fx](")
+    assert "Added by the host" not in pr["body"]
+    assert "The title, the text above this line and the change are fx's." in pr["body"]
     assert "Run `r1`." in pr["body"] and pr["body"].endswith("Fixes #1")
 
 
