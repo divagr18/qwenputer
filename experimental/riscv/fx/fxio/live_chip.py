@@ -3,16 +3,27 @@ P0c task from prompt to hidden check (docs/fx/live.md).
 
     python fx/fxio/live_chip.py DLL ELF IMPORTS MODEL_DIR OUTDIR --tasks t1_bug --reps 1 2
         [--backend hf:Qwen/Qwen3.5-4B | scripted | replay:RUN.json] [--turns 2] [--frames N]
-        [--full-regs] [--no-audit] [--max-instr N]
+        [--full-regs] [--no-audit] [--max-instr N] [--units all+] [--chain t1_bug t2_rename ..]
+        [--text] [--probe K --base-lp BASE.pt --probe-out OUT.json]
+
+--units: the hot-code units (chipformer/rv/hot.py) built into the circuit, firing at fixed ROM PCs.
+--chain: one long session, a turn per task's prompt on one repository; every task's hidden check
+runs on the final repository.
+--text: the circuit with the text bridge. Qwen is its merged form (chipformer/rv/wide.py, with hf:
+backends), fx parks for every model call, and Qwen's tokens go through the circuit as model input.
+--probe K: at model call K run fx/fxio/text_paged.py's checks, the machine holding fx's state.
 
 The host is rvhost's with its memory, registers and run loop replaced by chipformer.rv.fxlive
 (tokens, no pokes): the same import handlers, file store and model link. rv32emu boots fx to the
 first stdin read and that state is the circuit's boot snapshot (as docs/fx/memory.md).
 
-Two checks run beside the chip. Neither feeds anything into it:
+Checks run beside the chip. None feeds anything into it:
 - rv32emu in lockstep, on the same model replies: at every ecall the PC, the registers the chip
   printed and the instruction count must match, and every request body must match byte for byte.
-  A difference stops the run, as does a chip token of the wrong kind.
+  A difference stops the run, as does a chip token of the wrong kind. With units on this rv32emu
+  runs the units' twins (fx/rv/circ_units.h, circ_loops.h), so all 31 registers still compare.
+- with units on, a second rv32emu runs the original code, no units, on the same replies: PC, every
+  register a unit may not leave stale, every request body, the host I/O hash chain, the repository.
 - after the run, every chip token against the reference machine, offline (fxlive.audit).
 """
 from __future__ import annotations
@@ -74,14 +85,23 @@ class Booting:
 class TeeLink:
     """The model link; the shadow answers from what it returned."""
 
-    def __init__(self, link) -> None:
+    def __init__(self, link, park: bool = False, probe=None) -> None:
         self.link, self.last, self.seconds, self.calls = link, None, 0.0, 0
-        self.host = None
+        self.host, self.park, self.probe = None, park, probe
 
     def call(self, raw: bytes):
+        cpu = self.host.cpu
+        if self.park:
+            cpu.park()
+        if self.probe and self.calls == self.probe[0]:
+            self.probe[1](cpu)
         t0 = time.perf_counter()
+        t_text = cpu.seconds["text"]
         chunks, rec = self.link.call(raw)
         dt = time.perf_counter() - t0
+        rec["chip_text_s"] = round(cpu.seconds["text"] - t_text, 3)
+        if self.park:
+            cpu.unpark()
         self.seconds += dt
         self.calls += 1
         rec["link_s"] = round(dt, 3)
@@ -104,14 +124,40 @@ class ShadowLink:
         return list(chunks), dict(rec)
 
 
+# caller-saved registers a unit may leave stale against the original code: t0-t2, a2-a6, t3-t6
+# (dead by the ABI, docs/fx/circuits2.md). Not compared with the units-off rv32emu.
+DEAD_ABI = sum(1 << r for r in (5, 6, 7, 12, 13, 14, 15, 16, 28, 29, 30, 31))
+# rv32emu's twins of the units built in hot.py, as fx/rv/snaplog.py --units
+TWINS = "move,set,eql,bcopy,jscan,sha,tok2,chr2a,chr2b,asc2"
+TWINS_ALL = TWINS + ",jesc2,maskp2"
+
+
+def install_twins(dll, elf_path, names) -> None:
+    import units as CU
+
+    names = names.split(",")
+    specs, skipped = CU.specs_for(elf_path, ",".join(n for n in names if n not in CU.TWINS))
+    assert not skipped, skipped
+    specs += CU.twin_specs(names)
+    for sp in specs:
+        if sp["name"] == "sha":  # as built: message words aligned
+            sp["kind"] = CU.TWIN_KIND["U_SHA2"]
+    RUN.install(dll, specs)
+
+
 class ShadowHost(Booting, E.IoHost):
-    """rv32emu on the chip's model replies, one ecall at a time."""
+    """rv32emu on the chip's model replies, one ecall at a time. twins: its units go on at boot's
+    end, where the chip starts."""
+
+    twins = False
 
     def start(self) -> None:
         try:
             RH.RvHost.run(self)
         except BootDone:
             self.booted = True
+        if self.twins:
+            self.e.rv_units_mode(1)
         self.r, self.pc, self.fresh, self.alive = 1, self.e.rv_get_pc(), True, True
 
     def step(self) -> None:
@@ -127,11 +173,12 @@ class ShadowHost(Booting, E.IoHost):
 class ChipE:
     """What rvhost's loop needs of an emulator, on the chip."""
 
-    def __init__(self, h, cpu, shadow, boot_ic: int, max_instr: int) -> None:
-        self.h, self.cpu, self.shadow, self.boot_ic = h, cpu, shadow, boot_ic
+    def __init__(self, h, cpu, shadow, boot_ic: int, max_instr: int, orig=None) -> None:
+        self.h, self.cpu, self.shadow, self.boot_ic, self.orig = h, cpu, shadow, boot_ic, orig
         self.pc, self.ret, self.started, self.exited = 0, 0, False, False
         self.max_instr = max_instr
         self.ic_slack: dict = {}
+        self.dead_differ = 0  # registers that differ from the original code, all in DEAD_ABI
         self.t_shadow = 0.0
         self.ecalls = 0
 
@@ -162,11 +209,13 @@ class ChipE:
         self.t_shadow += time.perf_counter() - t0
 
     def _serve_shadow(self) -> None:
-        s = self.shadow
-        s.serve()
-        if s.alive and s.regs[10] != self.h.regs[10]:
-            raise Divergence(f"ecall {self.ecalls}: a0 from the host {self.h.regs[10]:#x}, "
-                             f"rv32emu's {s.regs[10]:#x}")
+        for s in (self.shadow, self.orig):
+            if s is None:
+                continue
+            s.serve()
+            if s.alive and s.regs[10] != self.h.regs[10]:
+                raise Divergence(f"ecall {self.ecalls}: a0 from the host {self.h.regs[10]:#x}, "
+                                 f"rv32emu's {s.regs[10]:#x}")
 
     def _sync(self, kind, pc, regs) -> None:
         s = self.shadow
@@ -180,6 +229,18 @@ class ChipE:
             raise Divergence(f"ecall {self.ecalls} at {pc}: registers {bad}")
         d = int(s.e.rv_icount()) - self.rv_icount()
         self.ic_slack[d] = self.ic_slack.get(d, 0) + 1
+        o = self.orig
+        if o is None:
+            return
+        o.step()
+        if o.r != 1:
+            raise Divergence(f"ecall {self.ecalls}: the original code stopped with {o.r}")
+        if kind == "ecall" and o.pc != pc:
+            raise Divergence(f"ecall {self.ecalls}: chip pc {pc:#x}, the original code {o.pc:#x}")
+        bad = {r: (v, o.regs[r]) for r, v in regs.items() if o.regs[r] != v and not DEAD_ABI >> r & 1}
+        if bad:
+            raise Divergence(f"ecall {self.ecalls} at {pc}: registers against the original code {bad}")
+        self.dead_differ += sum(o.regs[r] != v for r, v in regs.items())
 
     def rv_run(self, _n) -> int:
         h, cpu = self.h, self.cpu
@@ -211,8 +272,8 @@ class ChipHost(Booting, E.IoHost):
 
     cpu = None
 
-    def attach_chip(self, chip, shadow, max_instr) -> None:
-        self.chip, self.shadow, self.max_instr = chip, shadow, max_instr
+    def attach_chip(self, chip, shadow, max_instr, orig=None) -> None:
+        self.chip, self.shadow, self.max_instr, self.orig = chip, shadow, max_instr, orig
 
     def rd(self, p, n):
         return self.cpu.read(self.lin + p, n) if self.cpu else super().rd(p, n)
@@ -240,7 +301,7 @@ class ChipHost(Booting, E.IoHost):
         self.booted = True
         self.cpu = self.chip.cpu_for(self.boot)
         self.emu_regs, self.regs = self.regs, [0] * 32
-        self.e = ChipE(self, self.cpu, self.shadow, self.boot["ic"], self.max_instr)
+        self.e = ChipE(self, self.cpu, self.shadow, self.boot["ic"], self.max_instr, self.orig)
 
     def run(self):
         try:
@@ -254,14 +315,17 @@ class ChipHost(Booting, E.IoHost):
 class Chip:
     """The circuit, its kernel and the boot snapshot, kept across runs."""
 
-    def __init__(self, elf: str, frames: int, full_regs: bool, log=print, ref: bool = False) -> None:
+    def __init__(self, elf: str, frames: int, full_regs: bool, log=print, ref: bool = False, units=(),
+                 model_dir: str | None = None) -> None:
         self.elf, self.frames, self.full, self.log, self.ref = elf, frames, full_regs, log, ref
+        self.units = units
+        self.model_dir = model_dir  # the text bridge: Qwen's tokenizer and config
         self.ex, self.build_s = None, 0.0
         self.bios = FL.Bios(FL.FX_IO_BASE)
 
     def _build(self, b) -> None:
         t0 = time.time()
-        self.cfg, m = FL.machine_at(self.elf, b["ad"], b["val"], b["x"], b["pc"], self.frames, self.bios)
+        self.cfg, m = FL.machine_at(self.elf, b["ad"], b["val"], b["x"], b["pc"], self.frames, self.bios, self.units)
         self.boot = b
         self.boot_hash = self._hash(b)
         if self.ref:
@@ -270,10 +334,18 @@ class Chip:
             return
         from chipformer.rv import exec4
 
-        self.c = core.build(cfg=self.cfg)
+        T, v0, target = None, 0, None
+        if self.model_dir:
+            from chipformer.rv import bridge as BR
+            from chipformer.rv import wide
+
+            T = self.T = BR.Text(os.path.join(self.model_dir, "tokenizer.json"))
+            v0 = json.load(open(os.path.join(self.model_dir, "config.json")))["text_config"]["vocab_size"]
+            target = wide.target_of(self.model_dir)
+        self.c = core.build(target, T, self.cfg)
         self.log("built", self.c.stats(), round(time.time() - t0, 1))
         core.snapshot(self.c, m)
-        self.ex = exec4.Exec4(self.c, text=None, v0=0, tables=exec4.cached_tables(self.c, None, 0))
+        self.ex = exec4.Exec4(self.c, text=T, v0=v0, tables=exec4.cached_tables(self.c, T, v0))
         self.log("exec4 phases", self.ex.NPH, "slots", self.ex.n_slots, "smem", self.ex.smem, round(time.time() - t0, 1))
         self.ex.load_init()
         FL.install_stops(self.ex)
@@ -298,9 +370,17 @@ class Chip:
         self.ex.reset()
         return FL.LiveCPU(FL.ExecBackend(self.ex), self.bios, self.cfg, self.full)
 
+    def wide(self) -> tuple:
+        """Qwen's merged layers for this circuit, once."""
+        if getattr(self, "_wide", None) is None:
+            from chipformer.rv import wide
+
+            self._wide = wide.wide_chat(self.model_dir, self.c, self.T)
+        return self._wide
+
     def machine(self):
         b = self.boot
-        return FL.machine_at(self.elf, b["ad"], b["val"], b["x"], b["pc"], self.frames, self.bios)[1]
+        return FL.machine_at(self.elf, b["ad"], b["val"], b["x"], b["pc"], self.frames, self.bios, self.units)[1]
 
 
 def stable_inodes(h, tmp) -> None:
@@ -321,7 +401,7 @@ def stable_inodes(h, tmp) -> None:
     h.fs._filestat = _filestat
 
 
-def make_host(cls, dll_src, a, imports, workdir, name, link):
+def make_host(cls, dll_src, a, imports, workdir, name, link, twins=False):
     so = os.path.join(workdir, f"{name}.so")
     shutil.copy(dll_src, so)  # a host's emulator state lives in its own copy of the library
     dll = RUN.setup_dll(ctypes.CDLL(os.path.abspath(so)))
@@ -330,14 +410,23 @@ def make_host(cls, dll_src, a, imports, workdir, name, link):
     h = cls(dll, a.elf, imports, repo, a.turns, log=lambda *x: None, prof=False, memtrace=False)
     stable_inodes(h, repo)
     h.attach(link)
+    if twins:
+        install_twins(dll, a.elf, TWINS_ALL if a.twins_all else TWINS)
+        h.twins = True
     dll.rv_units_mode(0)
     rec = RUN.Recorder(h)
     return h, rec, repo
 
 
 def session(a, chip: Chip, template, backend, task: str, rep: int, outdir: str, log=print) -> dict:
+    probe = None
+    if a.probe >= 0 and a.text:
+        import text_paged as TP
+
+        probe = (a.probe, lambda cpu: TP.probe(*chip.wide(), cpu, chip.ex, chip.c, a.base_lp, a.probe_out, log))
     H.set_opts(**RH.parse_opts(E.GW + ["native=1", "fs=repo"]))
-    H.PROMPTS[:] = [TK.TASKS[task]["prompt"], E.SECOND_PROMPT][:a.turns]
+    H.PROMPTS[:] = ([TK.TASKS[t]["prompt"] for t in a.chain] if a.chain
+                    else [TK.TASKS[task]["prompt"], E.SECOND_PROMPT][:a.turns])
     work = tempfile.mkdtemp(prefix="fxlive-", dir=a.tmp)
     if backend is None:
         replay = a.backend.partition(":")[2].format(task=task, rep=rep)
@@ -352,26 +441,34 @@ def session(a, chip: Chip, template, backend, task: str, rep: int, outdir: str, 
         for k in backend.seconds:
             backend.seconds[k] = 0.0
         link = D.DeltaLink(template, backend)
-    tee = TeeLink(link)
+    tee = TeeLink(link, park=bool(a.text), probe=probe)
     imports = json.load(open(a.imports))
     shadow, srec, srepo = None, None, None
-    slink = ShadowLink(tee)
+    orig, orec, orepo = None, None, None
+    slink, olink = ShadowLink(tee), ShadowLink(tee)
     if not a.no_shadow:
-        shadow, srec, srepo = make_host(ShadowHost, a.dll, a, imports, work, "emu", slink)
+        shadow, srec, srepo = make_host(ShadowHost, a.dll, a, imports, work, "emu", slink, twins=bool(a.units))
         shadow.start()
+        if a.units:
+            orig, orec, orepo = make_host(ShadowHost, a.dll, a, imports, work, "orig", olink)
+            orig.start()
     h, rec, repo = make_host(ChipHost, a.dll, a, imports, work, "chip", tee)
-    h.attach_chip(chip, shadow, a.max_instr)
+    h.attach_chip(chip, shadow, a.max_instr, orig)
     tee.host = h
     torch = None
     if not chip.ref:
         import torch
 
         torch.cuda.reset_peak_memory_stats()
+    if backend is not None and a.text:
+        backend.cpu_of = lambda: h.cpu
     stopped, t0, built0 = None, time.perf_counter(), chip.build_s
     try:
         h.run()
         if shadow and shadow.alive:
             h.e._shadow(shadow.serve)
+        if orig and orig.alive:
+            h.e._shadow(orig.serve)
     except KeyboardInterrupt:
         raise
     except BaseException as e:  # (a wrong token, a divergence, anything: reported, not hidden)
@@ -381,8 +478,11 @@ def session(a, chip: Chip, template, backend, task: str, rep: int, outdir: str, 
     cpu, e = h.cpu, h.e
     res = {"task": task, "rep": rep, "backend": a.backend, "elf": os.path.basename(a.elf),
            "elf_sha256": hashlib.sha256(open(a.elf, "rb").read()).hexdigest(), "stopped": stopped,
-           "frames": a.frames, "turns": a.turns}
+           "frames": a.frames, "turns": a.turns, "units": a.units, "chain": a.chain}
     ok, why = E.solved(repo, task) if not stopped else (False, "")
+    if a.chain and not stopped:
+        each = {t: E.solved(repo, t) for t in a.chain}
+        ok, why = all(v[0] for v in each.values()), {t: v[1] for t, v in each.items()}
     files = {r: open(os.path.join(repo, r), encoding="utf-8").read() for r in h.repo.files() if "__pycache__" not in r}
     res.update(solved=ok, check=why, steps=len(h.calls_log), model_calls=h.calls_log, final_repo=files,
                final_repo_sha256=hashlib.sha256(json.dumps(files, sort_keys=True).encode()).hexdigest(),
@@ -403,7 +503,7 @@ def session(a, chip: Chip, template, backend, task: str, rep: int, outdir: str, 
                    "fed": sum(r.get("delta_tokens", 0) for r in h.calls_log),
                    "rollbacks": sum(r.get("kind") == "rollback" for r in h.calls_log),
                    "snapshot_bytes": getattr(b, "snapshot_bytes", 0)}
-    t_cpu = sum(cpu.seconds.values())
+    t_cpu = sum(v for k, v in cpu.seconds.items() if k != "text")  # (the text's is in the model link's)
     res["host_s"] = round(wall - t_cpu - t_model - e.t_shadow - (chip.build_s - built0), 3)  # (not the circuit's build)
     res["shadow_s"] = round(e.t_shadow, 3)
     res["wall_s"] = round(wall, 3)
@@ -417,6 +517,13 @@ def session(a, chip: Chip, template, backend, task: str, rep: int, outdir: str, 
         sfiles = {r: open(os.path.join(srepo, r), encoding="utf-8").read() for r in shadow.repo.files()
                   if "__pycache__" not in r}
         res["emu"]["final_repo_equal"] = sfiles == files
+        if orig:
+            ofiles = {r: open(os.path.join(orepo, r), encoding="utf-8").read() for r in orig.repo.files()
+                      if "__pycache__" not in r}
+            res["orig"] = {"requests_identical": olink.same, "instr": int(orig.e.rv_icount()),
+                           "host_calls": orec.calls, "host_io_equal": orec.sha.hexdigest() == rec.sha.hexdigest(),
+                           "final_repo_equal": ofiles == files, "registers_differing_dead": e.dead_differ,
+                           "memory": orig_memory(shadow, orig)}
         if not stopped and not a.max_instr:
             res["end"] = end_check(cpu, shadow, chip, h.boot, a)
     if not a.no_audit:
@@ -436,11 +543,24 @@ def session(a, chip: Chip, template, backend, task: str, rep: int, outdir: str, 
     return res
 
 
+def orig_memory(twin, orig) -> dict:
+    """rv32emu with units against rv32emu on the original code: which words differ at the end."""
+    a, b = twin.mem_array(), orig.mem_array()
+    d = np.nonzero(a != b)[0].astype(np.int64) << 2
+    stack = (d >= 0x07FC0000) & (d < 0x08000000)
+    sp = int(orig.regs[2])
+    return {"words_differing": len(d), "on_the_c_stack": int(stack.sum()),
+            "on_the_c_stack_above_sp": int((d[stack] >= sp).sum()),
+            "elsewhere": [hex(x) for x in d[~stack][:16].tolist()], "elsewhere_n": int((~stack).sum())}
+
+
 def end_check(cpu, shadow, chip, boot, a) -> dict:
     """The end of the run: all registers and every page rv32emu changed, printed by the chip."""
     regs = cpu.enter(full=True)
     bad_regs = {r: (v, shadow.regs[r]) for r, v in regs.items() if shadow.regs[r] != v}
     mem = shadow.mem_array().copy()
+    linear = np.nonzero(mem[: 0x02000000 >> 2])[0]
+    top = int(linear[-1]) << 2 if len(linear) else 0
     base = np.zeros(len(mem), np.uint32)
     base[boot["ad"]] = boot["val"]
     diff = np.nonzero(mem != base)[0]
@@ -450,7 +570,8 @@ def end_check(cpu, shadow, chip, boot, a) -> dict:
         got = cpu.read_words(pg << 9, 128, kind="audit")
         bad += int((np.asarray(got, np.uint32) != mem[pg << 7:(pg + 1) << 7]).sum())
     return {"registers_differing": len(bad_regs), "registers": {str(k): v for k, v in bad_regs.items()},
-            "pages_changed_by_rv32emu": len(pages), "words_differing": bad, "words_read": 128 * len(pages)}
+            "pages_changed_by_rv32emu": len(pages), "words_differing": bad, "words_read": 128 * len(pages),
+            "linear_top": top}
 
 
 def main():
@@ -462,6 +583,8 @@ def main():
     ap.add_argument("--backend", default="hf:Qwen/Qwen3.5-4B")
     ap.add_argument("--frames", type=int, default=1024)
     ap.add_argument("--turns", type=int, default=1, choices=(1, 2))
+    ap.add_argument("--chain", nargs="*", default=[], help="one session: a turn per task, in order")
+    ap.add_argument("--units", default="", help="unit names (hot.FX_R24), comma-separated, or all+")
     ap.add_argument("--full-regs", action="store_true")
     ap.add_argument("--no-shadow", action="store_true")
     ap.add_argument("--no-audit", action="store_true")
@@ -471,29 +594,43 @@ def main():
     ap.add_argument("--top-p", type=float, default=1.0)
     ap.add_argument("--tmp", default=None)
     ap.add_argument("--cpu-ref", action="store_true", help="the reference machine as the chip: tests the host, no GPU")
+    ap.add_argument("--text", action="store_true", help="the circuit with the text bridge; Qwen in merged form")
+    ap.add_argument("--probe", type=int, default=-1, help="text_paged's checks at this model call")
+    ap.add_argument("--base-lp", default="")
+    ap.add_argument("--probe-out", default="probe.json")
     a = ap.parse_args()
     a.tmp = a.tmp or tempfile.gettempdir()
+    a.units = [u for u in a.units.split(",") if u]
+    a.twins_all = "all+" in a.units or "jesc" in a.units
+    if a.chain:
+        a.turns = len(a.chain)
     os.makedirs(a.out, exist_ok=True)
     template = None if a.backend.startswith("replay:") else D.QwenTemplate(a.model_dir)
     backend = None
-    if a.backend.startswith("hf:"):
+    log = lambda *x: print(*x, flush=True)
+    chip = Chip(a.elf, a.frames, a.full_regs, log, a.cpu_ref, a.units, a.model_dir if a.text else None)
+    if a.backend.startswith("hf:") and a.text:
+        import qwen_wide as QW
+
+        backend = QW.WideBackend(chip, a.model_dir, temperature=a.temperature, top_k=a.top_k, top_p=a.top_p, seed=0)
+    elif a.backend.startswith("hf:"):
         import qwen_hf as QH
 
         t0 = time.time()
         backend = QH.HfBackend.load(a.backend[3:], temperature=a.temperature, top_k=a.top_k, top_p=a.top_p, seed=0)
         print("qwen loaded", round(time.time() - t0, 1), flush=True)
-    log = lambda *x: print(*x, flush=True)
-    chip = Chip(a.elf, a.frames, a.full_regs, log, a.cpu_ref)
     for rep in a.reps:
         for task in a.tasks:
             r = session(a, chip, template, backend, task, rep, a.out, log)
             r["build_s"] = round(chip.build_s, 1)
-            p = os.path.join(a.out, f"live_{task}_{rep}{'_t2' if a.turns == 2 else ''}.json")
+            p = os.path.join(a.out, f"live_{task}_{rep}{'_chain' if a.chain else '_t2' if a.turns == 2 else ''}.json")
             json.dump(r, open(p, "w"))
             show = {k: r.get(k) for k in ("task", "rep", "solved", "check", "stopped", "steps", "chip", "qwen",
                                           "host_s", "shadow_s", "wall_s", "gpu_peak_bytes", "end")}
             if "emu" in r:
                 show["emu"] = {k: v for k, v in r["emu"].items() if k != "host_io_sha256"}
+            if "orig" in r:
+                show["orig"] = r["orig"]
             if "audit" in r:
                 show["audit"] = r["audit"]
             log(json.dumps(show, default=str))

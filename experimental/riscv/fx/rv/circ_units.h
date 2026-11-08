@@ -21,7 +21,7 @@
 
 enum {
   U_NONE, U_MEMMOVE, U_MEMCPY, U_MEMSET, U_EQL, U_TOKEST, U_JSCAN, U_JESC, U_ASCII, U_MASKP,
-  U_MEMCHR, U_BCOPY, U_SHA, U_WYHASH, U_MOVE_IR, U_EQL_IR, U_TOK2, U_CHR2, U_ASC2, U_SHA2, U_NKINDS
+  U_MEMCHR, U_BCOPY, U_SHA, U_WYHASH, U_MOVE_IR, U_EQL_IR, U_TOK2, U_CHR2, U_ASC2, U_SHA2, U_JESC2, U_MASKP2, U_NKINDS
 };
 #define MAXT 64
 #define DMAX 64 /* data tokens per record (records stay <= 80 tokens with their commits) */

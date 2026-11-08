@@ -157,3 +157,161 @@ def test_capture_is_one_token_a_byte():
     n = 830
     toks = sum((FL.word_tokens(0x41424344, 0) for _ in range(n)), [])
     assert len(toks) == 4 * n and len(toks) / (4 * n) == 1.0
+
+
+# ---- the hot-code units and the text bridge on the same path (docs/fx/one.md) -----------------
+
+def test_units_with_the_io_rom():
+    """A build with units and the I/O ROM (BPRD stays in, every other digit op is pruned): the
+    units fire, then the host reads a copy's result and the registers through tokens."""
+    from dataclasses import replace
+
+    import test_rv_hot as TH
+    from chipformer.rv import hot
+
+    calls = [("move", 0x11001, 0x12003, 37), ("set", 0x14001, 0x5A, 70), ("eql", 0x10003, 9, 0x10100, 9)]
+    bios = FL.Bios(0x48000)
+    m, cfg = TH.machine(calls)
+    bios.install(m)
+    cfg = replace(cfg, absent=hot.rom_absent(m.rom, cfg))
+    assert "BPRD" not in cfg.absent and "BMAC" in cfg.absent
+    m.cfg = cfg
+    c = core.build(cfg=cfg)
+    core.snapshot(c, m)
+
+    def mk():
+        m2, _ = TH.machine(calls)
+        bios.install(m2)
+        m2.cfg = cfg
+        return m2
+
+    ref_end = mk()
+    cpu = FL.LiveCPU(IrBackend(c), bios, cfg, full_regs=True)
+    chip, stop = cpu.go()
+    fams = {S.family(int(t))[0] for t in chip}
+    assert "M" in fams and "CW" in fams
+    kind, _ = cpu.parse_stop(chip, stop)
+    assert kind == "exit"
+    regs = cpu.enter()
+    a = FL.audit(mk(), *cpu.fed())
+    assert a["wrong"] is None, a
+    ref_end.run(10**7)
+    assert all(regs[r] == ref_end.x[r] for r in regs)
+    got = cpu.read_words(0x11000, 12)
+    assert got == [ref_end.ram_word(0x11000 + 4 * i) for i in range(12)]
+    # and a host write onto a page a unit mapped
+    cpu.write(0x14000, b"\x01\x02\x03\x04")
+    cpu.cache.clear()
+    assert cpu.read(0x14000, 4) == b"\x01\x02\x03\x04"
+
+
+@pytest.fixture(scope="module")
+def T():
+    from chipformer.rv import bridge as BR
+
+    try:
+        return BR.Text(BR.default_tokenizer())
+    except FileNotFoundError:
+        pytest.skip("no Qwen3.5 tokenizer in the HF cache")
+
+
+def text_cfg():
+    from dataclasses import replace
+
+    return replace(BIG, text_addr=0x7F0000)
+
+
+def test_text_buffer_cannot_collide():
+    from dataclasses import replace
+
+    with pytest.raises(AssertionError):  # the legacy address is inside this map's first window
+        replace(BIG, text_addr=0x4000)
+
+
+def test_text_bridge_on_the_paged_map(T):
+    """A tool call's text reaches the machine at the paged map's buffer; </tool_call> starts the run;
+    every token the circuit owns is right."""
+    from chipformer.rv import bridge as BR
+
+    cfg = text_cfg()
+    src = f"""
+    li a7, 93
+    ecall
+    li t0, {cfg.text_addr:#x}
+    lbu a0, 16(t0)
+    li a7, 1
+    ecall
+    lbu a0, 17(t0)
+    li a7, 1
+    ecall
+    lw s1, 16(t0)
+    li a7, 93
+    ecall
+"""
+
+    def mk():
+        p = assemble(src, base=cfg.rom_base)
+        m = ref.PagedMachine.from_segments(cfg, p.entry, [(cfg.rom_base, b"".join(w.to_bytes(4, "little") for w in p.text))])
+        BR.park(m)
+        return m
+
+    c = core.build(text=T, cfg=cfg)
+    m0, m = mk(), mk()
+    ses = BR.Session(T, m)
+    ses.qwen(T.encode("<|im_start|>assistant\n"))
+    ses.qwen(T.encode("<tool_call>hi</tool_call>"))
+    ses.qwen(T.encode("done"))
+    assert T.decode_bytes(ses.runs[-1]).startswith(T.bytes[T.encode("hi")[0]][:2])
+    assert m.x[9] != 0
+    core.snapshot(c, m0)
+    mat = ir.evaluate(c, ses.toks)
+    pred = core.predictions(c, mat)
+    own = np.rint(ir.ev(c.owner, mat)).astype(int)
+    assert [i for i in range(len(ses.toks)) if own[i] != int(ses.own[i])] == []
+    assert [i for i in range(len(ses.toks) - 1) if ses.own[i] and pred[i] != ses.toks[i + 1]] == []
+
+
+def test_a_parked_machine_ignores_text(T):
+    """The live path with the bridge built in: at an ecall the machine parks, Qwen's text (with a
+    tool call in it) goes through the circuit, and fx's registers and memory are as they were."""
+    cfg = text_cfg()
+    c = core.build(text=T, cfg=cfg)
+
+    def mk():
+        p = assemble(SRC + EXIT, base=cfg.rom_base)
+        segs = [(cfg.rom_base, b"".join(w.to_bytes(4, "little") for w in p.text))]
+        m = ref.PagedMachine.from_segments(cfg, p.entry, segs)
+        BIOS.install(m)
+        return m
+
+    core.snapshot(c, mk())
+
+    class Ir(IrBackend):
+        def text(self, qids, dbg=False):
+            ir.evaluate(self.c, [S.TEXT_TOKEN | q for q in qids], check=False, carry=self.carry)
+            return None, None
+
+    cpu = FL.LiveCPU(Ir(c), BIOS, cfg, full_regs=True)
+    data = bytes((i * 3 + 1) & 0xFF for i in range(601))
+    chip, stop = cpu.go()
+    seen = []
+    while True:
+        kind, pc = cpu.parse_stop(chip, stop)
+        regs = cpu.enter()
+        if kind == "exit":
+            break
+        a7, a0 = regs[FL.A7], regs[FL.A0]
+        res = a0
+        if a7 == 1025:
+            p, n = cpu.read_words(a0, 2)
+            cpu.park()
+            cpu.text(T.encode("Sure.<tool_call>\nabc\n</tool_call>\n<|im_end|>"))
+            cpu.unpark()
+            cpu.write(p, data[:n])
+            res = 0x5A5A5
+        else:
+            seen.append(a0)
+        chip, stop = cpu.resume(pc + 4, a7, res)
+    assert seen == [data[0] + data[600] + 0x5A5A5]
+    r = FL.audit(mk(), *cpu.fed())
+    assert r["wrong"] is None, r

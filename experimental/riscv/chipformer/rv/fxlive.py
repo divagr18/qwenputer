@@ -20,6 +20,7 @@ not in the ELF, and no fx word moves:
   set        addi rX, rX, 0            the host's forced value record sets a register
   probe      lw a7, 0(a0); sw a7, 0(a0)   a page's frame: PA(f) if unmapped, ST0 / ST1 (see below)
   stop       BPRD                      its BYTE prediction ends a launch; never fed, never commits
+  park       BPRD; BPRD                text builds: the words the machine stands on while Qwen reads
 
 Which ends a launch: the live decode table gives HALT and BYTE no embedding row (Exec4's lut), so
 the kernel stops there with the token as its last prediction and does not run it. Everything else
@@ -33,6 +34,12 @@ a guest store would and prints the parity as ST0 / ST1. The stored value is the 
 The capture window (docs/fx/io.md blocker 1) goes with this: a reply is a stream of SS records
 into paged RAM, 1 token a byte, as long as fx's own buffer.
 
+With the text bridge in the circuit (core.build(text=...), docs/fx/one.md) the circuit owns a position
+only between GO and HALT. An ecall's HALT is predicted and never fed, so fx "runs" all session; for
+Qwen to read, the machine has to be parked: the host jumps to the park words, feeds HALT (which ends
+the run, as the firmware's exit does on the legacy map) and feeds Qwen's tokens; GO ends the park and
+the machine stands on the next park word, which has no rd, so the host can jump from it.
+
 `audit` walks a run's token log on the reference machine: every chip token must equal the
 reference's, and every forced token is applied as above. It is an offline check: nothing in the
 production path reads the reference.
@@ -41,10 +48,11 @@ production path reads the reference.
 from __future__ import annotations
 
 import time
+from dataclasses import replace
 
 import numpy as np
 
-from chipformer.rv import core, elf, fxrun, ref
+from chipformer.rv import core, elf, fxrun, hot, ref
 from chipformer.rv import spec as S
 
 A0, A1, A7 = 10, 11, 17
@@ -82,7 +90,7 @@ I_STOP = 0x2B  # BPRD d0[0]
 class Bios:
     """The I/O ROM's layout, at ROM word index ``base`` (inside one 64K-word window)."""
 
-    E_SHORT, E_FULL, SET_A0, SET_RET, PROBE = 0, 4, 40, 42, 45
+    E_SHORT, E_FULL, SET_A0, SET_RET, PROBE, PARK = 0, 4, 40, 42, 45, 48
     RSLED, WSLED = 512, 2048
     WORDS = 2048 + SLED + 1
 
@@ -101,6 +109,7 @@ class Bios:
         w[self.SET_A0], w[self.SET_A0 + 1] = i_addi(A0, A0), I_STOP
         w[self.SET_RET], w[self.SET_RET + 1], w[self.SET_RET + 2] = i_addi(A7, A7), i_addi(A0, A0), I_STOP
         w[self.PROBE], w[self.PROBE + 1], w[self.PROBE + 2] = i_lw(A7, A0, 0), i_sw(A7, A0, 0), I_STOP
+        w[self.PARK], w[self.PARK + 1] = I_STOP, I_STOP
         for k in range(SLED):
             w[self.RSLED + k] = i_lw(A7, A0, 4 * k - 2048)
             w[self.WSLED + k] = i_sh(0, A0, 4 * k - 2048)
@@ -164,6 +173,8 @@ class ExecBackend:
         self.ex = ex
         self.dev = ex.dev
         self.off, self.dims, self.vals = ex.tables[2], ex.tables[3], ex.tables[4]
+        self.v0 = ex.v0
+        self.text_rows: dict = {}
 
     def rows(self, toks: list[int]):
         import torch
@@ -175,7 +186,24 @@ class ExecBackend:
         return torch.from_numpy(out).to(self.dev)
 
     def run(self, toks: list[int], max_steps: int) -> np.ndarray:
-        return self.ex.run(self.rows(toks), mode=1, max_steps=max_steps, keep=False)
+        ids = self.ex.run(self.rows(toks), mode=1, max_steps=max_steps, keep=False)
+        if self.v0:  # (model ids: chip tokens sit at v0; a text token here is no chip token)
+            ids = np.where(ids >= self.v0, ids - self.v0, np.minimum(ids, -1))
+        return ids
+
+    def text(self, qids: list[int], dbg: bool = False):
+        """Qwen's tokens through the circuit: forced rows. (keep after the first and last token),
+        with dbg also the residual after every token."""
+        import torch
+
+        from chipformer.rv import bridge as BR
+
+        new = sorted({q for q in qids if q not in self.text_rows})
+        if new:
+            for q, r in zip(new, self.ex.embed([BR.text_token(q) for q in new])):
+                self.text_rows[q] = r
+        rows = torch.stack([self.text_rows[q] for q in qids]).contiguous()
+        return self.ex.run(rows, mode=self.ex.FORCED, max_steps=len(qids), dbg=dbg)[1:]
 
 
 class RefBackend:
@@ -186,6 +214,10 @@ class RefBackend:
 
     def __init__(self, m) -> None:
         self.m, self.a, self.q, self.held = m, Audit(m), [], None
+
+    def text(self, qids: list[int], dbg: bool = False):
+        self.a.forced_run(np.asarray(qids, np.int64) + S.TEXT_TOKEN)
+        return None, None
 
     def run(self, toks: list[int], max_steps: int) -> np.ndarray:
         n, m = len(toks), self.m
@@ -224,9 +256,9 @@ class LiveCPU:
         self.nf = 0  # frames the chip allocated (PA tokens)
         self.cache: dict[int, int] = {}  # word address -> value, while the chip is parked
         self.log: list[tuple[np.ndarray, bool]] = []  # (tokens fed, forced)
-        self.seconds = {"fx": 0.0, "io": 0.0, "audit": 0.0}
-        self.tokens = {"fx": 0, "io": 0, "audit": 0}
-        self.launches = {"fx": 0, "io": 0, "audit": 0}
+        self.seconds = {"fx": 0.0, "io": 0.0, "audit": 0.0, "text": 0.0}
+        self.tokens = {"fx": 0, "io": 0, "audit": 0, "text": 0}
+        self.launches = {"fx": 0, "io": 0, "audit": 0, "text": 0}
         self.instr = 0
         self.n_stops = 0
         self.ok_forced = 0
@@ -289,6 +321,28 @@ class LiveCPU:
                 raise ChipFault(f"forced stretch, position {i}: the circuit predicts "
                                 f"{ids[i - 1]}, the host fed {S.name(want)}")
         self.ok_forced += len(check or ())
+
+    def park(self) -> None:
+        """The machine leaves its I/O stop for the park words and its run ends (module doc)."""
+        _, stop = self.run(near(self.bios.base + self.bios.PARK), "io", budget=2)
+        self._byte(stop)
+        self.forced_only([S.tok("HALT")])
+
+    def unpark(self) -> None:
+        _, stop = self.run([S.tok("GO")], "io", budget=2)
+        self._byte(stop)
+
+    def text(self, qids: list[int], dbg: bool = False):
+        """Qwen's tokens, the machine parked: model input the circuit reads, as a merged model's
+        chip layers do. Returns what ExecBackend.text does."""
+        if not qids:
+            return None, None
+        t0 = time.perf_counter()
+        r = self.b.text(qids, dbg)
+        self.seconds["text"] += time.perf_counter() - t0
+        self.launches["text"] += 1
+        self._note(np.asarray(qids, np.int64) + S.TEXT_TOKEN, True, "text")
+        return r
 
     # ---- the machine -------------------------------------------------------------------------
     def go(self) -> tuple:
@@ -435,15 +489,17 @@ class LiveCPU:
 
 # ---- the boot snapshot and the offline audit ----------------------------------------------------
 
-def machine_at(elf_path, ad, val, x, pc, frames, bios: Bios):
+def machine_at(elf_path, ad, val, x, pc, frames, bios: Bios, units=()):
     """(cfg, a PagedMachine standing on the ecall at pc): rv32emu's memory at boot's end as the
-    image, as fxrun.load, with the I/O ROM in the fetch space."""
+    image, as fxrun.load, with the I/O ROM in the fetch space. units: names in hot.FX_R24; the
+    logic of uops neither fx's image nor the I/O ROM holds is left out (hot.rom_absent)."""
+    units = hot.fx_units(elf_path, units) if units else ()
     entry, segs = elf.segments(elf_path)
     rom_seg = [(va, b) for va, b in segs if va == 1 << fxrun.ROM_BIT]
     assert len(rom_seg) == 1
     code_end = (1 << fxrun.ROM_BIT) + len(rom_seg[0][1])
     data = [(va, b) for va, b in segs if va != 1 << fxrun.ROM_BIT]
-    cfg = fxrun.fx_cfg(fxrun.windows(ad, data, code_end), frames)
+    cfg = fxrun.fx_cfg(fxrun.windows(ad, data, code_end), frames, units=units)
     m = ref.PagedMachine.from_segments(cfg, entry, rom_seg, x=[int(v) for v in x], code_end=code_end)
     m.code_end = code_end
     for a, v in zip(np.asarray(ad).tolist(), np.asarray(val).tolist()):
@@ -451,6 +507,8 @@ def machine_at(elf_path, ad, val, x, pc, frames, bios: Bios):
             m.image[a] = v
     m.anchor, m.n = (pc - cfg.rom_base) >> 2, 0
     bios.install(m)
+    if units:
+        cfg = m.cfg = replace(cfg, absent=hot.rom_absent(m.rom, cfg))
     return cfg, m
 
 
@@ -503,8 +561,15 @@ class Audit:
         self.forced += len(toks)
         i = 0
         while i < len(toks):
+            if toks[i] >= S.TEXT_TOKEN:  # Qwen's text: no record, nothing the machine reads here
+                i += 1
+                continue
             fam, p = S.family(toks[i])
             if fam == "GO":
+                i += 1
+            elif fam == "HALT":  # the park (module doc): its record commits, PC + 4
+                assert self._ins().op == "BPRD"
+                m.n += 1
                 i += 1
             elif fam == "J":
                 m.anchor, m.n = (m.anchor >> 16) << 16 | p, 0

@@ -1,0 +1,4150 @@
+{
+ "u13": {
+  "runs": [
+   {
+    "file": "live_t1_bug_1.json",
+    "task": "t1_bug",
+    "rep": 1,
+    "turns": 1,
+    "chain": [],
+    "units": [
+     "all+"
+    ],
+    "frames": 4096,
+    "solved": true,
+    "check": "",
+    "stopped": null,
+    "steps": 3,
+    "chip_tokens_fx": 3448213,
+    "chip_tokens_io": 26556,
+    "chip_tokens_audit": 10751,
+    "chip_tokens_text": 0,
+    "instructions_chip": 2177476,
+    "instructions_original": 4071067,
+    "ecalls": 222,
+    "frames_mapped": 489,
+    "linear_top": 2432028,
+    "tok_s_fx": 23820,
+    "chip_s_fx": 144.761,
+    "chip_s_io": 1.208,
+    "chip_s_text": 0.0,
+    "qwen_s": 18.945,
+    "host_s": 0.213,
+    "task_s": 165.1,
+    "qwen_fed": 810,
+    "qwen_generated": 366,
+    "rollbacks": 0,
+    "gpu_peak_bytes": 10119723008,
+    "gpu_reserved_peak_bytes": 10185867264,
+    "snapshot_bytes": 87162880,
+    "emu_requests_identical": 3,
+    "emu_host_io_equal": true,
+    "emu_repo_equal": true,
+    "orig_requests_identical": 3,
+    "orig_host_io_equal": true,
+    "orig_repo_equal": true,
+    "orig_dead_registers_differing": 425,
+    "orig_memory": {
+     "words_differing": 27,
+     "on_the_c_stack": 27,
+     "on_the_c_stack_above_sp": 0,
+     "elsewhere": [],
+     "elsewhere_n": 0
+    },
+    "end_registers_differing": 0,
+    "end_words_read": 54528,
+    "end_words_differing": 0,
+    "audit_chip_tokens": 3552515,
+    "audit_forced_tokens": 14641,
+    "audit_wrong": null,
+    "audit_memory_words": 42512,
+    "audit_memory_diff": 0,
+    "forced_positions_checked": 2285,
+    "elf_sha256": "282e53d497aa113173bc3ad9aa2ab221b6f43e43360457a093aeda7c1a85cbbd",
+    "base_chip_s": 204.6,
+    "base_steps": 3,
+    "base_task_s": 231.7,
+    "base_tokens": 5254840,
+    "base_frames": 489
+   },
+   {
+    "file": "live_t1_bug_2.json",
+    "task": "t1_bug",
+    "rep": 2,
+    "turns": 1,
+    "chain": [],
+    "units": [
+     "all+"
+    ],
+    "frames": 4096,
+    "solved": true,
+    "check": "",
+    "stopped": null,
+    "steps": 3,
+    "chip_tokens_fx": 3302613,
+    "chip_tokens_io": 25683,
+    "chip_tokens_audit": 10718,
+    "chip_tokens_text": 0,
+    "instructions_chip": 2077167,
+    "instructions_original": 3938285,
+    "ecalls": 221,
+    "frames_mapped": 483,
+    "linear_top": 2366160,
+    "tok_s_fx": 23819,
+    "chip_s_fx": 138.652,
+    "chip_s_io": 1.166,
+    "chip_s_text": 0.0,
+    "qwen_s": 15.685,
+    "host_s": 0.192,
+    "task_s": 155.7,
+    "qwen_fed": 810,
+    "qwen_generated": 312,
+    "rollbacks": 0,
+    "gpu_peak_bytes": 10119772160,
+    "gpu_reserved_peak_bytes": 11075059712,
+    "snapshot_bytes": 85491712,
+    "emu_requests_identical": 3,
+    "emu_host_io_equal": true,
+    "emu_repo_equal": true,
+    "orig_requests_identical": 3,
+    "orig_host_io_equal": true,
+    "orig_repo_equal": true,
+    "orig_dead_registers_differing": 420,
+    "orig_memory": {
+     "words_differing": 27,
+     "on_the_c_stack": 27,
+     "on_the_c_stack_above_sp": 0,
+     "elsewhere": [],
+     "elsewhere_n": 0
+    },
+    "end_registers_differing": 0,
+    "end_words_read": 53888,
+    "end_words_differing": 0,
+    "audit_chip_tokens": 3404965,
+    "audit_forced_tokens": 14245,
+    "audit_wrong": null,
+    "audit_memory_words": 42027,
+    "audit_memory_diff": 0,
+    "forced_positions_checked": 2196,
+    "elf_sha256": "282e53d497aa113173bc3ad9aa2ab221b6f43e43360457a093aeda7c1a85cbbd",
+    "base_chip_s": 197.3,
+    "base_steps": 3,
+    "base_task_s": 212.4,
+    "base_tokens": 5069131,
+    "base_frames": 483
+   },
+   {
+    "file": "live_t1_bug_3.json",
+    "task": "t1_bug",
+    "rep": 3,
+    "turns": 1,
+    "chain": [],
+    "units": [
+     "all+"
+    ],
+    "frames": 4096,
+    "solved": true,
+    "check": "",
+    "stopped": null,
+    "steps": 3,
+    "chip_tokens_fx": 3322856,
+    "chip_tokens_io": 25806,
+    "chip_tokens_audit": 10718,
+    "chip_tokens_text": 0,
+    "instructions_chip": 2091899,
+    "instructions_original": 3959015,
+    "ecalls": 221,
+    "frames_mapped": 484,
+    "linear_top": 2366352,
+    "tok_s_fx": 23820,
+    "chip_s_fx": 139.498,
+    "chip_s_io": 1.173,
+    "chip_s_text": 0.0,
+    "qwen_s": 16.206,
+    "host_s": 0.194,
+    "task_s": 157.1,
+    "qwen_fed": 810,
+    "qwen_generated": 321,
+    "rollbacks": 0,
+    "gpu_peak_bytes": 10118644736,
+    "gpu_reserved_peak_bytes": 14336131072,
+    "snapshot_bytes": 85524480,
+    "emu_requests_identical": 3,
+    "emu_host_io_equal": true,
+    "emu_repo_equal": true,
+    "orig_requests_identical": 3,
+    "orig_host_io_equal": true,
+    "orig_repo_equal": true,
+    "orig_dead_registers_differing": 428,
+    "orig_memory": {
+     "words_differing": 27,
+     "on_the_c_stack": 27,
+     "on_the_c_stack_above_sp": 0,
+     "elsewhere": [],
+     "elsewhere_n": 0
+    },
+    "end_registers_differing": 0,
+    "end_words_read": 54016,
+    "end_words_differing": 0,
+    "audit_chip_tokens": 3425608,
+    "audit_forced_tokens": 14317,
+    "audit_wrong": null,
+    "audit_memory_words": 42142,
+    "audit_memory_diff": 0,
+    "forced_positions_checked": 2213,
+    "elf_sha256": "282e53d497aa113173bc3ad9aa2ab221b6f43e43360457a093aeda7c1a85cbbd",
+    "base_chip_s": 327.6,
+    "base_steps": 5,
+    "base_task_s": 350.6,
+    "base_tokens": 8415082,
+    "base_frames": 568
+   },
+   {
+    "file": "live_t2_rename_1.json",
+    "task": "t2_rename",
+    "rep": 1,
+    "turns": 1,
+    "chain": [],
+    "units": [
+     "all+"
+    ],
+    "frames": 4096,
+    "solved": true,
+    "check": "",
+    "stopped": null,
+    "steps": 5,
+    "chip_tokens_fx": 8856408,
+    "chip_tokens_io": 71401,
+    "chip_tokens_audit": 29447,
+    "chip_tokens_text": 0,
+    "instructions_chip": 5463737,
+    "instructions_original": 10152223,
+    "ecalls": 609,
+    "frames_mapped": 793,
+    "linear_top": 3168164,
+    "tok_s_fx": 23814,
+    "chip_s_fx": 371.893,
+    "chip_s_io": 3.223,
+    "chip_s_text": 0.0,
+    "qwen_s": 46.46,
+    "host_s": 0.337,
+    "task_s": 421.9,
+    "qwen_fed": 1530,
+    "qwen_generated": 926,
+    "rollbacks": 0,
+    "gpu_peak_bytes": 10976167424,
+    "gpu_reserved_peak_bytes": 11075059712,
+    "snapshot_bytes": 126353408,
+    "emu_requests_identical": 5,
+    "emu_host_io_equal": true,
+    "emu_repo_equal": true,
+    "orig_requests_identical": 5,
+    "orig_host_io_equal": true,
+    "orig_repo_equal": true,
+    "orig_dead_registers_differing": 1125,
+    "orig_memory": {
+     "words_differing": 30,
+     "on_the_c_stack": 30,
+     "on_the_c_stack_above_sp": 0,
+     "elsewhere": [],
+     "elsewhere_n": 0
+    },
+    "end_registers_differing": 0,
+    "end_words_read": 93312,
+    "end_words_differing": 0,
+    "audit_chip_tokens": 9066675,
+    "audit_forced_tokens": 36694,
+    "audit_wrong": null,
+    "audit_memory_words": 68140,
+    "audit_memory_diff": 0,
+    "forced_positions_checked": 5921,
+    "elf_sha256": "282e53d497aa113173bc3ad9aa2ab221b6f43e43360457a093aeda7c1a85cbbd",
+    "base_chip_s": 565.2,
+    "base_steps": 5,
+    "base_task_s": 606.9,
+    "base_tokens": 14556511,
+    "base_frames": 793
+   },
+   {
+    "file": "live_t2_rename_2.json",
+    "task": "t2_rename",
+    "rep": 2,
+    "turns": 1,
+    "chain": [],
+    "units": [
+     "all+"
+    ],
+    "frames": 4096,
+    "solved": true,
+    "check": "",
+    "stopped": null,
+    "steps": 15,
+    "chip_tokens_fx": 16633426,
+    "chip_tokens_io": 134308,
+    "chip_tokens_audit": 40067,
+    "chip_tokens_text": 0,
+    "instructions_chip": 10284565,
+    "instructions_original": 18646822,
+    "ecalls": 825,
+    "frames_mapped": 968,
+    "linear_top": 3401296,
+    "tok_s_fx": 23804,
+    "chip_s_fx": 698.766,
+    "chip_s_io": 5.93,
+    "chip_s_text": 0.0,
+    "qwen_s": 53.592,
+    "host_s": 0.469,
+    "task_s": 758.8,
+    "qwen_fed": 1577,
+    "qwen_generated": 1047,
+    "rollbacks": 1,
+    "gpu_peak_bytes": 14033561600,
+    "gpu_reserved_peak_bytes": 14336131072,
+    "snapshot_bytes": 131923968,
+    "emu_requests_identical": 15,
+    "emu_host_io_equal": true,
+    "emu_repo_equal": true,
+    "orig_requests_identical": 15,
+    "orig_host_io_equal": true,
+    "orig_repo_equal": true,
+    "orig_dead_registers_differing": 1551,
+    "orig_memory": {
+     "words_differing": 30,
+     "on_the_c_stack": 30,
+     "on_the_c_stack_above_sp": 0,
+     "elsewhere": [],
+     "elsewhere_n": 0
+    },
+    "end_registers_differing": 0,
+    "end_words_read": 115968,
+    "end_words_differing": 0,
+    "audit_chip_tokens": 16937065,
+    "audit_forced_tokens": 44755,
+    "audit_wrong": null,
+    "audit_memory_words": 83589,
+    "audit_memory_diff": 0,
+    "forced_positions_checked": 6894,
+    "elf_sha256": "282e53d497aa113173bc3ad9aa2ab221b6f43e43360457a093aeda7c1a85cbbd",
+    "base_chip_s": 1023.4,
+    "base_steps": 15,
+    "base_task_s": 1072.0,
+    "base_tokens": 26287074,
+    "base_frames": 968
+   },
+   {
+    "file": "live_t2_rename_3.json",
+    "task": "t2_rename",
+    "rep": 3,
+    "turns": 1,
+    "chain": [],
+    "units": [
+     "all+"
+    ],
+    "frames": 4096,
+    "solved": true,
+    "check": "",
+    "stopped": null,
+    "steps": 4,
+    "chip_tokens_fx": 5636080,
+    "chip_tokens_io": 48881,
+    "chip_tokens_audit": 23457,
+    "chip_tokens_text": 0,
+    "instructions_chip": 3478691,
+    "instructions_original": 6612215,
+    "ecalls": 484,
+    "frames_mapped": 593,
+    "linear_top": 2701472,
+    "tok_s_fx": 23810,
+    "chip_s_fx": 236.715,
+    "chip_s_io": 2.22,
+    "chip_s_text": 0.0,
+    "qwen_s": 27.85,
+    "host_s": 0.281,
+    "task_s": 267.1,
+    "qwen_fed": 797,
+    "qwen_generated": 558,
+    "rollbacks": 0,
+    "gpu_peak_bytes": 10431908864,
+    "gpu_reserved_peak_bytes": 14336131072,
+    "snapshot_bytes": 93552640,
+    "emu_requests_identical": 4,
+    "emu_host_io_equal": true,
+    "emu_repo_equal": true,
+    "orig_requests_identical": 4,
+    "orig_host_io_equal": true,
+    "orig_repo_equal": true,
+    "orig_dead_registers_differing": 880,
+    "orig_memory": {
+     "words_differing": 30,
+     "on_the_c_stack": 30,
+     "on_the_c_stack_above_sp": 0,
+     "elsewhere": [],
+     "elsewhere_n": 0
+    },
+    "end_registers_differing": 0,
+    "end_words_read": 67840,
+    "end_words_differing": 0,
+    "audit_chip_tokens": 5781787,
+    "audit_forced_tokens": 28328,
+    "audit_wrong": null,
+    "audit_memory_words": 51405,
+    "audit_memory_diff": 0,
+    "forced_positions_checked": 4530,
+    "elf_sha256": "282e53d497aa113173bc3ad9aa2ab221b6f43e43360457a093aeda7c1a85cbbd",
+    "base_chip_s": 363.9,
+    "base_steps": 4,
+    "base_task_s": 389.4,
+    "base_tokens": 9345933,
+    "base_frames": 593
+   },
+   {
+    "file": "live_t3_feature_1.json",
+    "task": "t3_feature",
+    "rep": 1,
+    "turns": 1,
+    "chain": [],
+    "units": [
+     "all+"
+    ],
+    "frames": 4096,
+    "solved": true,
+    "check": "",
+    "stopped": null,
+    "steps": 3,
+    "chip_tokens_fx": 4757294,
+    "chip_tokens_io": 32830,
+    "chip_tokens_audit": 8971,
+    "chip_tokens_text": 0,
+    "instructions_chip": 3040379,
+    "instructions_original": 5900451,
+    "ecalls": 186,
+    "frames_mapped": 578,
+    "linear_top": 2506076,
+    "tok_s_fx": 23831,
+    "chip_s_fx": 199.624,
+    "chip_s_io": 1.483,
+    "chip_s_text": 0.0,
+    "qwen_s": 47.509,
+    "host_s": 0.198,
+    "task_s": 248.8,
+    "qwen_fed": 973,
+    "qwen_generated": 971,
+    "rollbacks": 0,
+    "gpu_peak_bytes": 10297329152,
+    "gpu_reserved_peak_bytes": 11075059712,
+    "snapshot_bytes": 108101632,
+    "emu_requests_identical": 3,
+    "emu_host_io_equal": true,
+    "emu_repo_equal": true,
+    "orig_requests_identical": 3,
+    "orig_host_io_equal": true,
+    "orig_repo_equal": true,
+    "orig_dead_registers_differing": 284,
+    "orig_memory": {
+     "words_differing": 30,
+     "on_the_c_stack": 30,
+     "on_the_c_stack_above_sp": 0,
+     "elsewhere": [],
+     "elsewhere_n": 0
+    },
+    "end_registers_differing": 0,
+    "end_words_read": 66176,
+    "end_words_differing": 0,
+    "audit_chip_tokens": 4897827,
+    "audit_forced_tokens": 15720,
+    "audit_wrong": null,
+    "audit_memory_words": 52137,
+    "audit_memory_diff": 0,
+    "forced_positions_checked": 2634,
+    "elf_sha256": "282e53d497aa113173bc3ad9aa2ab221b6f43e43360457a093aeda7c1a85cbbd",
+    "base_chip_s": 188.9,
+    "base_steps": 2,
+    "base_task_s": 222.3,
+    "base_tokens": 4868495,
+    "base_frames": 500
+   },
+   {
+    "file": "live_t3_feature_2.json",
+    "task": "t3_feature",
+    "rep": 2,
+    "turns": 1,
+    "chain": [],
+    "units": [
+     "all+"
+    ],
+    "frames": 4096,
+    "solved": true,
+    "check": "",
+    "stopped": null,
+    "steps": 4,
+    "chip_tokens_fx": 5297867,
+    "chip_tokens_io": 33473,
+    "chip_tokens_audit": 10399,
+    "chip_tokens_text": 0,
+    "instructions_chip": 3363824,
+    "instructions_original": 6319777,
+    "ecalls": 215,
+    "frames_mapped": 597,
+    "linear_top": 2517524,
+    "tok_s_fx": 23824,
+    "chip_s_fx": 222.379,
+    "chip_s_io": 1.503,
+    "chip_s_text": 0.0,
+    "qwen_s": 32.667,
+    "host_s": 0.202,
+    "task_s": 256.8,
+    "qwen_fed": 1010,
+    "qwen_generated": 660,
+    "rollbacks": 0,
+    "gpu_peak_bytes": 10472284672,
+    "gpu_reserved_peak_bytes": 14336131072,
+    "snapshot_bytes": 99680256,
+    "emu_requests_identical": 4,
+    "emu_host_io_equal": true,
+    "emu_repo_equal": true,
+    "orig_requests_identical": 4,
+    "orig_host_io_equal": true,
+    "orig_repo_equal": true,
+    "orig_dead_registers_differing": 354,
+    "orig_memory": {
+     "words_differing": 30,
+     "on_the_c_stack": 30,
+     "on_the_c_stack_above_sp": 0,
+     "elsewhere": [],
+     "elsewhere_n": 0
+    },
+    "end_registers_differing": 0,
+    "end_words_read": 68352,
+    "end_words_differing": 0,
+    "audit_chip_tokens": 5438335,
+    "audit_forced_tokens": 15458,
+    "audit_wrong": null,
+    "audit_memory_words": 52910,
+    "audit_memory_diff": 0,
+    "forced_positions_checked": 2432,
+    "elf_sha256": "282e53d497aa113173bc3ad9aa2ab221b6f43e43360457a093aeda7c1a85cbbd",
+    "base_chip_s": 333.8,
+    "base_steps": 4,
+    "base_task_s": 362.8,
+    "base_tokens": 8593130,
+    "base_frames": 597
+   },
+   {
+    "file": "live_t3_feature_3.json",
+    "task": "t3_feature",
+    "rep": 3,
+    "turns": 1,
+    "chain": [],
+    "units": [
+     "all+"
+    ],
+    "frames": 4096,
+    "solved": true,
+    "check": "",
+    "stopped": null,
+    "steps": 5,
+    "chip_tokens_fx": 7677828,
+    "chip_tokens_io": 53865,
+    "chip_tokens_audit": 17717,
+    "chip_tokens_text": 0,
+    "instructions_chip": 4845349,
+    "instructions_original": 9209502,
+    "ecalls": 367,
+    "frames_mapped": 691,
+    "linear_top": 2900968,
+    "tok_s_fx": 23818,
+    "chip_s_fx": 322.353,
+    "chip_s_io": 2.426,
+    "chip_s_text": 0.0,
+    "qwen_s": 51.789,
+    "host_s": 0.262,
+    "task_s": 376.8,
+    "qwen_fed": 1172,
+    "qwen_generated": 1045,
+    "rollbacks": 0,
+    "gpu_peak_bytes": 10887632384,
+    "gpu_reserved_peak_bytes": 14336131072,
+    "snapshot_bytes": 112328704,
+    "emu_requests_identical": 5,
+    "emu_host_io_equal": true,
+    "emu_repo_equal": true,
+    "orig_requests_identical": 5,
+    "orig_host_io_equal": true,
+    "orig_repo_equal": true,
+    "orig_dead_registers_differing": 594,
+    "orig_memory": {
+     "words_differing": 30,
+     "on_the_c_stack": 30,
+     "on_the_c_stack_above_sp": 0,
+     "elsewhere": [],
+     "elsewhere_n": 0
+    },
+    "end_registers_differing": 0,
+    "end_words_read": 80512,
+    "end_words_differing": 0,
+    "audit_chip_tokens": 7859948,
+    "audit_forced_tokens": 25676,
+    "audit_wrong": null,
+    "audit_memory_words": 61011,
+    "audit_memory_diff": 0,
+    "forced_positions_checked": 4279,
+    "elf_sha256": "282e53d497aa113173bc3ad9aa2ab221b6f43e43360457a093aeda7c1a85cbbd",
+    "base_chip_s": 329.9,
+    "base_steps": 4,
+    "base_task_s": 365.9,
+    "base_tokens": 8485424,
+    "base_frames": 610
+   },
+   {
+    "file": "live_t4_config_1.json",
+    "task": "t4_config",
+    "rep": 1,
+    "turns": 1,
+    "chain": [],
+    "units": [
+     "all+"
+    ],
+    "frames": 4096,
+    "solved": true,
+    "check": "",
+    "stopped": null,
+    "steps": 4,
+    "chip_tokens_fx": 3927947,
+    "chip_tokens_io": 28761,
+    "chip_tokens_audit": 11680,
+    "chip_tokens_text": 0,
+    "instructions_chip": 2461600,
+    "instructions_original": 4530499,
+    "ecalls": 240,
+    "frames_mapped": 519,
+    "linear_top": 2445628,
+    "tok_s_fx": 23816,
+    "chip_s_fx": 164.929,
+    "chip_s_io": 1.296,
+    "chip_s_text": 0.0,
+    "qwen_s": 17.064,
+    "host_s": 0.205,
+    "task_s": 183.5,
+    "qwen_fed": 765,
+    "qwen_generated": 334,
+    "rollbacks": 0,
+    "gpu_peak_bytes": 10366190080,
+    "gpu_reserved_peak_bytes": 11075059712,
+    "snapshot_bytes": 86179840,
+    "emu_requests_identical": 4,
+    "emu_host_io_equal": true,
+    "emu_repo_equal": true,
+    "orig_requests_identical": 4,
+    "orig_host_io_equal": true,
+    "orig_repo_equal": true,
+    "orig_dead_registers_differing": 453,
+    "orig_memory": {
+     "words_differing": 28,
+     "on_the_c_stack": 28,
+     "on_the_c_stack_above_sp": 0,
+     "elsewhere": [],
+     "elsewhere_n": 0
+    },
+    "end_registers_differing": 0,
+    "end_words_read": 58496,
+    "end_words_differing": 0,
+    "audit_chip_tokens": 4039733,
+    "audit_forced_tokens": 14107,
+    "audit_wrong": null,
+    "audit_memory_words": 44780,
+    "audit_memory_diff": 0,
+    "forced_positions_checked": 2053,
+    "elf_sha256": "282e53d497aa113173bc3ad9aa2ab221b6f43e43360457a093aeda7c1a85cbbd",
+    "base_chip_s": 225.5,
+    "base_steps": 4,
+    "base_task_s": 240.1,
+    "base_tokens": 5806127,
+    "base_frames": 519
+   },
+   {
+    "file": "live_t4_config_2.json",
+    "task": "t4_config",
+    "rep": 2,
+    "turns": 1,
+    "chain": [],
+    "units": [
+     "all+"
+    ],
+    "frames": 4096,
+    "solved": true,
+    "check": "",
+    "stopped": null,
+    "steps": 7,
+    "chip_tokens_fx": 6897042,
+    "chip_tokens_io": 48938,
+    "chip_tokens_audit": 16888,
+    "chip_tokens_text": 0,
+    "instructions_chip": 4304464,
+    "instructions_original": 7691734,
+    "ecalls": 347,
+    "frames_mapped": 648,
+    "linear_top": 2717552,
+    "tok_s_fx": 23809,
+    "chip_s_fx": 289.677,
+    "chip_s_io": 2.178,
+    "chip_s_text": 0.0,
+    "qwen_s": 26.319,
+    "host_s": 0.255,
+    "task_s": 318.4,
+    "qwen_fed": 999,
+    "qwen_generated": 512,
+    "rollbacks": 0,
+    "gpu_peak_bytes": 11269997056,
+    "gpu_reserved_peak_bytes": 14336131072,
+    "snapshot_bytes": 99876864,
+    "emu_requests_identical": 7,
+    "emu_host_io_equal": true,
+    "emu_repo_equal": true,
+    "orig_requests_identical": 7,
+    "orig_host_io_equal": true,
+    "orig_repo_equal": true,
+    "orig_dead_registers_differing": 670,
+    "orig_memory": {
+     "words_differing": 28,
+     "on_the_c_stack": 28,
+     "on_the_c_stack_above_sp": 0,
+     "elsewhere": [],
+     "elsewhere_n": 0
+    },
+    "end_registers_differing": 0,
+    "end_words_read": 75008,
+    "end_words_differing": 0,
+    "audit_chip_tokens": 7053814,
+    "audit_forced_tokens": 19369,
+    "audit_wrong": null,
+    "audit_memory_words": 55448,
+    "audit_memory_diff": 0,
+    "forced_positions_checked": 2803,
+    "elf_sha256": "282e53d497aa113173bc3ad9aa2ab221b6f43e43360457a093aeda7c1a85cbbd",
+    "base_chip_s": 403.8,
+    "base_steps": 7,
+    "base_task_s": 430.1,
+    "base_tokens": 10375298,
+    "base_frames": 648
+   },
+   {
+    "file": "live_t4_config_3.json",
+    "task": "t4_config",
+    "rep": 3,
+    "turns": 1,
+    "chain": [],
+    "units": [
+     "all+"
+    ],
+    "frames": 4096,
+    "solved": true,
+    "check": "",
+    "stopped": null,
+    "steps": 5,
+    "chip_tokens_fx": 5003804,
+    "chip_tokens_io": 37788,
+    "chip_tokens_audit": 14039,
+    "chip_tokens_text": 0,
+    "instructions_chip": 3137645,
+    "instructions_original": 5729700,
+    "ecalls": 289,
+    "frames_mapped": 571,
+    "linear_top": 2893140,
+    "tok_s_fx": 23814,
+    "chip_s_fx": 210.12,
+    "chip_s_io": 1.692,
+    "chip_s_text": 0.0,
+    "qwen_s": 22.67,
+    "host_s": 0.223,
+    "task_s": 234.7,
+    "qwen_fed": 963,
+    "qwen_generated": 445,
+    "rollbacks": 0,
+    "gpu_peak_bytes": 10687075840,
+    "gpu_reserved_peak_bytes": 14336131072,
+    "snapshot_bytes": 95223808,
+    "emu_requests_identical": 5,
+    "emu_host_io_equal": true,
+    "emu_repo_equal": true,
+    "orig_requests_identical": 5,
+    "orig_host_io_equal": true,
+    "orig_repo_equal": true,
+    "orig_dead_registers_differing": 564,
+    "orig_memory": {
+     "words_differing": 30,
+     "on_the_c_stack": 30,
+     "on_the_c_stack_above_sp": 0,
+     "elsewhere": [],
+     "elsewhere_n": 0
+    },
+    "end_registers_differing": 0,
+    "end_words_read": 65152,
+    "end_words_differing": 0,
+    "audit_chip_tokens": 5135527,
+    "audit_forced_tokens": 17039,
+    "audit_wrong": null,
+    "audit_memory_words": 48923,
+    "audit_memory_diff": 0,
+    "forced_positions_checked": 2535,
+    "elf_sha256": "282e53d497aa113173bc3ad9aa2ab221b6f43e43360457a093aeda7c1a85cbbd",
+    "base_chip_s": 295.6,
+    "base_steps": 5,
+    "base_task_s": 320.8,
+    "base_tokens": 7590775,
+    "base_frames": 589
+   },
+   {
+    "file": "live_t5_parse_1.json",
+    "task": "t5_parse",
+    "rep": 1,
+    "turns": 1,
+    "chain": [],
+    "units": [
+     "all+"
+    ],
+    "frames": 4096,
+    "solved": true,
+    "check": "",
+    "stopped": null,
+    "steps": 4,
+    "chip_tokens_fx": 5057460,
+    "chip_tokens_io": 36497,
+    "chip_tokens_audit": 12610,
+    "chip_tokens_text": 0,
+    "instructions_chip": 3186730,
+    "instructions_original": 5931564,
+    "ecalls": 260,
+    "frames_mapped": 575,
+    "linear_top": 2514452,
+    "tok_s_fx": 23818,
+    "chip_s_fx": 212.337,
+    "chip_s_io": 1.646,
+    "chip_s_text": 0.0,
+    "qwen_s": 35.465,
+    "host_s": 0.215,
+    "task_s": 249.7,
+    "qwen_fed": 882,
+    "qwen_generated": 720,
+    "rollbacks": 0,
+    "gpu_peak_bytes": 10473731072,
+    "gpu_reserved_peak_bytes": 11075059712,
+    "snapshot_bytes": 101187584,
+    "emu_requests_identical": 4,
+    "emu_host_io_equal": true,
+    "emu_repo_equal": true,
+    "orig_requests_identical": 4,
+    "orig_host_io_equal": true,
+    "orig_repo_equal": true,
+    "orig_dead_registers_differing": 510,
+    "orig_memory": {
+     "words_differing": 30,
+     "on_the_c_stack": 30,
+     "on_the_c_stack_above_sp": 0,
+     "elsewhere": [],
+     "elsewhere_n": 0
+    },
+    "end_registers_differing": 0,
+    "end_words_read": 65664,
+    "end_words_differing": 0,
+    "audit_chip_tokens": 5193353,
+    "audit_forced_tokens": 17646,
+    "audit_wrong": null,
+    "audit_memory_words": 50574,
+    "audit_memory_diff": 0,
+    "forced_positions_checked": 2799,
+    "elf_sha256": "282e53d497aa113173bc3ad9aa2ab221b6f43e43360457a093aeda7c1a85cbbd",
+    "base_chip_s": 272.2,
+    "base_steps": 4,
+    "base_task_s": 296.4,
+    "base_tokens": 7010625,
+    "base_frames": 556
+   },
+   {
+    "file": "live_t5_parse_2.json",
+    "task": "t5_parse",
+    "rep": 2,
+    "turns": 1,
+    "chain": [],
+    "units": [
+     "all+"
+    ],
+    "frames": 4096,
+    "solved": true,
+    "check": "",
+    "stopped": null,
+    "steps": 3,
+    "chip_tokens_fx": 3771984,
+    "chip_tokens_io": 27314,
+    "chip_tokens_audit": 10746,
+    "chip_tokens_text": 0,
+    "instructions_chip": 2390303,
+    "instructions_original": 4376379,
+    "ecalls": 222,
+    "frames_mapped": 504,
+    "linear_top": 2432716,
+    "tok_s_fx": 23819,
+    "chip_s_fx": 158.36,
+    "chip_s_io": 1.24,
+    "chip_s_text": 0.0,
+    "qwen_s": 22.318,
+    "host_s": 0.196,
+    "task_s": 182.1,
+    "qwen_fed": 779,
+    "qwen_generated": 447,
+    "rollbacks": 0,
+    "gpu_peak_bytes": 10130004480,
+    "gpu_reserved_peak_bytes": 14336131072,
+    "snapshot_bytes": 87916544,
+    "emu_requests_identical": 3,
+    "emu_host_io_equal": true,
+    "emu_repo_equal": true,
+    "orig_requests_identical": 3,
+    "orig_host_io_equal": true,
+    "orig_repo_equal": true,
+    "orig_dead_registers_differing": 423,
+    "orig_memory": {
+     "words_differing": 30,
+     "on_the_c_stack": 30,
+     "on_the_c_stack_above_sp": 0,
+     "elsewhere": [],
+     "elsewhere_n": 0
+    },
+    "end_registers_differing": 0,
+    "end_words_read": 56448,
+    "end_words_differing": 0,
+    "audit_chip_tokens": 3881761,
+    "audit_forced_tokens": 14915,
+    "audit_wrong": null,
+    "audit_memory_words": 44172,
+    "audit_memory_diff": 0,
+    "forced_positions_checked": 2341,
+    "elf_sha256": "282e53d497aa113173bc3ad9aa2ab221b6f43e43360457a093aeda7c1a85cbbd",
+    "base_chip_s": 252.3,
+    "base_steps": 3,
+    "base_task_s": 281.0,
+    "base_tokens": 6488512,
+    "base_frames": 537
+   },
+   {
+    "file": "live_t5_parse_3.json",
+    "task": "t5_parse",
+    "rep": 3,
+    "turns": 1,
+    "chain": [],
+    "units": [
+     "all+"
+    ],
+    "frames": 4096,
+    "solved": true,
+    "check": "",
+    "stopped": null,
+    "steps": 3,
+    "chip_tokens_fx": 3648508,
+    "chip_tokens_io": 27386,
+    "chip_tokens_audit": 10752,
+    "chip_tokens_text": 0,
+    "instructions_chip": 2309952,
+    "instructions_original": 4286866,
+    "ecalls": 222,
+    "frames_mapped": 502,
+    "linear_top": 2432284,
+    "tok_s_fx": 23822,
+    "chip_s_fx": 153.159,
+    "chip_s_io": 1.242,
+    "chip_s_text": 0.0,
+    "qwen_s": 20.761,
+    "host_s": 0.195,
+    "task_s": 175.4,
+    "qwen_fed": 779,
+    "qwen_generated": 416,
+    "rollbacks": 0,
+    "gpu_peak_bytes": 10134630912,
+    "gpu_reserved_peak_bytes": 14336131072,
+    "snapshot_bytes": 88506368,
+    "emu_requests_identical": 3,
+    "emu_host_io_equal": true,
+    "emu_repo_equal": true,
+    "orig_requests_identical": 3,
+    "orig_host_io_equal": true,
+    "orig_repo_equal": true,
+    "orig_dead_registers_differing": 432,
+    "orig_memory": {
+     "words_differing": 30,
+     "on_the_c_stack": 30,
+     "on_the_c_stack_above_sp": 0,
+     "elsewhere": [],
+     "elsewhere_n": 0
+    },
+    "end_registers_differing": 0,
+    "end_words_read": 56320,
+    "end_words_differing": 0,
+    "audit_chip_tokens": 3758244,
+    "audit_forced_tokens": 14807,
+    "audit_wrong": null,
+    "audit_memory_words": 44006,
+    "audit_memory_diff": 0,
+    "forced_positions_checked": 2314,
+    "elf_sha256": "282e53d497aa113173bc3ad9aa2ab221b6f43e43360457a093aeda7c1a85cbbd",
+    "base_chip_s": 215.8,
+    "base_steps": 3,
+    "base_task_s": 235.3,
+    "base_tokens": 5546366,
+    "base_frames": 502
+   }
+  ],
+  "summary": {
+   "runs": 15,
+   "solved": 15,
+   "stopped": 0,
+   "chip_tokens": 87898817,
+   "audit_tokens": 89427157,
+   "wrong": 0,
+   "tok_s_min": 23804,
+   "tok_s_max": 23831,
+   "task_s_min": 155.7,
+   "task_s_max": 758.8,
+   "task_s_median": 248.8,
+   "frames_max": 968,
+   "gpu_peak_max": 14033561600
+  }
+ },
+ "u16": {
+  "runs": [
+   {
+    "file": "live_t2_rename_2.json",
+    "task": "t2_rename",
+    "rep": 2,
+    "turns": 1,
+    "chain": [],
+    "units": [
+     "all+"
+    ],
+    "frames": 4096,
+    "solved": true,
+    "check": "",
+    "stopped": null,
+    "steps": 15,
+    "chip_tokens_fx": 16633426,
+    "chip_tokens_io": 134308,
+    "chip_tokens_audit": 40067,
+    "chip_tokens_text": 0,
+    "instructions_chip": 10284565,
+    "instructions_original": 18646822,
+    "ecalls": 825,
+    "frames_mapped": 968,
+    "linear_top": 3401296,
+    "tok_s_fx": 23802,
+    "chip_s_fx": 698.811,
+    "chip_s_io": 5.95,
+    "chip_s_text": 0.0,
+    "qwen_s": 56.419,
+    "host_s": 0.487,
+    "task_s": 761.7,
+    "qwen_fed": 1577,
+    "qwen_generated": 1047,
+    "rollbacks": 1,
+    "gpu_peak_bytes": 14049317888,
+    "gpu_reserved_peak_bytes": 14363394048,
+    "snapshot_bytes": 131923968,
+    "emu_requests_identical": 15,
+    "emu_host_io_equal": true,
+    "emu_repo_equal": true,
+    "orig_requests_identical": 15,
+    "orig_host_io_equal": true,
+    "orig_repo_equal": true,
+    "orig_dead_registers_differing": 1551,
+    "orig_memory": {
+     "words_differing": 30,
+     "on_the_c_stack": 30,
+     "on_the_c_stack_above_sp": 0,
+     "elsewhere": [],
+     "elsewhere_n": 0
+    },
+    "end_registers_differing": 0,
+    "end_words_read": 115968,
+    "end_words_differing": 0,
+    "audit_chip_tokens": 16937065,
+    "audit_forced_tokens": 44755,
+    "audit_wrong": null,
+    "audit_memory_words": 83589,
+    "audit_memory_diff": 0,
+    "forced_positions_checked": 6894,
+    "elf_sha256": "282e53d497aa113173bc3ad9aa2ab221b6f43e43360457a093aeda7c1a85cbbd",
+    "base_chip_s": 1023.4,
+    "base_steps": 15,
+    "base_task_s": 1072.0,
+    "base_tokens": 26287074,
+    "base_frames": 968
+   }
+  ],
+  "summary": {
+   "runs": 1,
+   "solved": 1,
+   "stopped": 0,
+   "chip_tokens": 16767734,
+   "audit_tokens": 16937065,
+   "wrong": 0,
+   "tok_s_min": 23802,
+   "tok_s_max": 23802,
+   "task_s_min": 761.7,
+   "task_s_max": 761.7,
+   "task_s_median": 761.7,
+   "frames_max": 968,
+   "gpu_peak_max": 14049317888
+  }
+ },
+ "chain16": {
+  "runs": [
+   {
+    "file": "live_t1_bug_1_chain.json",
+    "task": "t1_bug",
+    "rep": 1,
+    "turns": 5,
+    "chain": [
+     "t1_bug",
+     "t2_rename",
+     "t3_feature",
+     "t4_config",
+     "t5_parse"
+    ],
+    "units": [
+     "all+"
+    ],
+    "frames": 4096,
+    "solved": true,
+    "check": {
+     "t1_bug": "",
+     "t2_rename": "",
+     "t3_feature": "",
+     "t4_config": "",
+     "t5_parse": ""
+    },
+    "stopped": null,
+    "steps": 15,
+    "chip_tokens_fx": 23685426,
+    "chip_tokens_io": 212290,
+    "chip_tokens_audit": 63018,
+    "chip_tokens_text": 0,
+    "instructions_chip": 14755694,
+    "instructions_original": 27428296,
+    "ecalls": 1301,
+    "frames_mapped": 1129,
+    "linear_top": 4342464,
+    "tok_s_fx": 23807,
+    "chip_s_fx": 994.913,
+    "chip_s_io": 9.405,
+    "chip_s_text": 0.0,
+    "qwen_s": 108.368,
+    "host_s": 0.697,
+    "task_s": 1113.4,
+    "qwen_fed": 3724,
+    "qwen_generated": 2045,
+    "rollbacks": 4,
+    "gpu_peak_bytes": 13963946496,
+    "gpu_reserved_peak_bytes": 14275313664,
+    "snapshot_bytes": 154042368,
+    "emu_requests_identical": 15,
+    "emu_host_io_equal": true,
+    "emu_repo_equal": true,
+    "orig_requests_identical": 15,
+    "orig_host_io_equal": true,
+    "orig_repo_equal": true,
+    "orig_dead_registers_differing": 2380,
+    "orig_memory": {
+     "words_differing": 27,
+     "on_the_c_stack": 27,
+     "on_the_c_stack_above_sp": 0,
+     "elsewhere": [],
+     "elsewhere_n": 0
+    },
+    "end_registers_differing": 0,
+    "end_words_read": 136192,
+    "end_words_differing": 0,
+    "audit_chip_tokens": 24109385,
+    "audit_forced_tokens": 70801,
+    "audit_wrong": null,
+    "audit_memory_words": 108522,
+    "audit_memory_diff": 0,
+    "forced_positions_checked": 11301,
+    "elf_sha256": "282e53d497aa113173bc3ad9aa2ab221b6f43e43360457a093aeda7c1a85cbbd",
+    "base_chip_s": null,
+    "base_steps": null,
+    "base_task_s": null,
+    "base_tokens": null,
+    "base_frames": null
+   }
+  ],
+  "summary": {
+   "runs": 1,
+   "solved": 1,
+   "stopped": 0,
+   "chip_tokens": 23897716,
+   "audit_tokens": 24109385,
+   "wrong": 0,
+   "tok_s_min": 23807,
+   "tok_s_max": 23807,
+   "task_s_min": 1113.4,
+   "task_s_max": 1113.4,
+   "task_s_median": 1113.4,
+   "frames_max": 1129,
+   "gpu_peak_max": 13963946496
+  }
+ },
+ "chain": {
+  "runs": [
+   {
+    "file": "live_t1_bug_1_chain.json",
+    "task": "t1_bug",
+    "rep": 1,
+    "turns": 5,
+    "chain": [
+     "t1_bug",
+     "t2_rename",
+     "t3_feature",
+     "t4_config",
+     "t5_parse"
+    ],
+    "units": [
+     "all+"
+    ],
+    "frames": 4096,
+    "solved": false,
+    "check": "",
+    "stopped": "ChipFault: store out of range at 0x209b44c",
+    "steps": 7,
+    "chip_tokens_fx": 10188110,
+    "chip_tokens_io": 86766,
+    "chip_tokens_audit": 35838,
+    "chip_tokens_text": 0,
+    "instructions_chip": 6316769,
+    "instructions_original": 11568558,
+    "ecalls": 740,
+    "frames_mapped": 810,
+    "linear_top": null,
+    "tok_s_fx": 23806,
+    "chip_s_fx": 427.958,
+    "chip_s_io": 3.916,
+    "chip_s_text": 0.0,
+    "qwen_s": 56.228,
+    "host_s": 0.404,
+    "task_s": 488.5,
+    "qwen_fed": 1755,
+    "qwen_generated": 1105,
+    "rollbacks": 1,
+    "gpu_peak_bytes": 11255100416,
+    "gpu_reserved_peak_bytes": 11416895488,
+    "snapshot_bytes": 123633664,
+    "emu_requests_identical": 7,
+    "emu_host_io_equal": true,
+    "emu_repo_equal": true,
+    "orig_requests_identical": 7,
+    "orig_host_io_equal": true,
+    "orig_repo_equal": true,
+    "orig_dead_registers_differing": 1363,
+    "orig_memory": {
+     "words_differing": 23,
+     "on_the_c_stack": 23,
+     "on_the_c_stack_above_sp": 5,
+     "elsewhere": [],
+     "elsewhere_n": 0
+    },
+    "end_registers_differing": null,
+    "end_words_read": null,
+    "end_words_differing": null,
+    "audit_chip_tokens": 10270615,
+    "audit_forced_tokens": 40099,
+    "audit_wrong": null,
+    "audit_memory_words": 72828,
+    "audit_memory_diff": 4187,
+    "forced_positions_checked": 6967,
+    "elf_sha256": "282e53d497aa113173bc3ad9aa2ab221b6f43e43360457a093aeda7c1a85cbbd",
+    "base_chip_s": null,
+    "base_steps": null,
+    "base_task_s": null,
+    "base_tokens": null,
+    "base_frames": null
+   }
+  ],
+  "summary": {
+   "runs": 1,
+   "solved": 0,
+   "stopped": 1,
+   "chip_tokens": 10274876,
+   "audit_tokens": 10270615,
+   "wrong": 0,
+   "tok_s_min": 23806,
+   "tok_s_max": 23806,
+   "task_s_min": 488.5,
+   "task_s_max": 488.5,
+   "task_s_median": 488.5,
+   "frames_max": 810,
+   "gpu_peak_max": 11255100416
+  }
+ },
+ "text": {
+  "runs": [
+   {
+    "file": "live_t1_bug_1.json",
+    "task": "t1_bug",
+    "rep": 1,
+    "turns": 1,
+    "chain": [],
+    "units": [
+     "all+"
+    ],
+    "frames": 4096,
+    "solved": true,
+    "check": "",
+    "stopped": null,
+    "steps": 3,
+    "chip_tokens_fx": 3547688,
+    "chip_tokens_io": 26916,
+    "chip_tokens_audit": 10800,
+    "chip_tokens_text": 1417,
+    "instructions_chip": 2244622,
+    "instructions_original": 4148840,
+    "ecalls": 223,
+    "frames_mapped": 490,
+    "linear_top": 2432276,
+    "tok_s_fx": 23715,
+    "chip_s_fx": 149.594,
+    "chip_s_io": 1.233,
+    "chip_s_text": 0.379,
+    "qwen_s": 38.001,
+    "host_s": 0.207,
+    "task_s": 189.0,
+    "qwen_fed": 1052,
+    "qwen_generated": 365,
+    "rollbacks": 2,
+    "gpu_peak_bytes": 17255378944,
+    "gpu_reserved_peak_bytes": 17486053376,
+    "snapshot_bytes": 86376448,
+    "emu_requests_identical": 3,
+    "emu_host_io_equal": true,
+    "emu_repo_equal": true,
+    "orig_requests_identical": 3,
+    "orig_host_io_equal": true,
+    "orig_repo_equal": true,
+    "orig_dead_registers_differing": 427,
+    "orig_memory": {
+     "words_differing": 27,
+     "on_the_c_stack": 27,
+     "on_the_c_stack_above_sp": 0,
+     "elsewhere": [],
+     "elsewhere_n": 0
+    },
+    "end_registers_differing": 0,
+    "end_words_read": 54656,
+    "end_words_differing": 0,
+    "audit_chip_tokens": 3652581,
+    "audit_forced_tokens": 16249,
+    "audit_wrong": null,
+    "audit_memory_words": 42604,
+    "audit_memory_diff": 0,
+    "forced_positions_checked": 2323,
+    "elf_sha256": "282e53d497aa113173bc3ad9aa2ab221b6f43e43360457a093aeda7c1a85cbbd",
+    "base_chip_s": 204.6,
+    "base_steps": 3,
+    "base_task_s": 231.7,
+    "base_tokens": 5254840,
+    "base_frames": 489
+   },
+   {
+    "file": "live_t2_rename_1.json",
+    "task": "t2_rename",
+    "rep": 1,
+    "turns": 1,
+    "chain": [],
+    "units": [
+     "all+"
+    ],
+    "frames": 4096,
+    "solved": true,
+    "check": "",
+    "stopped": null,
+    "steps": 5,
+    "chip_tokens_fx": 8296022,
+    "chip_tokens_io": 66709,
+    "chip_tokens_audit": 27376,
+    "chip_tokens_text": 2673,
+    "instructions_chip": 5147397,
+    "instructions_original": 9441191,
+    "ecalls": 565,
+    "frames_mapped": 726,
+    "linear_top": 2928080,
+    "tok_s_fx": 23710,
+    "chip_s_fx": 349.892,
+    "chip_s_io": 3.032,
+    "chip_s_text": 0.664,
+    "qwen_s": 52.539,
+    "host_s": 0.279,
+    "task_s": 405.7,
+    "qwen_fed": 1886,
+    "qwen_generated": 787,
+    "rollbacks": 4,
+    "gpu_peak_bytes": 16701276160,
+    "gpu_reserved_peak_bytes": 17502830592,
+    "snapshot_bytes": 113704960,
+    "emu_requests_identical": 5,
+    "emu_host_io_equal": true,
+    "emu_repo_equal": true,
+    "orig_requests_identical": 5,
+    "orig_host_io_equal": true,
+    "orig_repo_equal": true,
+    "orig_dead_registers_differing": 1039,
+    "orig_memory": {
+     "words_differing": 30,
+     "on_the_c_stack": 30,
+     "on_the_c_stack_above_sp": 0,
+     "elsewhere": [],
+     "elsewhere_n": 0
+    },
+    "end_registers_differing": 0,
+    "end_words_read": 84864,
+    "end_words_differing": 0,
+    "audit_chip_tokens": 8487022,
+    "audit_forced_tokens": 36746,
+    "audit_wrong": null,
+    "audit_memory_words": 62721,
+    "audit_memory_diff": 0,
+    "forced_positions_checked": 5496,
+    "elf_sha256": "282e53d497aa113173bc3ad9aa2ab221b6f43e43360457a093aeda7c1a85cbbd",
+    "base_chip_s": 565.2,
+    "base_steps": 5,
+    "base_task_s": 606.9,
+    "base_tokens": 14556511,
+    "base_frames": 793
+   },
+   {
+    "file": "live_t3_feature_1.json",
+    "task": "t3_feature",
+    "rep": 1,
+    "turns": 1,
+    "chain": [],
+    "units": [
+     "all+"
+    ],
+    "frames": 4096,
+    "solved": true,
+    "check": "",
+    "stopped": null,
+    "steps": 2,
+    "chip_tokens_fx": 4069308,
+    "chip_tokens_io": 27303,
+    "chip_tokens_audit": 7103,
+    "chip_tokens_text": 2785,
+    "instructions_chip": 2636251,
+    "instructions_original": 5082160,
+    "ecalls": 148,
+    "frames_mapped": 533,
+    "linear_top": 2434200,
+    "tok_s_fx": 23711,
+    "chip_s_fx": 171.624,
+    "chip_s_io": 1.25,
+    "chip_s_text": 0.787,
+    "qwen_s": 88.952,
+    "host_s": 0.148,
+    "task_s": 262.0,
+    "qwen_fed": 1423,
+    "qwen_generated": 1362,
+    "rollbacks": 1,
+    "gpu_peak_bytes": 15924765184,
+    "gpu_reserved_peak_bytes": 17502830592,
+    "snapshot_bytes": 98533376,
+    "emu_requests_identical": 2,
+    "emu_host_io_equal": true,
+    "emu_repo_equal": true,
+    "orig_requests_identical": 2,
+    "orig_host_io_equal": true,
+    "orig_repo_equal": true,
+    "orig_dead_registers_differing": 221,
+    "orig_memory": {
+     "words_differing": 30,
+     "on_the_c_stack": 30,
+     "on_the_c_stack_above_sp": 0,
+     "elsewhere": [],
+     "elsewhere_n": 0
+    },
+    "end_registers_differing": 0,
+    "end_words_read": 60416,
+    "end_words_differing": 0,
+    "audit_chip_tokens": 4194921,
+    "audit_forced_tokens": 17733,
+    "audit_wrong": null,
+    "audit_memory_words": 48603,
+    "audit_memory_diff": 0,
+    "forced_positions_checked": 2640,
+    "elf_sha256": "282e53d497aa113173bc3ad9aa2ab221b6f43e43360457a093aeda7c1a85cbbd",
+    "base_chip_s": 188.9,
+    "base_steps": 2,
+    "base_task_s": 222.3,
+    "base_tokens": 4868495,
+    "base_frames": 500
+   },
+   {
+    "file": "live_t4_config_1.json",
+    "task": "t4_config",
+    "rep": 1,
+    "turns": 1,
+    "chain": [],
+    "units": [
+     "all+"
+    ],
+    "frames": 4096,
+    "solved": true,
+    "check": "",
+    "stopped": null,
+    "steps": 6,
+    "chip_tokens_fx": 6248218,
+    "chip_tokens_io": 44873,
+    "chip_tokens_audit": 15734,
+    "chip_tokens_text": 1804,
+    "instructions_chip": 3920489,
+    "instructions_original": 6935488,
+    "ecalls": 323,
+    "frames_mapped": 601,
+    "linear_top": 2634256,
+    "tok_s_fx": 23715,
+    "chip_s_fx": 263.467,
+    "chip_s_io": 2.023,
+    "chip_s_text": 0.513,
+    "qwen_s": 30.935,
+    "host_s": 0.21,
+    "task_s": 296.6,
+    "qwen_fed": 1353,
+    "qwen_generated": 451,
+    "rollbacks": 5,
+    "gpu_peak_bytes": 16810936320,
+    "gpu_reserved_peak_bytes": 17517510656,
+    "snapshot_bytes": 96239616,
+    "emu_requests_identical": 6,
+    "emu_host_io_equal": true,
+    "emu_repo_equal": true,
+    "orig_requests_identical": 6,
+    "orig_host_io_equal": true,
+    "orig_repo_equal": true,
+    "orig_dead_registers_differing": 619,
+    "orig_memory": {
+     "words_differing": 30,
+     "on_the_c_stack": 30,
+     "on_the_c_stack_above_sp": 0,
+     "elsewhere": [],
+     "elsewhere_n": 0
+    },
+    "end_registers_differing": 0,
+    "end_words_read": 68992,
+    "end_words_differing": 0,
+    "audit_chip_tokens": 6392571,
+    "audit_forced_tokens": 20758,
+    "audit_wrong": null,
+    "audit_memory_words": 51699,
+    "audit_memory_diff": 0,
+    "forced_positions_checked": 2831,
+    "elf_sha256": "282e53d497aa113173bc3ad9aa2ab221b6f43e43360457a093aeda7c1a85cbbd",
+    "base_chip_s": 225.5,
+    "base_steps": 4,
+    "base_task_s": 240.1,
+    "base_tokens": 5806127,
+    "base_frames": 519
+   },
+   {
+    "file": "live_t5_parse_1.json",
+    "task": "t5_parse",
+    "rep": 1,
+    "turns": 1,
+    "chain": [],
+    "units": [
+     "all+"
+    ],
+    "frames": 4096,
+    "solved": true,
+    "check": "",
+    "stopped": null,
+    "steps": 3,
+    "chip_tokens_fx": 4430140,
+    "chip_tokens_io": 31581,
+    "chip_tokens_audit": 10803,
+    "chip_tokens_text": 2229,
+    "instructions_chip": 2824503,
+    "instructions_original": 5235181,
+    "ecalls": 223,
+    "frames_mapped": 543,
+    "linear_top": 2435160,
+    "tok_s_fx": 23706,
+    "chip_s_fx": 186.879,
+    "chip_s_io": 1.45,
+    "chip_s_text": 0.599,
+    "qwen_s": 52.796,
+    "host_s": 0.198,
+    "task_s": 241.3,
+    "qwen_fed": 1429,
+    "qwen_generated": 800,
+    "rollbacks": 2,
+    "gpu_peak_bytes": 16105592320,
+    "gpu_reserved_peak_bytes": 17517510656,
+    "snapshot_bytes": 98729984,
+    "emu_requests_identical": 3,
+    "emu_host_io_equal": true,
+    "emu_repo_equal": true,
+    "orig_requests_identical": 3,
+    "orig_host_io_equal": true,
+    "orig_repo_equal": true,
+    "orig_dead_registers_differing": 427,
+    "orig_memory": {
+     "words_differing": 30,
+     "on_the_c_stack": 30,
+     "on_the_c_stack_above_sp": 0,
+     "elsewhere": [],
+     "elsewhere_n": 0
+    },
+    "end_registers_differing": 0,
+    "end_words_read": 61824,
+    "end_words_differing": 0,
+    "audit_chip_tokens": 4557527,
+    "audit_forced_tokens": 19003,
+    "audit_wrong": null,
+    "audit_memory_words": 48562,
+    "audit_memory_diff": 0,
+    "forced_positions_checked": 2754,
+    "elf_sha256": "282e53d497aa113173bc3ad9aa2ab221b6f43e43360457a093aeda7c1a85cbbd",
+    "base_chip_s": 272.2,
+    "base_steps": 4,
+    "base_task_s": 296.4,
+    "base_tokens": 7010625,
+    "base_frames": 556
+   }
+  ],
+  "summary": {
+   "runs": 5,
+   "solved": 5,
+   "stopped": 0,
+   "chip_tokens": 26788758,
+   "audit_tokens": 27284622,
+   "wrong": 0,
+   "tok_s_min": 23706,
+   "tok_s_max": 23715,
+   "task_s_min": 189.0,
+   "task_s_max": 405.7,
+   "task_s_median": 262.0,
+   "frames_max": 726,
+   "gpu_peak_max": 17255378944
+  }
+ },
+ "text_oom": {
+  "runs": [
+   {
+    "file": "live_t1_bug_1.json",
+    "task": "t1_bug",
+    "rep": 1,
+    "turns": 1,
+    "chain": [],
+    "units": [
+     "all+"
+    ],
+    "frames": 4096,
+    "solved": false,
+    "check": "",
+    "stopped": "OutOfMemoryError: CUDA out of memory. Tried to allocate 154.00 MiB. GPU 0 has a total capacity of 22.03 GiB of which 131.12 MiB is free. Including non-PyTorch memory, this process has 21.90 GiB memory in use. Of the allocated memory 21.63 GiB is allocated by PyTorch, and 43.15 MiB is reserved by PyTorch but unallocated. If reserved but unallocated memory is large try setting PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True to avoid fragmentation.  See documentation for Memory Management  (https://docs.pytorch.org/docs/stable/notes/cuda.html#optimizing-memory-usage-with-pytorch-cuda-alloc-conf)",
+    "steps": 0,
+    "chip_tokens_fx": 1109543,
+    "chip_tokens_io": 5602,
+    "chip_tokens_audit": 789,
+    "chip_tokens_text": 0,
+    "instructions_chip": 717268,
+    "instructions_original": 1567815,
+    "ecalls": 16,
+    "frames_mapped": 235,
+    "linear_top": null,
+    "tok_s_fx": 23725,
+    "chip_s_fx": 46.767,
+    "chip_s_io": 0.258,
+    "chip_s_text": 0.0,
+    "qwen_s": 0.0,
+    "host_s": 12.223,
+    "task_s": 59.2,
+    "qwen_fed": 0,
+    "qwen_generated": 0,
+    "rollbacks": 0,
+    "gpu_peak_bytes": 23222660608,
+    "gpu_reserved_peak_bytes": 23267901440,
+    "snapshot_bytes": 0,
+    "emu_requests_identical": 0,
+    "emu_host_io_equal": false,
+    "emu_repo_equal": true,
+    "orig_requests_identical": 0,
+    "orig_host_io_equal": false,
+    "orig_repo_equal": true,
+    "orig_dead_registers_differing": 43,
+    "orig_memory": {
+     "words_differing": 6,
+     "on_the_c_stack": 6,
+     "on_the_c_stack_above_sp": 1,
+     "elsewhere": [],
+     "elsewhere_n": 0
+    },
+    "end_registers_differing": null,
+    "end_words_read": null,
+    "end_words_differing": null,
+    "audit_chip_tokens": 1113542,
+    "audit_forced_tokens": 2392,
+    "audit_wrong": null,
+    "audit_memory_words": 20611,
+    "audit_memory_diff": 0,
+    "forced_positions_checked": 513,
+    "elf_sha256": "282e53d497aa113173bc3ad9aa2ab221b6f43e43360457a093aeda7c1a85cbbd",
+    "base_chip_s": 204.6,
+    "base_steps": 3,
+    "base_task_s": 231.7,
+    "base_tokens": 5254840,
+    "base_frames": 489
+   },
+   {
+    "file": "live_t2_rename_1.json",
+    "task": "t2_rename",
+    "rep": 1,
+    "turns": 1,
+    "chain": [],
+    "units": [
+     "all+"
+    ],
+    "frames": 4096,
+    "solved": false,
+    "check": "",
+    "stopped": "OutOfMemoryError: CUDA out of memory. Tried to allocate 154.00 MiB. GPU 0 has a total capacity of 22.03 GiB of which 131.12 MiB is free. Including non-PyTorch memory, this process has 21.90 GiB memory in use. Of the allocated memory 21.63 GiB is allocated by PyTorch, and 43.15 MiB is reserved by PyTorch but unallocated. If reserved but unallocated memory is large try setting PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True to avoid fragmentation.  See documentation for Memory Management  (https://docs.pytorch.org/docs/stable/notes/cuda.html#optimizing-memory-usage-with-pytorch-cuda-alloc-conf)",
+    "steps": 0,
+    "chip_tokens_fx": 1115811,
+    "chip_tokens_io": 5630,
+    "chip_tokens_audit": 789,
+    "chip_tokens_text": 0,
+    "instructions_chip": 721525,
+    "instructions_original": 1576110,
+    "ecalls": 16,
+    "frames_mapped": 235,
+    "linear_top": null,
+    "tok_s_fx": 23731,
+    "chip_s_fx": 47.019,
+    "chip_s_io": 0.258,
+    "chip_s_text": 0.0,
+    "qwen_s": 0.0,
+    "host_s": 9.427,
+    "task_s": 56.7,
+    "qwen_fed": 0,
+    "qwen_generated": 0,
+    "rollbacks": 0,
+    "gpu_peak_bytes": 23222660608,
+    "gpu_reserved_peak_bytes": 23274192896,
+    "snapshot_bytes": 0,
+    "emu_requests_identical": 0,
+    "emu_host_io_equal": false,
+    "emu_repo_equal": true,
+    "orig_requests_identical": 0,
+    "orig_host_io_equal": false,
+    "orig_repo_equal": true,
+    "orig_dead_registers_differing": 43,
+    "orig_memory": {
+     "words_differing": 9,
+     "on_the_c_stack": 9,
+     "on_the_c_stack_above_sp": 4,
+     "elsewhere": [],
+     "elsewhere_n": 0
+    },
+    "end_registers_differing": null,
+    "end_words_read": null,
+    "end_words_differing": null,
+    "audit_chip_tokens": 1119822,
+    "audit_forced_tokens": 2408,
+    "audit_wrong": null,
+    "audit_memory_words": 20662,
+    "audit_memory_diff": 0,
+    "forced_positions_checked": 517,
+    "elf_sha256": "282e53d497aa113173bc3ad9aa2ab221b6f43e43360457a093aeda7c1a85cbbd",
+    "base_chip_s": 565.2,
+    "base_steps": 5,
+    "base_task_s": 606.9,
+    "base_tokens": 14556511,
+    "base_frames": 793
+   },
+   {
+    "file": "live_t3_feature_1.json",
+    "task": "t3_feature",
+    "rep": 1,
+    "turns": 1,
+    "chain": [],
+    "units": [
+     "all+"
+    ],
+    "frames": 4096,
+    "solved": false,
+    "check": "",
+    "stopped": "OutOfMemoryError: CUDA out of memory. Tried to allocate 154.00 MiB. GPU 0 has a total capacity of 22.03 GiB of which 131.12 MiB is free. Including non-PyTorch memory, this process has 21.90 GiB memory in use. Of the allocated memory 21.63 GiB is allocated by PyTorch, and 43.15 MiB is reserved by PyTorch but unallocated. If reserved but unallocated memory is large try setting PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True to avoid fragmentation.  See documentation for Memory Management  (https://docs.pytorch.org/docs/stable/notes/cuda.html#optimizing-memory-usage-with-pytorch-cuda-alloc-conf)",
+    "steps": 0,
+    "chip_tokens_fx": 1177120,
+    "chip_tokens_io": 5926,
+    "chip_tokens_audit": 789,
+    "chip_tokens_text": 0,
+    "instructions_chip": 763041,
+    "instructions_original": 1642094,
+    "ecalls": 16,
+    "frames_mapped": 236,
+    "linear_top": null,
+    "tok_s_fx": 23734,
+    "chip_s_fx": 49.595,
+    "chip_s_io": 0.271,
+    "chip_s_text": 0.0,
+    "qwen_s": 0.0,
+    "host_s": 9.492,
+    "task_s": 59.4,
+    "qwen_fed": 0,
+    "qwen_generated": 0,
+    "rollbacks": 0,
+    "gpu_peak_bytes": 23222660608,
+    "gpu_reserved_peak_bytes": 23274192896,
+    "snapshot_bytes": 0,
+    "emu_requests_identical": 0,
+    "emu_host_io_equal": false,
+    "emu_repo_equal": true,
+    "orig_requests_identical": 0,
+    "orig_host_io_equal": false,
+    "orig_repo_equal": true,
+    "orig_dead_registers_differing": 43,
+    "orig_memory": {
+     "words_differing": 9,
+     "on_the_c_stack": 9,
+     "on_the_c_stack_above_sp": 4,
+     "elsewhere": [],
+     "elsewhere_n": 0
+    },
+    "end_registers_differing": null,
+    "end_words_read": null,
+    "end_words_differing": null,
+    "audit_chip_tokens": 1181258,
+    "audit_forced_tokens": 2577,
+    "audit_wrong": null,
+    "audit_memory_words": 20856,
+    "audit_memory_diff": 0,
+    "forced_positions_checked": 560,
+    "elf_sha256": "282e53d497aa113173bc3ad9aa2ab221b6f43e43360457a093aeda7c1a85cbbd",
+    "base_chip_s": 188.9,
+    "base_steps": 2,
+    "base_task_s": 222.3,
+    "base_tokens": 4868495,
+    "base_frames": 500
+   },
+   {
+    "file": "live_t4_config_1.json",
+    "task": "t4_config",
+    "rep": 1,
+    "turns": 1,
+    "chain": [],
+    "units": [
+     "all+"
+    ],
+    "frames": 4096,
+    "solved": false,
+    "check": "",
+    "stopped": "OutOfMemoryError: CUDA out of memory. Tried to allocate 154.00 MiB. GPU 0 has a total capacity of 22.03 GiB of which 131.12 MiB is free. Including non-PyTorch memory, this process has 21.90 GiB memory in use. Of the allocated memory 21.63 GiB is allocated by PyTorch, and 43.15 MiB is reserved by PyTorch but unallocated. If reserved but unallocated memory is large try setting PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True to avoid fragmentation.  See documentation for Memory Management  (https://docs.pytorch.org/docs/stable/notes/cuda.html#optimizing-memory-usage-with-pytorch-cuda-alloc-conf)",
+    "steps": 0,
+    "chip_tokens_fx": 1118297,
+    "chip_tokens_io": 5637,
+    "chip_tokens_audit": 789,
+    "chip_tokens_text": 0,
+    "instructions_chip": 723245,
+    "instructions_original": 1577074,
+    "ecalls": 16,
+    "frames_mapped": 235,
+    "linear_top": null,
+    "tok_s_fx": 23731,
+    "chip_s_fx": 47.123,
+    "chip_s_io": 0.258,
+    "chip_s_text": 0.0,
+    "qwen_s": 0.0,
+    "host_s": 9.626,
+    "task_s": 57.0,
+    "qwen_fed": 0,
+    "qwen_generated": 0,
+    "rollbacks": 0,
+    "gpu_peak_bytes": 23222660608,
+    "gpu_reserved_peak_bytes": 23274192896,
+    "snapshot_bytes": 0,
+    "emu_requests_identical": 0,
+    "emu_host_io_equal": false,
+    "emu_repo_equal": true,
+    "orig_requests_identical": 0,
+    "orig_host_io_equal": false,
+    "orig_repo_equal": true,
+    "orig_dead_registers_differing": 43,
+    "orig_memory": {
+     "words_differing": 9,
+     "on_the_c_stack": 9,
+     "on_the_c_stack_above_sp": 4,
+     "elsewhere": [],
+     "elsewhere_n": 0
+    },
+    "end_registers_differing": null,
+    "end_words_read": null,
+    "end_words_differing": null,
+    "audit_chip_tokens": 1122311,
+    "audit_forced_tokens": 2412,
+    "audit_wrong": null,
+    "audit_memory_words": 20662,
+    "audit_memory_diff": 0,
+    "forced_positions_checked": 518,
+    "elf_sha256": "282e53d497aa113173bc3ad9aa2ab221b6f43e43360457a093aeda7c1a85cbbd",
+    "base_chip_s": 225.5,
+    "base_steps": 4,
+    "base_task_s": 240.1,
+    "base_tokens": 5806127,
+    "base_frames": 519
+   },
+   {
+    "file": "live_t5_parse_1.json",
+    "task": "t5_parse",
+    "rep": 1,
+    "turns": 1,
+    "chain": [],
+    "units": [
+     "all+"
+    ],
+    "frames": 4096,
+    "solved": false,
+    "check": "",
+    "stopped": "OutOfMemoryError: CUDA out of memory. Tried to allocate 154.00 MiB. GPU 0 has a total capacity of 22.03 GiB of which 131.12 MiB is free. Including non-PyTorch memory, this process has 21.90 GiB memory in use. Of the allocated memory 21.63 GiB is allocated by PyTorch, and 43.15 MiB is reserved by PyTorch but unallocated. If reserved but unallocated memory is large try setting PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True to avoid fragmentation.  See documentation for Memory Management  (https://docs.pytorch.org/docs/stable/notes/cuda.html#optimizing-memory-usage-with-pytorch-cuda-alloc-conf)",
+    "steps": 0,
+    "chip_tokens_fx": 1137943,
+    "chip_tokens_io": 5737,
+    "chip_tokens_audit": 789,
+    "chip_tokens_text": 0,
+    "instructions_chip": 736538,
+    "instructions_original": 1599867,
+    "ecalls": 16,
+    "frames_mapped": 236,
+    "linear_top": null,
+    "tok_s_fx": 23732,
+    "chip_s_fx": 47.95,
+    "chip_s_io": 0.263,
+    "chip_s_text": 0.0,
+    "qwen_s": 0.0,
+    "host_s": 10.259,
+    "task_s": 58.5,
+    "qwen_fed": 0,
+    "qwen_generated": 0,
+    "rollbacks": 0,
+    "gpu_peak_bytes": 23222660608,
+    "gpu_reserved_peak_bytes": 23274192896,
+    "snapshot_bytes": 0,
+    "emu_requests_identical": 0,
+    "emu_host_io_equal": false,
+    "emu_repo_equal": true,
+    "orig_requests_identical": 0,
+    "orig_host_io_equal": false,
+    "orig_repo_equal": true,
+    "orig_dead_registers_differing": 43,
+    "orig_memory": {
+     "words_differing": 9,
+     "on_the_c_stack": 9,
+     "on_the_c_stack_above_sp": 4,
+     "elsewhere": [],
+     "elsewhere_n": 0
+    },
+    "end_registers_differing": null,
+    "end_words_read": null,
+    "end_words_differing": null,
+    "audit_chip_tokens": 1142000,
+    "audit_forced_tokens": 2469,
+    "audit_wrong": null,
+    "audit_memory_words": 20754,
+    "audit_memory_diff": 0,
+    "forced_positions_checked": 533,
+    "elf_sha256": "282e53d497aa113173bc3ad9aa2ab221b6f43e43360457a093aeda7c1a85cbbd",
+    "base_chip_s": 272.2,
+    "base_steps": 4,
+    "base_task_s": 296.4,
+    "base_tokens": 7010625,
+    "base_frames": 556
+   }
+  ],
+  "summary": {
+   "runs": 5,
+   "solved": 0,
+   "stopped": 5,
+   "chip_tokens": 5687246,
+   "audit_tokens": 5678933,
+   "wrong": 0,
+   "tok_s_min": 23725,
+   "tok_s_max": 23734,
+   "task_s_min": 56.7,
+   "task_s_max": 59.4,
+   "task_s_median": 58.5,
+   "frames_max": 236,
+   "gpu_peak_max": 23222660608
+  }
+ },
+ "probe": {
+  "seqs": 17,
+  "frames_mapped": 258,
+  "instructions": 1158538,
+  "per_seq": [
+   {
+    "tokens": 55,
+    "keep_abs_max": 9.094947017729282e-13,
+    "code_abs_max": 0.0,
+    "tau_max": 9.094947017729282e-13,
+    "mu_max": 0.0,
+    "positions_code_nonzero": 0,
+    "keep_differs_from_last": 0,
+    "forward_vs_last_max_logit": 0.0,
+    "forward_vs_zero_max_logit": 0.0625,
+    "top1_last": 0.9999999403953552,
+    "top1_zero": 0.9999999403953552
+   },
+   {
+    "tokens": 47,
+    "keep_abs_max": 9.094947017729282e-13,
+    "code_abs_max": 0.0,
+    "tau_max": 9.094947017729282e-13,
+    "mu_max": 0.0,
+    "positions_code_nonzero": 0,
+    "keep_differs_from_last": 0,
+    "forward_vs_last_max_logit": 0.0,
+    "forward_vs_zero_max_logit": 0.03125,
+    "top1_last": 0.9999999403953552,
+    "top1_zero": 0.9999999403953552
+   },
+   {
+    "tokens": 59,
+    "keep_abs_max": 9.094947017729282e-13,
+    "code_abs_max": 0.0,
+    "tau_max": 9.094947017729282e-13,
+    "mu_max": 0.0,
+    "positions_code_nonzero": 0,
+    "keep_differs_from_last": 0,
+    "forward_vs_last_max_logit": 0.0,
+    "forward_vs_zero_max_logit": 0.0625,
+    "top1_last": 1.0,
+    "top1_zero": 1.0
+   },
+   {
+    "tokens": 48,
+    "keep_abs_max": 9.094947017729282e-13,
+    "code_abs_max": 0.0,
+    "tau_max": 9.094947017729282e-13,
+    "mu_max": 0.0,
+    "positions_code_nonzero": 0,
+    "keep_differs_from_last": 0,
+    "forward_vs_last_max_logit": 0.0,
+    "forward_vs_zero_max_logit": 0.03125,
+    "top1_last": 1.0,
+    "top1_zero": 1.0
+   },
+   {
+    "tokens": 51,
+    "keep_abs_max": 9.094947017729282e-13,
+    "code_abs_max": 0.0,
+    "tau_max": 9.094947017729282e-13,
+    "mu_max": 0.0,
+    "positions_code_nonzero": 0,
+    "keep_differs_from_last": 0,
+    "forward_vs_last_max_logit": 0.0,
+    "forward_vs_zero_max_logit": 0.03125,
+    "top1_last": 1.0,
+    "top1_zero": 1.0
+   },
+   {
+    "tokens": 52,
+    "keep_abs_max": 9.094947017729282e-13,
+    "code_abs_max": 0.0,
+    "tau_max": 9.094947017729282e-13,
+    "mu_max": 0.0,
+    "positions_code_nonzero": 0,
+    "keep_differs_from_last": 0,
+    "forward_vs_last_max_logit": 0.0,
+    "forward_vs_zero_max_logit": 0.0625,
+    "top1_last": 1.0,
+    "top1_zero": 1.0
+   },
+   {
+    "tokens": 49,
+    "keep_abs_max": 9.094947017729282e-13,
+    "code_abs_max": 0.0,
+    "tau_max": 9.094947017729282e-13,
+    "mu_max": 0.0,
+    "positions_code_nonzero": 0,
+    "keep_differs_from_last": 0,
+    "forward_vs_last_max_logit": 0.0,
+    "forward_vs_zero_max_logit": 0.03125,
+    "top1_last": 1.0,
+    "top1_zero": 1.0
+   },
+   {
+    "tokens": 65,
+    "keep_abs_max": 9.094947017729282e-13,
+    "code_abs_max": 0.0,
+    "tau_max": 9.094947017729282e-13,
+    "mu_max": 0.0,
+    "positions_code_nonzero": 0,
+    "keep_differs_from_last": 0,
+    "forward_vs_last_max_logit": 0.0,
+    "forward_vs_zero_max_logit": 0.03125,
+    "top1_last": 1.0,
+    "top1_zero": 1.0
+   },
+   {
+    "tokens": 44,
+    "keep_abs_max": 9.094947017729282e-13,
+    "code_abs_max": 0.0,
+    "tau_max": 9.094947017729282e-13,
+    "mu_max": 0.0,
+    "positions_code_nonzero": 0,
+    "keep_differs_from_last": 0,
+    "forward_vs_last_max_logit": 0.0,
+    "forward_vs_zero_max_logit": 0.0625,
+    "top1_last": 1.0,
+    "top1_zero": 1.0
+   },
+   {
+    "tokens": 60,
+    "keep_abs_max": 9.094947017729282e-13,
+    "code_abs_max": 0.0,
+    "tau_max": 9.094947017729282e-13,
+    "mu_max": 0.0,
+    "positions_code_nonzero": 0,
+    "keep_differs_from_last": 0,
+    "forward_vs_last_max_logit": 0.0,
+    "forward_vs_zero_max_logit": 0.03125,
+    "top1_last": 1.0,
+    "top1_zero": 1.0
+   },
+   {
+    "tokens": 51,
+    "keep_abs_max": 9.094947017729282e-13,
+    "code_abs_max": 0.0,
+    "tau_max": 9.094947017729282e-13,
+    "mu_max": 0.0,
+    "positions_code_nonzero": 0,
+    "keep_differs_from_last": 0,
+    "forward_vs_last_max_logit": 0.0,
+    "forward_vs_zero_max_logit": 0.0625,
+    "top1_last": 1.0,
+    "top1_zero": 1.0
+   },
+   {
+    "tokens": 43,
+    "keep_abs_max": 9.094947017729282e-13,
+    "code_abs_max": 0.0,
+    "tau_max": 9.094947017729282e-13,
+    "mu_max": 0.0,
+    "positions_code_nonzero": 0,
+    "keep_differs_from_last": 0,
+    "forward_vs_last_max_logit": 0.0,
+    "forward_vs_zero_max_logit": 0.03125,
+    "top1_last": 1.0,
+    "top1_zero": 1.0
+   },
+   {
+    "tokens": 57,
+    "keep_abs_max": 9.094947017729282e-13,
+    "code_abs_max": 0.0,
+    "tau_max": 9.094947017729282e-13,
+    "mu_max": 0.0,
+    "positions_code_nonzero": 0,
+    "keep_differs_from_last": 0,
+    "forward_vs_last_max_logit": 0.0,
+    "forward_vs_zero_max_logit": 0.0625,
+    "top1_last": 1.0,
+    "top1_zero": 1.0
+   },
+   {
+    "tokens": 60,
+    "keep_abs_max": 9.094947017729282e-13,
+    "code_abs_max": 0.0,
+    "tau_max": 9.094947017729282e-13,
+    "mu_max": 0.0,
+    "positions_code_nonzero": 0,
+    "keep_differs_from_last": 0,
+    "forward_vs_last_max_logit": 0.0,
+    "forward_vs_zero_max_logit": 0.03125,
+    "top1_last": 1.0,
+    "top1_zero": 1.0
+   },
+   {
+    "tokens": 39,
+    "keep_abs_max": 9.094947017729282e-13,
+    "code_abs_max": 0.0,
+    "tau_max": 9.094947017729282e-13,
+    "mu_max": 0.0,
+    "positions_code_nonzero": 0,
+    "keep_differs_from_last": 0,
+    "forward_vs_last_max_logit": 0.0,
+    "forward_vs_zero_max_logit": 0.03125,
+    "top1_last": 1.0,
+    "top1_zero": 1.0
+   },
+   {
+    "tokens": 59,
+    "keep_abs_max": 9.094947017729282e-13,
+    "code_abs_max": 0.0,
+    "tau_max": 9.094947017729282e-13,
+    "mu_max": 0.0,
+    "positions_code_nonzero": 0,
+    "keep_differs_from_last": 0,
+    "forward_vs_last_max_logit": 0.0,
+    "forward_vs_zero_max_logit": 0.03125,
+    "top1_last": 1.0,
+    "top1_zero": 1.0
+   },
+   {
+    "tokens": 1108,
+    "keep_abs_max": 9.5367431640625e-07,
+    "code_abs_max": 9.5367431640625e-07,
+    "tau_max": 9.094947017729282e-13,
+    "mu_max": 0.0,
+    "positions_code_nonzero": 4,
+    "keep_differs_from_last": 4,
+    "forward_vs_last_max_logit": 2555.0,
+    "forward_vs_zero_max_logit": 2555.0,
+    "top1_last": 0.9963898658752441,
+    "top1_zero": 0.9963898658752441
+   }
+  ],
+  "state_words_changed": 4,
+  "state_words_compared": 81281024,
+  "kl_noise_floor": [
+   0.0004280017747078091,
+   0.00017114478396251798,
+   0.0004647289460990578,
+   0.0004552991595119238,
+   0.0008612414821982384,
+   0.0002405264531262219,
+   0.0007983730174601078,
+   0.0005165362381376326,
+   0.0004949072026647627,
+   0.0004753124958369881,
+   0.00026455929037183523,
+   0.0005290167755447328,
+   0.0007084906101226807,
+   0.0004488645645324141,
+   0.0006379499682225287,
+   0.0006143361679278314,
+   0.006044446490705013
+  ],
+  "kl_forward": [
+   0.0008052760385908186,
+   0.0003776063967961818,
+   0.00048321837675757706,
+   0.0005264494684524834,
+   0.0006595741724595428,
+   0.0003822890867013484,
+   0.0007843069033697248,
+   0.0004550607700366527,
+   0.0005364243406802416,
+   0.00042934101657010615,
+   0.00033414759673178196,
+   0.000830540549941361,
+   0.0006623296649195254,
+   0.00026900539523921907,
+   0.0006208533886820078,
+   0.000526249990798533,
+   8.90672492980957
+  ],
+  "kl_text_last": [
+   0.0008052760385908186,
+   0.0003776063967961818,
+   0.00048321837675757706,
+   0.0005264494684524834,
+   0.0006595741724595428,
+   0.0003822890867013484,
+   0.0007843069033697248,
+   0.0004550607700366527,
+   0.0005364243406802416,
+   0.00042934101657010615,
+   0.00033414759673178196,
+   0.000830540549941361,
+   0.0006623296649195254,
+   0.00026900539523921907,
+   0.0006208533886820078,
+   0.000526249990798533,
+   0.007921640761196613
+  ],
+  "kl_text_zero": [
+   0.0008052797056734562,
+   0.00037760735722258687,
+   0.0004832234117202461,
+   0.0005264540086500347,
+   0.0006596139864996076,
+   0.0003822916478384286,
+   0.0007843156345188618,
+   0.0004550714511424303,
+   0.0005364293465390801,
+   0.00042934223893098533,
+   0.0003341511182952672,
+   0.0008305449155159295,
+   0.0006623317021876574,
+   0.0002690060646273196,
+   0.000620864680968225,
+   0.0005262579070404172,
+   0.007921705953776836
+  ],
+  "kl_noise_floor_mean": 0.0008325726718313116,
+  "kl_forward_mean": 0.5244357413509587,
+  "kl_text_last_mean": 0.0009767243481131598,
+  "kl_text_zero_mean": 0.0009767347724204335,
+  "kl_forward_vs_text_last": 0.006338427610257093,
+  "top1_base_vs_forward": [
+   1.0,
+   1.0,
+   0.9661017060279846,
+   0.9791666865348816,
+   1.0,
+   1.0,
+   0.9795918464660645,
+   0.9846153855323792,
+   0.9545454382896423,
+   1.0,
+   1.0,
+   1.0,
+   1.0,
+   1.0,
+   1.0,
+   1.0,
+   0.9810469150543213
+  ],
+  "top1_base_vs_eager": [
+   1.0,
+   1.0,
+   0.9661017060279846,
+   1.0,
+   0.9215686321258545,
+   1.0,
+   0.9795918464660645,
+   0.9692307710647583,
+   1.0,
+   1.0,
+   1.0,
+   1.0,
+   1.0,
+   1.0,
+   1.0,
+   1.0,
+   0.9828519821166992
+  ],
+  "meta": {
+   "hidden": 4352,
+   "ballast_dims": 17,
+   "slots": 1719
+  }
+ },
+ "run13_16": {
+  "frames": 4096,
+  "from_reset": false,
+  "image_windows": 35,
+  "stats": {
+   "layers": 162,
+   "dims": 5173,
+   "heads": 2496,
+   "ffn_units": 45896,
+   "max_units": 8172,
+   "max_heads": 16
+  },
+  "phases": 14,
+  "slots": 849730,
+  "smem": 89376,
+  "S_bytes": 325124096,
+  "tokens": 6666925,
+  "instructions": 4142400,
+  "segments": 400,
+  "gpu_s": 278.79,
+  "ref_s": 21.3,
+  "tok_s": 23914,
+  "wrong": null,
+  "us_step": 41.82,
+  "pages": 704,
+  "cum": [
+   [
+    715181,
+    479098
+   ],
+   [
+    717323,
+    480349
+   ],
+   [
+    743270,
+    497695
+   ],
+   [
+    796518,
+    523424
+   ],
+   [
+    801135,
+    526301
+   ],
+   [
+    802611,
+    527258
+   ],
+   [
+    861637,
+    566653
+   ],
+   [
+    940743,
+    615923
+   ],
+   [
+    966815,
+    630614
+   ],
+   [
+    967396,
+    630977
+   ],
+   [
+    971954,
+    633418
+   ],
+   [
+    1099147,
+    709892
+   ],
+   [
+    1100426,
+    710679
+   ],
+   [
+    1102199,
+    711723
+   ],
+   [
+    1128660,
+    728565
+   ],
+   [
+    1128786,
+    728642
+   ],
+   [
+    1128870,
+    728692
+   ],
+   [
+    1129324,
+    728984
+   ],
+   [
+    1130413,
+    729676
+   ],
+   [
+    1130692,
+    729876
+   ],
+   [
+    1212662,
+    783761
+   ],
+   [
+    1213532,
+    784225
+   ],
+   [
+    1219527,
+    787013
+   ],
+   [
+    1225945,
+    791101
+   ],
+   [
+    1228339,
+    792678
+   ],
+   [
+    1350372,
+    870814
+   ],
+   [
+    1439958,
+    916523
+   ],
+   [
+    1453692,
+    923496
+   ],
+   [
+    1465847,
+    931441
+   ],
+   [
+    1466429,
+    931875
+   ],
+   [
+    1466976,
+    932278
+   ],
+   [
+    1468353,
+    933175
+   ],
+   [
+    1470245,
+    934309
+   ],
+   [
+    1470417,
+    934437
+   ],
+   [
+    1470657,
+    934545
+   ],
+   [
+    1472244,
+    935414
+   ],
+   [
+    1473809,
+    936275
+   ],
+   [
+    1475830,
+    937504
+   ],
+   [
+    1496057,
+    950513
+   ],
+   [
+    1497447,
+    951277
+   ],
+   [
+    1497870,
+    951438
+   ],
+   [
+    1519570,
+    965405
+   ],
+   [
+    1567877,
+    995480
+   ],
+   [
+    1571596,
+    997615
+   ],
+   [
+    1571817,
+    997754
+   ],
+   [
+    1576945,
+    1000279
+   ],
+   [
+    1733576,
+    1095489
+   ],
+   [
+    1734854,
+    1096276
+   ],
+   [
+    1736624,
+    1097320
+   ],
+   [
+    1763098,
+    1114180
+   ],
+   [
+    1763224,
+    1114257
+   ],
+   [
+    1763308,
+    1114307
+   ],
+   [
+    1763762,
+    1114599
+   ],
+   [
+    1764847,
+    1115291
+   ],
+   [
+    1765126,
+    1115491
+   ],
+   [
+    1852658,
+    1173064
+   ],
+   [
+    1853528,
+    1173528
+   ],
+   [
+    1859547,
+    1176315
+   ],
+   [
+    1866024,
+    1180437
+   ],
+   [
+    1868417,
+    1182014
+   ],
+   [
+    2034317,
+    1290026
+   ],
+   [
+    2129632,
+    1339052
+   ],
+   [
+    2146753,
+    1348295
+   ],
+   [
+    2146912,
+    1348391
+   ],
+   [
+    2146938,
+    1348407
+   ],
+   [
+    2147252,
+    1348565
+   ],
+   [
+    2162018,
+    1357571
+   ],
+   [
+    2220735,
+    1394407
+   ],
+   [
+    2224282,
+    1396419
+   ],
+   [
+    2224503,
+    1396558
+   ],
+   [
+    2230063,
+    1399083
+   ],
+   [
+    2405533,
+    1505777
+   ],
+   [
+    2406811,
+    1506564
+   ],
+   [
+    2408581,
+    1507608
+   ],
+   [
+    2435075,
+    1524486
+   ],
+   [
+    2435201,
+    1524563
+   ],
+   [
+    2435285,
+    1524613
+   ],
+   [
+    2435739,
+    1524905
+   ],
+   [
+    2436824,
+    1525597
+   ],
+   [
+    2437103,
+    1525797
+   ],
+   [
+    2540751,
+    1594479
+   ],
+   [
+    2541621,
+    1594943
+   ],
+   [
+    2547903,
+    1597822
+   ],
+   [
+    2554439,
+    1601988
+   ],
+   [
+    2556832,
+    1603565
+   ],
+   [
+    3052819,
+    1921869
+   ],
+   [
+    3080395,
+    1939432
+   ],
+   [
+    3103916,
+    1952716
+   ],
+   [
+    3125540,
+    1966618
+   ],
+   [
+    3125628,
+    1966678
+   ],
+   [
+    3126117,
+    1967005
+   ],
+   [
+    3126205,
+    1967065
+   ],
+   [
+    3126364,
+    1967170
+   ],
+   [
+    3126902,
+    1967533
+   ],
+   [
+    3127025,
+    1967621
+   ],
+   [
+    3127184,
+    1967726
+   ],
+   [
+    3127774,
+    1968088
+   ],
+   [
+    3129161,
+    1968880
+   ],
+   [
+    3129988,
+    1969440
+   ],
+   [
+    3130076,
+    1969500
+   ],
+   [
+    3130481,
+    1969718
+   ],
+   [
+    3132129,
+    1970674
+   ],
+   [
+    3132252,
+    1970762
+   ],
+   [
+    3132649,
+    1970977
+   ],
+   [
+    3134050,
+    1971764
+   ],
+   [
+    3134507,
+    1972029
+   ],
+   [
+    3135897,
+    1972810
+   ],
+   [
+    3150204,
+    1977830
+   ],
+   [
+    3150292,
+    1977890
+   ],
+   [
+    3150781,
+    1978217
+   ],
+   [
+    3150869,
+    1978277
+   ],
+   [
+    3151028,
+    1978382
+   ],
+   [
+    3151566,
+    1978745
+   ],
+   [
+    3151689,
+    1978833
+   ],
+   [
+    3151848,
+    1978938
+   ],
+   [
+    3152438,
+    1979300
+   ],
+   [
+    3153825,
+    1980092
+   ],
+   [
+    3154637,
+    1980607
+   ],
+   [
+    3154725,
+    1980667
+   ],
+   [
+    3155160,
+    1980910
+   ],
+   [
+    3156823,
+    1981884
+   ],
+   [
+    3156946,
+    1981972
+   ],
+   [
+    3157358,
+    1982198
+   ],
+   [
+    3158743,
+    1982981
+   ],
+   [
+    3159186,
+    1983235
+   ],
+   [
+    3160794,
+    1984168
+   ],
+   [
+    3160911,
+    1984252
+   ],
+   [
+    3161147,
+    1984357
+   ],
+   [
+    3162732,
+    1985224
+   ],
+   [
+    3164631,
+    1986300
+   ],
+   [
+    3166488,
+    1987452
+   ],
+   [
+    3170092,
+    1988218
+   ],
+   [
+    3170206,
+    1988287
+   ],
+   [
+    3274494,
+    2054733
+   ],
+   [
+    3274582,
+    2054793
+   ],
+   [
+    3275011,
+    2055030
+   ],
+   [
+    3276689,
+    2056006
+   ],
+   [
+    3276812,
+    2056094
+   ],
+   [
+    3277229,
+    2056323
+   ],
+   [
+    3278631,
+    2057113
+   ],
+   [
+    3279106,
+    2057426
+   ],
+   [
+    3279223,
+    2057510
+   ],
+   [
+    3279459,
+    2057615
+   ],
+   [
+    3281036,
+    2058479
+   ],
+   [
+    3282895,
+    2059567
+   ],
+   [
+    3283422,
+    2059941
+   ],
+   [
+    3285801,
+    2060394
+   ],
+   [
+    3287305,
+    2060948
+   ],
+   [
+    3287422,
+    2061032
+   ],
+   [
+    3287658,
+    2061137
+   ],
+   [
+    3289232,
+    2061998
+   ],
+   [
+    3290604,
+    2062782
+   ],
+   [
+    3290755,
+    2062875
+   ],
+   [
+    3291767,
+    2063490
+   ],
+   [
+    3292093,
+    2063649
+   ],
+   [
+    3293828,
+    2064668
+   ],
+   [
+    3294083,
+    2064832
+   ],
+   [
+    3302248,
+    2066658
+   ],
+   [
+    3302365,
+    2066742
+   ],
+   [
+    3302601,
+    2066847
+   ],
+   [
+    3304194,
+    2067711
+   ],
+   [
+    3306071,
+    2068800
+   ],
+   [
+    3306598,
+    2069174
+   ],
+   [
+    3308977,
+    2069627
+   ],
+   [
+    3310481,
+    2070181
+   ],
+   [
+    3310598,
+    2070265
+   ],
+   [
+    3310834,
+    2070370
+   ],
+   [
+    3312408,
+    2071231
+   ],
+   [
+    3313780,
+    2072015
+   ],
+   [
+    3313931,
+    2072108
+   ],
+   [
+    3314332,
+    2072328
+   ],
+   [
+    3316238,
+    2073495
+   ],
+   [
+    3316530,
+    2073719
+   ],
+   [
+    3316766,
+    2073824
+   ],
+   [
+    3318352,
+    2074693
+   ],
+   [
+    3319729,
+    2075480
+   ],
+   [
+    3320457,
+    2075942
+   ],
+   [
+    3320980,
+    2076313
+   ],
+   [
+    3323360,
+    2076758
+   ],
+   [
+    3357720,
+    2090099
+   ],
+   [
+    3357808,
+    2090159
+   ],
+   [
+    3358218,
+    2090385
+   ],
+   [
+    3359863,
+    2091335
+   ],
+   [
+    3359986,
+    2091423
+   ],
+   [
+    3360390,
+    2091645
+   ],
+   [
+    3361788,
+    2092428
+   ],
+   [
+    3362254,
+    2092743
+   ],
+   [
+    3362371,
+    2092827
+   ],
+   [
+    3362607,
+    2092932
+   ],
+   [
+    3364186,
+    2093793
+   ],
+   [
+    3365581,
+    2094577
+   ],
+   [
+    3365943,
+    2094769
+   ],
+   [
+    3367866,
+    2095936
+   ],
+   [
+    3368158,
+    2096160
+   ],
+   [
+    3368394,
+    2096265
+   ],
+   [
+    3369983,
+    2097134
+   ],
+   [
+    3371432,
+    2097921
+   ],
+   [
+    3372417,
+    2098641
+   ],
+   [
+    3372623,
+    2098777
+   ],
+   [
+    3372799,
+    2098889
+   ],
+   [
+    3373891,
+    2099602
+   ],
+   [
+    3374025,
+    2099684
+   ],
+   [
+    3375971,
+    2100850
+   ],
+   [
+    3376244,
+    2101011
+   ],
+   [
+    3387076,
+    2107147
+   ],
+   [
+    3438563,
+    2138171
+   ],
+   [
+    3443514,
+    2140398
+   ],
+   [
+    3443735,
+    2140537
+   ],
+   [
+    3449732,
+    2143061
+   ],
+   [
+    3651309,
+    2265888
+   ],
+   [
+    3652587,
+    2266675
+   ],
+   [
+    3654357,
+    2267719
+   ],
+   [
+    3680871,
+    2284615
+   ],
+   [
+    3680997,
+    2284692
+   ],
+   [
+    3681081,
+    2284742
+   ],
+   [
+    3681535,
+    2285034
+   ],
+   [
+    3682620,
+    2285726
+   ],
+   [
+    3682899,
+    2285926
+   ],
+   [
+    3782929,
+    2352156
+   ],
+   [
+    3783799,
+    2352620
+   ],
+   [
+    3790056,
+    2355499
+   ],
+   [
+    3796645,
+    2359699
+   ],
+   [
+    3799038,
+    2361276
+   ],
+   [
+    4200265,
+    2615959
+   ],
+   [
+    4225324,
+    2631873
+   ],
+   [
+    4246618,
+    2643694
+   ],
+   [
+    4264949,
+    2655529
+   ],
+   [
+    4265037,
+    2655589
+   ],
+   [
+    4265526,
+    2655916
+   ],
+   [
+    4265614,
+    2655976
+   ],
+   [
+    4265773,
+    2656081
+   ],
+   [
+    4266273,
+    2656414
+   ],
+   [
+    4266381,
+    2656490
+   ],
+   [
+    4266540,
+    2656595
+   ],
+   [
+    4267292,
+    2657083
+   ],
+   [
+    4267910,
+    2657479
+   ],
+   [
+    4268736,
+    2658039
+   ],
+   [
+    4268824,
+    2658099
+   ],
+   [
+    4269229,
+    2658317
+   ],
+   [
+    4270878,
+    2659258
+   ],
+   [
+    4270986,
+    2659334
+   ],
+   [
+    4271383,
+    2659549
+   ],
+   [
+    4272804,
+    2660336
+   ],
+   [
+    4273363,
+    2660682
+   ],
+   [
+    4273983,
+    2661073
+   ],
+   [
+    4286835,
+    2665871
+   ],
+   [
+    4286923,
+    2665931
+   ],
+   [
+    4287412,
+    2666258
+   ],
+   [
+    4287500,
+    2666318
+   ],
+   [
+    4287659,
+    2666423
+   ],
+   [
+    4288159,
+    2666756
+   ],
+   [
+    4288267,
+    2666832
+   ],
+   [
+    4288426,
+    2666937
+   ],
+   [
+    4289178,
+    2667425
+   ],
+   [
+    4289796,
+    2667821
+   ],
+   [
+    4290621,
+    2668336
+   ],
+   [
+    4290709,
+    2668396
+   ],
+   [
+    4291144,
+    2668639
+   ],
+   [
+    4292791,
+    2669598
+   ],
+   [
+    4292899,
+    2669674
+   ],
+   [
+    4293311,
+    2669900
+   ],
+   [
+    4294700,
+    2670683
+   ],
+   [
+    4295246,
+    2671018
+   ],
+   [
+    4295896,
+    2671428
+   ],
+   [
+    4349826,
+    2705517
+   ],
+   [
+    4349914,
+    2705577
+   ],
+   [
+    4350343,
+    2705814
+   ],
+   [
+    4352008,
+    2706775
+   ],
+   [
+    4352116,
+    2706851
+   ],
+   [
+    4352534,
+    2707080
+   ],
+   [
+    4353943,
+    2707870
+   ],
+   [
+    4354569,
+    2708264
+   ],
+   [
+    4356088,
+    2709203
+   ],
+   [
+    4356414,
+    2709362
+   ],
+   [
+    4358069,
+    2710328
+   ],
+   [
+    4358324,
+    2710492
+   ],
+   [
+    4363093,
+    2712063
+   ],
+   [
+    4364002,
+    2712606
+   ],
+   [
+    4365912,
+    2713773
+   ],
+   [
+    4366204,
+    2713997
+   ],
+   [
+    4366440,
+    2714102
+   ],
+   [
+    4368026,
+    2714971
+   ],
+   [
+    4369403,
+    2715758
+   ],
+   [
+    4370131,
+    2716220
+   ],
+   [
+    4370655,
+    2716591
+   ],
+   [
+    4372425,
+    2717026
+   ],
+   [
+    4376316,
+    2717909
+   ],
+   [
+    4376404,
+    2717969
+   ],
+   [
+    4376814,
+    2718195
+   ],
+   [
+    4378462,
+    2719130
+   ],
+   [
+    4378570,
+    2719206
+   ],
+   [
+    4378974,
+    2719428
+   ],
+   [
+    4380396,
+    2720211
+   ],
+   [
+    4381043,
+    2720619
+   ],
+   [
+    4381910,
+    2721135
+   ],
+   [
+    4383838,
+    2722302
+   ],
+   [
+    4384130,
+    2722526
+   ],
+   [
+    4384366,
+    2722631
+   ],
+   [
+    4385955,
+    2723500
+   ],
+   [
+    4387334,
+    2724287
+   ],
+   [
+    4388421,
+    2725088
+   ],
+   [
+    4388627,
+    2725224
+   ],
+   [
+    4388803,
+    2725336
+   ],
+   [
+    4389895,
+    2726049
+   ],
+   [
+    4390029,
+    2726131
+   ],
+   [
+    4391684,
+    2727113
+   ],
+   [
+    4391963,
+    2727274
+   ],
+   [
+    4403003,
+    2733564
+   ],
+   [
+    4449317,
+    2761203
+   ],
+   [
+    4452866,
+    2763215
+   ],
+   [
+    4453087,
+    2763354
+   ],
+   [
+    4459513,
+    2765879
+   ],
+   [
+    4683944,
+    2902561
+   ],
+   [
+    4685222,
+    2903348
+   ],
+   [
+    4686992,
+    2904392
+   ],
+   [
+    4713526,
+    2921306
+   ],
+   [
+    4713652,
+    2921383
+   ],
+   [
+    4713736,
+    2921433
+   ],
+   [
+    4714190,
+    2921725
+   ],
+   [
+    4715275,
+    2922417
+   ],
+   [
+    4715554,
+    2922617
+   ],
+   [
+    4797466,
+    2976433
+   ],
+   [
+    4798336,
+    2976897
+   ],
+   [
+    4804351,
+    2979684
+   ],
+   [
+    4810999,
+    2983916
+   ],
+   [
+    4813392,
+    2985493
+   ],
+   [
+    4935506,
+    3063632
+   ],
+   [
+    5027278,
+    3110712
+   ],
+   [
+    5041261,
+    3117818
+   ],
+   [
+    5041420,
+    3117914
+   ],
+   [
+    5041446,
+    3117930
+   ],
+   [
+    5041780,
+    3118088
+   ],
+   [
+    5058728,
+    3128659
+   ],
+   [
+    5105520,
+    3157434
+   ],
+   [
+    5109066,
+    3159446
+   ],
+   [
+    5109287,
+    3159585
+   ],
+   [
+    5116147,
+    3162110
+   ],
+   [
+    5357120,
+    3308695
+   ],
+   [
+    5358398,
+    3309482
+   ],
+   [
+    5360168,
+    3310526
+   ],
+   [
+    5386722,
+    3327458
+   ],
+   [
+    5386848,
+    3327535
+   ],
+   [
+    5386932,
+    3327585
+   ],
+   [
+    5387386,
+    3327877
+   ],
+   [
+    5388471,
+    3328569
+   ],
+   [
+    5388750,
+    3328769
+   ],
+   [
+    5432526,
+    3359160
+   ],
+   [
+    5433907,
+    3359922
+   ],
+   [
+    5479716,
+    3393847
+   ],
+   [
+    5540570,
+    3433471
+   ],
+   [
+    5541400,
+    3433914
+   ],
+   [
+    5546802,
+    3436157
+   ],
+   [
+    5552927,
+    3440051
+   ],
+   [
+    5665453,
+    3521731
+   ],
+   [
+    5691996,
+    3541595
+   ],
+   [
+    5692218,
+    3541734
+   ],
+   [
+    5692333,
+    3541800
+   ],
+   [
+    5697499,
+    3544724
+   ],
+   [
+    5716792,
+    3557443
+   ],
+   [
+    5739085,
+    3572218
+   ],
+   [
+    5768962,
+    3591675
+   ],
+   [
+    5795798,
+    3609217
+   ],
+   [
+    5815945,
+    3621692
+   ],
+   [
+    5886469,
+    3663266
+   ],
+   [
+    5897305,
+    3670482
+   ],
+   [
+    5905910,
+    3674850
+   ],
+   [
+    5913785,
+    3680015
+   ],
+   [
+    5915730,
+    3681288
+   ],
+   [
+    5973709,
+    3720188
+   ],
+   [
+    6070075,
+    3778737
+   ],
+   [
+    6111965,
+    3799948
+   ],
+   [
+    6112494,
+    3800270
+   ],
+   [
+    6119880,
+    3802712
+   ],
+   [
+    6378804,
+    3957381
+   ],
+   [
+    6380082,
+    3958168
+   ],
+   [
+    6381852,
+    3959212
+   ],
+   [
+    6408435,
+    3976171
+   ],
+   [
+    6408561,
+    3976248
+   ],
+   [
+    6408645,
+    3976298
+   ],
+   [
+    6409099,
+    3976590
+   ],
+   [
+    6410187,
+    3977282
+   ],
+   [
+    6410466,
+    3977482
+   ],
+   [
+    6443572,
+    3999807
+   ],
+   [
+    6444953,
+    4000569
+   ],
+   [
+    6463742,
+    4013720
+   ],
+   [
+    6525076,
+    4053663
+   ],
+   [
+    6525906,
+    4054106
+   ],
+   [
+    6530932,
+    4056257
+   ],
+   [
+    6537020,
+    4060135
+   ],
+   [
+    6570948,
+    4084659
+   ],
+   [
+    6581870,
+    4092269
+   ],
+   [
+    6582498,
+    4092654
+   ],
+   [
+    6582612,
+    4092720
+   ],
+   [
+    6585532,
+    4094105
+   ],
+   [
+    6602960,
+    4105049
+   ],
+   [
+    6613800,
+    4112271
+   ],
+   [
+    6622398,
+    4116639
+   ],
+   [
+    6642025,
+    4128449
+   ],
+   [
+    6643970,
+    4129722
+   ],
+   [
+    6666925,
+    4142400
+   ]
+  ],
+  "end": {
+   "end_words": 1897552,
+   "end_diff": 0,
+   "extra": 0,
+   "end_x_equal": true
+  }
+ },
+ "sp1024": {
+  "frames": 1024,
+  "from_reset": false,
+  "image_windows": 35,
+  "stats": {
+   "layers": 60,
+   "dims": 5167,
+   "heads": 864,
+   "ffn_units": 45874,
+   "max_units": 8172,
+   "max_heads": 16
+  },
+  "phases": 14,
+  "slots": 849522,
+  "smem": 89376,
+  "S_bytes": 111214592,
+  "tokens": 940743,
+  "instructions": 615923,
+  "segments": 8,
+  "gpu_s": 39.78,
+  "ref_s": 3.09,
+  "tok_s": 23651,
+  "wrong": null,
+  "us_step": 42.28,
+  "pages": 140,
+  "cum": [
+   [
+    715181,
+    479098
+   ],
+   [
+    717323,
+    480349
+   ],
+   [
+    743270,
+    497695
+   ],
+   [
+    796518,
+    523424
+   ],
+   [
+    801135,
+    526301
+   ],
+   [
+    802611,
+    527258
+   ],
+   [
+    861637,
+    566653
+   ],
+   [
+    940743,
+    615923
+   ]
+  ]
+ },
+ "sp2048": {
+  "frames": 2048,
+  "from_reset": false,
+  "image_windows": 35,
+  "stats": {
+   "layers": 92,
+   "dims": 5170,
+   "heads": 1376,
+   "ffn_units": 45885,
+   "max_units": 8172,
+   "max_heads": 16
+  },
+  "phases": 14,
+  "slots": 849570,
+  "smem": 89376,
+  "S_bytes": 178323456,
+  "tokens": 940743,
+  "instructions": 615923,
+  "segments": 8,
+  "gpu_s": 39.4,
+  "ref_s": 3.16,
+  "tok_s": 23876,
+  "wrong": null,
+  "us_step": 41.88,
+  "pages": 140,
+  "cum": [
+   [
+    715181,
+    479098
+   ],
+   [
+    717323,
+    480349
+   ],
+   [
+    743270,
+    497695
+   ],
+   [
+    796518,
+    523424
+   ],
+   [
+    801135,
+    526301
+   ],
+   [
+    802611,
+    527258
+   ],
+   [
+    861637,
+    566653
+   ],
+   [
+    940743,
+    615923
+   ]
+  ]
+ },
+ "sp4096": {
+  "frames": 4096,
+  "from_reset": false,
+  "image_windows": 35,
+  "stats": {
+   "layers": 156,
+   "dims": 5173,
+   "heads": 2400,
+   "ffn_units": 45896,
+   "max_units": 8172,
+   "max_heads": 16
+  },
+  "phases": 14,
+  "slots": 849730,
+  "smem": 89392,
+  "S_bytes": 312541184,
+  "tokens": 940743,
+  "instructions": 615923,
+  "segments": 8,
+  "gpu_s": 39.34,
+  "ref_s": 3.05,
+  "tok_s": 23912,
+  "wrong": null,
+  "us_step": 41.82,
+  "pages": 140,
+  "cum": [
+   [
+    715181,
+    479098
+   ],
+   [
+    717323,
+    480349
+   ],
+   [
+    743270,
+    497695
+   ],
+   [
+    796518,
+    523424
+   ],
+   [
+    801135,
+    526301
+   ],
+   [
+    802611,
+    527258
+   ],
+   [
+    861637,
+    566653
+   ],
+   [
+    940743,
+    615923
+   ]
+  ]
+ }
+}

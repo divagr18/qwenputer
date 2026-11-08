@@ -21,6 +21,9 @@ The trace of a unit. Tokens come from the family M (spec.py), the data family CW
          CW(e hi) MN }x64 | { [PA] MH CW CW MN }x8 J(ret): the wasm stack pointer, two overlap checks,
          the state, the 64 rounds (their state and schedule live in rings written from these tokens,
          the rounds' logic is in the MLPs below the RAM), the state back
+  jesc:  MP CW(len) CW(start) MF { SC | EB(class) .. EC1 CW(idx) MR }* SC.. EC0 CW(k) MK {s8}{a3} J(pc):
+         a scan whose bound comes from memory and that keeps the last byte's path in a3 (EB)
+  maskp: MP J(exit), or MP MD: every prefix of the probe is skipped, nothing is compared
   fill:  the same, no source (memset)
   eql:   MP { EB(a[k]) EC1 }* [MC { EB EC1 }*].. J(ret), or at a mismatch F0(0) J(ret), or MD when a
          byte is outside every load region (eql has written nothing: the original then faults as
@@ -66,13 +69,18 @@ K256 = [int(x, 16) for x in """428a2f98 71374491 b5c0fbcf e9b5dba5 3956c25b 59f1
 bef9a3f7 c67178f2""".split()]
 SHA_LOAD, SHA_ROUND, SHA_FINAL, SHA_END = 3, 11, 75, 83  # the steps
 A0, A1, A2, A3, A4, A6, S3, S4, S5 = 10, 11, 12, 13, 14, 16, 19, 20, 21
+A7, S0, S6, S7, S8, S10 = 17, 8, 22, 23, 24, 26
+JESC_Q, JESC_B = 0x22, 0x5C  # '"' and '\\' in s3 and s7: fx's only order at this head (M)
 # a byte loop's unit: the registers read at the trigger and in the loop (rs1 = base, rs2, rd = end),
 # start = the first index comes from rs2 + 1, last = the loop's count is in rd, so it stops one byte
 # earlier; the commits (register, +1 base + k, -1 base - k, 0 k)
 SCAN = {"tok": dict(first=(S5, 12, A6), loop=(S5, 12, A6), start=False, commits=((12, 1), (S5, 1), (A6, -1))),
         "chr": dict(first=(A1, A0, A2), loop=(A1, A0, A2), start=False, commits=((A1, 1), (A2, -1))),
         "ascii": dict(first=(A0, S3, S3), loop=(S4, A0, S3), start=True, commits=((A0, 0),)),
-        "jscan": dict(first=(A2, A0, A4), loop=(A0, A3, A4), start=True, commits=((A3, 0),))}
+        "jscan": dict(first=(A2, A0, A4), loop=(A0, A3, A4), start=True, commits=((A3, 0),)),
+        # (first: the two compares' registers; a3's commit is the last byte's path, sg = 2; s11, a1, a2
+        # are dead at the head)
+        "jesc": dict(first=(S3, S7, None), loop=(S5, S8, None), start=True, commits=((S8, 0), (A3, 2)))}
 
 
 @dataclass(frozen=True)
@@ -80,11 +88,13 @@ class Unit:
     """kind: move (memmove: d = a0, s = a1, n = a2), cpy (memcpy: also declines s < d < s + n),
     set (memset: d = a0, c = a1, n = a2), bcopy (a byte loop: d = a2, s = s11, end = a1),
     eql (a = a1, b = a3, n = a2, a0 = 1 on entry). pc: the trigger; ret: where the unit exits (a
-    `ret` for function units), in the same 64K-word window."""
+    `ret` for function units), in the same 64K-word window. arg: a constant of the unit (maskp: the
+    prefix table's address)."""
 
     kind: str
     pc: int
     ret: int
+    arg: int = 0
 
 
 def m_tok(tag: int, v: int = 0) -> int:
@@ -97,7 +107,7 @@ def tok_decline() -> int:
 
 def group(kind: str) -> int:
     """MP's group bits: a role needs the unit's class one stage after the token."""
-    return {"bcopy": 5, "eql": 2, "sha": 8}.get(kind, 1 if kind in COPY_KINDS else 0)
+    return {"bcopy": 5, "eql": 2, "sha": 8, "jesc": 4}.get(kind, 1 if kind in COPY_KINDS else 0)
 
 
 def mp_tok(x, f, dr, unit, kind) -> int:
@@ -305,15 +315,24 @@ def stops(kind: str, b: int, sc: int) -> bool:
         return b == sc & 0xFF and sc < 256
     if kind == "ascii":
         return b >= 128
+    if kind == "jesc":  # (bytes >= 0x80 are plain here)
+        return b < 0x20 or b in (0x22, 0x5C)
     return not (0x20 <= b < 0x80) or b in (0x22, 0x5C)
+
+
+def jesc_class(b: int) -> int:
+    """The path a plain byte takes, s7 = '\\': 0 no write to a3, 1 a3 = 32, 2 a3 = 56."""
+    return 1 if b in (0x20, 0x21) else 2 if 0x23 <= b < 0x5C else 0
 
 
 def scan_fires(m, u: Unit) -> bool:
     x, t = m.x, SCAN[u.kind]
+    k = u.kind
+    if k == "jesc":
+        return x[S3] == JESC_Q and x[S7] == JESC_B
     r1, r2, r3 = (x[i] for i in t["first"])
     if r3 >> 16:
         return False
-    k = u.kind
     if k == "tok":  # (the run's carry)
         return r2 >> 31 == 0 and r3 != 0
     if k == "chr":
@@ -332,9 +351,17 @@ def scan_record(m, u: Unit) -> list | None:
     x, t, kind = m.x, SCAN[u.kind], u.kind
     if not scan_fires(m, u):
         return None
-    base, sc, end = (x[i] for i in t["loop"])
+    base, sc = x[t["loop"][0]], x[t["loop"][1]]
+    end = x[t["loop"][2]] if t["loop"][2] is not None else 0
     toks = [mp_tok(0, 0, 0, uid(m, u), u.kind)]
     idx = 0
+    if kind == "jesc":  # the bound, from its stack slot
+        ea = (x[S0] - 60) & 0xFFFFFFFF
+        if ea & 3 or not m.cfg.in_load(ea) or m.ram_word(ea) >> 16:
+            m.skip_unit = True
+            return toks + [tok_decline()]
+        end = m.ram_word(ea)
+        toks.append(S.tok("CW", end))
     if t["start"]:
         idx = sc + 1
         if idx >> 16:
@@ -345,11 +372,14 @@ def scan_record(m, u: Unit) -> list | None:
     toks.append(m_tok(TAG_OP, OP_MF))
     j = 0
     first = True
+    path = 0  # jesc: the last plain byte's path that wrote a3
     while True:
         ea = (base + idx) & 0xFFFFFFFF
         bad = not m.cfg.in_load(ea)
         b = 0 if bad else m.ram_word(ea & ~3) >> 8 * (ea & 3) & 0xFF
         stop = idx == stop_at or idx == 0xFFFF or stops(kind, b, sc)
+        cl = jesc_class(b) if kind == "jesc" else 0
+        stop = stop or (cl != 0 and j >= CHUNK_S)  # (a chunk's end carries no class)
         if bad or (stop and first):
             m.skip_unit = True
             return toks + [tok_decline()]
@@ -361,12 +391,19 @@ def scan_record(m, u: Unit) -> list | None:
             toks += [S.tok("EC1"), S.tok("CW", idx), m_tok(TAG_OP, OP_MR)]
             j = 0
             continue
-        toks.append(S.tok("SC"))
+        if cl:
+            path = cl
+            toks.append(S.tok("EB", cl - 1))
+        else:
+            toks.append(S.tok("SC"))
         j += 1
     k = idx if not t["start"] else idx - 1
     toks += [S.tok("EC0"), S.tok("CW", k), m_tok(TAG_OP, OP_MK)]
     for r, sg in t["commits"]:
-        v = (x[r] + sg * k if sg else k) & 0xFFFFFFFF
+        if sg == 2:
+            v = {0: x[r], 1: 32, 2: 56}[path]
+        else:
+            v = (x[r] + sg * k if sg else k) & 0xFFFFFFFF
         toks += S.value_record(v)
         x[r] = v
         m.n += 1
@@ -379,9 +416,32 @@ def scan_record(m, u: Unit) -> list | None:
     return toks + m.jump_tokens(u.ret)
 
 
+def is_keychar(b: int) -> bool:
+    return b == 0x5F or 0x30 <= b <= 0x39 or 0x41 <= (b & 0xDF) <= 0x5A
+
+
+def maskp_record(m, u: Unit) -> list | None:
+    """findSecretSpan's loop over the 12 secret_prefixes at one position, when every prefix is
+    skipped: s6 == 0 and the byte before the position is an assignment-key character. Each of the 12
+    then does the same thing (two table loads, into dead registers), so nothing is compared and no
+    live register changes: the loop's exit, with the table only checked to be the table."""
+    x = m.x
+    if x[S5] != u.arg or x[S4] != 0x5F or x[A7] != 10:
+        return None
+    toks = [mp_tok(0, 0, 0, uid(m, u), u.kind)]
+    ea = (x[S10] - 1) & 0xFFFFFFFF
+    if x[S6] or not m.cfg.in_load(ea) or not is_keychar(m.ram_word(ea & ~3) >> 8 * (ea & 3) & 0xFF):
+        m.skip_unit = True
+        return toks + [tok_decline()]
+    m.steps += 1
+    return toks + m.jump_tokens(u.ret)
+
+
 def record(m, u: Unit) -> list | None:
     """The unit's whole record, committed; None when it declines (nothing changed)."""
     x = m.x
+    if u.kind == "maskp":
+        return maskp_record(m, u)
     if u.kind in ("move", "cpy"):
         d, s, n = x[10], x[11], x[12]
         fires, dr = move_fires(m, u, d, s, n)
@@ -410,7 +470,8 @@ FX_R24 = {"memmove": ("move", 0x208f918), "memcpy": ("cpy", 0x208f73c), "memset"
           "eql": ("eql", 0x26733e4), "bcopy": ("bcopy", 0x21e3a98, 0x21e3aac),
           "tok": ("tok", 0x22bf6c0, 0x22bf6c0), "jscan": ("jscan", 0x264c040, 0x264c040),
           "ascii": ("ascii", 0x2649914, 0x2649914), "chr1": ("chr", 0x20cf5e8, 0x20cf5e8),
-          "chr2": ("chr", 0x20cf610, 0x20cf610), "sha": ("sha", 0x25b5d70, None)}
+          "chr2": ("chr", 0x20cf610, 0x20cf610), "sha": ("sha", 0x25b5d70, None),
+          "jesc": ("jesc", 0x264A154, 0x264A154), "maskp": ("maskp", 0x24D8958, 0x24D8A24, 0x1262A0)}
 
 
 def fx_units(elf_path, names) -> tuple:
@@ -440,7 +501,7 @@ def fx_units(elf_path, names) -> tuple:
             assert ins.op == "BEQ" and (ins.rs1, ins.rs2) == (11, 13), "not row 24's image"
             r = e[1] + ins.imm
             assert word(r) == 0x00008067
-        out.append(Unit(e[0], e[1], r))
+        out.append(Unit(e[0], e[1], r, e[3] if len(e) > 3 else 0))
     return tuple(out)
 
 
@@ -460,6 +521,7 @@ class Hot:
         self.c, self.cfg = c, cfg
         self.units = cfg.units
         self.kinds = {u.kind for u in cfg.units}
+        jesc = "jesc" in self.kinds
         self.tables = []
         self.frames = cfg.frames
         fam, pay = c.fam, c.pay
@@ -512,8 +574,10 @@ class Hot:
         self.pMP = self.pEC0 = Expr()
         if self.scans:
             lag = (0, 1, 0, 0)  # what the token before was (a head written at every position)
-            ((self.pMP, self.pEC0),) = head("h.p", [{"data": {2: Chan(self.tMP, lag), 3: Chan(fam["EC0"], lag)},
-                                                     "ref": one}])
+            cols = {2: Chan(self.tMP, lag), 3: Chan(fam["EC0"], lag)} | ({4: Chan(self.tMP, (0, 0, 1, 0))} if jesc else {})
+            (pp,) = head("h.p", [{"data": cols, "ref": one}])
+            self.pMP, self.pEC0 = pp[0], pp[1]
+            self.pMP2 = pp[2] if jesc else Expr()
             # a unit's commits so far, since MK
             ((self.incm,),) = head("h.kf", [{"data": {2: self.tMK}, "ref": one, "beta": self.tMK + self.tMP + fam["J"]}])
             xk = c.counter("h.k", self.tMK, c.final)
@@ -521,7 +585,10 @@ class Hot:
             self.tables.append("h.k")
         self.hn = [Expr()] * 16
         self.pH = Expr()
-        if "bcopy" in self.kinds:  # the byte loop's length, read once
+        if jesc:  # the last class token (EB): has one come, and which
+            ((self.jseen, self.jcls),) = head("h.cl", [{"data": {2: fam["EB"], 3: pay["EB"][0]}, "ref": one,
+                                                        "beta": self.tMP + fam["EB"]}])
+        if self.kinds & {"bcopy", "jesc"}:  # a length read once: the byte loop's, the escape scan's
             lag = (0, 1, 0, 0)
             ((self.pMPb,),) = head("h.pb", [{"data": {2: Chan(self.tMP, lag)}, "ref": one}])
             self.pH = 1 - self.pMPb
@@ -574,12 +641,11 @@ class Hot:
             self.re1 = c.and_([ieq, ec1 + tmp + tmc], "h.re1")
             self.rx = c.and_([ieq, c.fam["F0"]], "h.rx")
             self.regk = {10: self.re2}
-        ibc = self.gbc
         self.rN = zero
         if "bcopy" in self.kinds:
-            self.rN = c.and_([ibc, tmp], "h.rN")  # MP stands here: CW(n) comes next
+            self.rN = c.and_([self.gbc, self.gcopy, tmp], "h.rN")  # MP stands here: CW(n) comes next
             self.sub_r = self.sub_r + self.rN
-            jn = c.and_([ibc, cw, 1 - self.pH], "h.jn")  # (the token after MP, once: pH is set by it)
+            jn = c.and_([self.gbc, self.gcopy, cw, 1 - self.pH], "h.jn")  # (the token after MP, once: pH is set by it)
         self.rC = c.and_([imv, tmp, self.hdir], "h.rC")
         self.rR = c.and_([imv, self.tpre], "h.rR")
         self.rH = (c.and_([imv, tmc + tpa + tmp - self.rC - self.rN], "h.rH")
@@ -593,6 +659,7 @@ class Hot:
         self.ea = self.ead + self.eas
         self.store = self.rb + self.rH
         self.cv = zero  # a scan unit's commit (of the value A +- k)
+        self.cvk = zero  # those that add k
         self.sub_k = zero
         self.rbyte = self.rse = zero
         js = [u for u in self.scans if self.units[u].kind == "jscan"]
@@ -600,7 +667,8 @@ class Hot:
             iscan, incm = self.iscan, self.incm
             kt = self.kt
             mq = [1 - kt[0], kt[0] - kt[1], kt[1] - kt[2], kt[2]]
-            self.rbyte = c.and_([iscan, 1 - incm, self.tMF + self.tMR + sc], "h.rbyte")
+            self.rbyte = c.and_([iscan, 1 - incm, self.tMF + self.tMR + sc + (c.fam["EB"] if "jesc" in self.kinds else zero)],
+                                "h.rbyte")
             self.rse = c.and_([iscan, 1 - incm, ec0 + ec1], "h.rse")  # the stop's or the chunk's index
             self.rcm, self.rend = [], []
             for u in self.scans:
@@ -612,9 +680,22 @@ class Hot:
                 for i, (r, sg) in enumerate(cm):
                     self.regk[r] = self.regk.get(r, zero) + rc[i]
                     self.cv = self.cv + rc[i]
+                    if sg != 2:
+                        self.cvk = self.cvk + rc[i]
                     if sg < 0:
                         self.sub_k = self.sub_k + rc[i]
             self.ea = self.ea + self.rbyte + self.rse + self.cv
+        self.jr1 = self.mr = zero
+        je = [u for u, un in enumerate(self.units) if un.kind == "jesc"]
+        if je:  # the bound: MP's position reads s0 - 60
+            self.jr1 = c.and_([self.hun[je[0]], tmp], "h.jr1")
+            self.ea = self.ea + self.jr1
+            self.sub_k = self.sub_k + self.jr1
+        mk = [u for u, un in enumerate(self.units) if un.kind == "maskp"]
+        if mk:  # MP's position reads s10 - 1
+            self.mr = c.and_([self.hun[mk[0]], tmp], "h.mr")
+            self.ea = self.ea + self.mr
+            self.sub_k = self.sub_k + self.mr
         self.jsH = self.jsa = self.jsb = self.jsw = zero
         if js:  # the cursor's store: H, then its word
             je = self.rend[self.scans.index(js[0])]
@@ -638,15 +719,29 @@ class Hot:
                 add("rs1", 11, self.first[u])  # st - blk
                 add("rs2", 12, self.first[u])
                 continue
+            if un.kind == "maskp":
+                add("rs1", S5, self.first[u])
+                add("rs2", S4, self.first[u])
+                add("rd", A7, self.first[u])
+                add("rs1", S10, self.mr)
+                add("rs2", S6, self.mr)
+                continue
             if un.kind in SCAN:
                 t = SCAN[un.kind]
                 for pn, a_, b_ in zip(("rs1", "rs2", "rd"), t["first"], t["loop"]):
-                    add(pn, a_, self.first[u])
-                    add(pn, b_, c.and_([self.hun[u], 1 - self.incm], f"h.pl{u}{pn}"))
+                    if a_ is not None:
+                        add(pn, a_, self.first[u])
+                    if b_ is not None:
+                        off_ = self.jr1 if un.kind == "jesc" and pn == "rs1" else zero
+                        add(pn, b_, c.and_([self.hun[u], 1 - self.incm], f"h.pl{u}{pn}") - off_)
                 x_ = self.scans.index(u)
                 for i, (r, sg) in enumerate(t["commits"]):
-                    if sg:
+                    if sg == 2:  # the old value, unless a class token came
+                        add("rs1", r, c.and_([self.rcm[x_][i], 1 - self.jseen], "h.ja3"))
+                    elif sg:
                         add("rs1", r, self.rcm[x_][i])
+                if un.kind == "jesc":
+                    add("rs1", S0, self.jr1)
                 if un.kind == "jscan":
                     add("rs1", A2, self.jsH + self.jsb)
                 continue
@@ -702,12 +797,23 @@ class Hot:
                                         else c.t_ge(z, 32, lo, hi, co, lits=lits + lows + ex))
                 oterm[b + sh] += c.t_and(lits + [hc[b]]) + carry(1, [1 - hc[b]]) + carry(-1, [hc[b]])
         for b in range(16):
-            if self.cv.terms:
-                oterm[b] += c.t_and([self.cv, hc[b]])
+            if self.cvk.terms:
+                oterm[b] += c.t_and([self.cvk, hc[b]])
         self.off = [c.node(t, f"h.off{b}") if t else zero for b, t in enumerate(oterm)] + [zero] * 14
         if js:  # the cursor's offset
             self.off[2] = self.off[2] + self.jsH + self.jsb
             self.off[5] = self.off[5] + self.jsH + self.jsb
+        if "jesc" in self.kinds:  # 60; a3's commit: 32 or 56
+            for b in range(2, 6):
+                self.off[b] = self.off[b] + self.jr1
+            rc3 = next(self.rcm[x_][1] for x_, u in enumerate(self.scans) if self.units[u].kind == "jesc")
+            sn = c.and_([rc3, self.jseen], "h.j32")
+            cl = c.and_([rc3, self.jseen, self.jcls], "h.j56")
+            self.off[5] = self.off[5] + sn
+            self.off[3] = self.off[3] + cl
+            self.off[4] = self.off[4] + cl
+        if "maskp" in self.kinds:
+            self.off[0] = self.off[0] + self.mr
         if "sha" in self.kinds:
             self.off = [o + e for o, e in zip(self.off, self.soff)]
         # the word index, for the top (its depth does not matter there)
@@ -963,7 +1069,7 @@ class Hot:
         sv = [c.node(c.t_and([swap, A[i]]) + c.t_and([1 - swap, B[i]]), f"h.sv{i}") for i in range(2)]
         isset, isbc = self.kact["set"], self.kact["bcopy"]
         C0 = CR
-        if "bcopy" in kinds:  # n came down in a token (rd holds nothing there)
+        if kinds & {"bcopy", "jesc"}:  # n came down in a token (rd holds nothing there)
             CR = [e + (self.hn[i] if i < 16 else zero) for i, e in enumerate(CR)]
         n_ok = c.and_([1 - b for b in CR[14:32]] + [1 - c.and_(CR[2:14], "h.ntop")], "h.nok")
         n_nz = or_(CR[:14], "h.nnz")
@@ -1088,7 +1194,7 @@ class Hot:
             fi = self.first[u]
             t = (un.ret - cfg.rom_base) >> 2 & 0xFFFF
             jbits = [one if t >> b & 1 else zero for b in range(16)]
-            if un.kind in SCAN or un.kind == "sha":
+            if un.kind in SCAN or un.kind in ("sha", "maskp"):
                 continue
             if un.kind == "eql":
                 case([fi, 1 - fire_eql], "M", decline)
@@ -1128,6 +1234,8 @@ class Hot:
         if self.scans:
             self.top_scan(A, B, CR, r, sltu, mem, fb, mapped, anext, EA, in_load, case, pay_const, ubits, or_, eqbits,
                           decline, wok, fok)
+        if "maskp" in kinds:
+            self.top_maskp(A, B, CR, mem, EA, in_load, case, pay_const, ubits, decline)
         if "eql" in kinds:
             bad = 1 - in_load
             case([self.re1, 1 - eq_n, 1 - full_e, in_load], "EB", bb)
@@ -1184,6 +1292,27 @@ class Hot:
         t = (self.units[u].ret - cfg.rom_base) >> 2 & 0xFFFF
         case([self.gsh, self.tMN, seq(SHA_END)], "J", [one if t >> b & 1 else zero for b in range(16)])
 
+    def top_maskp(self, A, B, CR, mem, EA, in_load, case, pay_const, ubits, decline) -> None:
+        """maskp_record: three constants at the trigger, s6 and the byte before at MP's position."""
+        from chipformer.rv import core as C
+
+        c, cfg = self.c, self.cfg
+        one, zero = c.one, Expr()
+        u = next(i for i, un in enumerate(self.units) if un.kind == "maskp")
+        un, fi = self.units[u], self.first[u]
+        fire = c.and_(C.lits_of(A, un.arg) + C.lits_of(B, 0x5F) + C.lits_of(CR, 10), "h.fmp")
+        case([fi, 1 - fire], "M", decline)
+        case([fi, fire], "M", pay_const(TAG_MP, [zero, zero, zero] + ubits(u)))
+        lk = [c.and_(_lits(EA[0:2], k), f"h.mk{k}") for k in range(4)]
+        z = [from_bits(mem[8 * k:8 * k + 8]) for k in range(4)]
+        key = c.node([x for k in range(4) for lg in ([lk[k]],)
+                      for x in c.t_eq(z[k], 0x5F, 0, 255, lits=lg) + c.t_in(z[k], 0x30, 0x3A, 0, 255, lits=lg)
+                      + c.t_in(z[k], 0x41, 0x5B, 0, 255, lits=lg) + c.t_in(z[k], 0x61, 0x7B, 0, 255, lits=lg)], "h.mkey")
+        ok = c.and_([in_load, key] + [1 - b for b in B], "h.mok")
+        t = (un.ret - cfg.rom_base) >> 2 & 0xFFFF
+        case([self.mr, ok], "J", [one if t >> b & 1 else zero for b in range(16)])
+        case([self.mr, 1 - ok], "M", decline)
+
     def top_scan(self, A, B, CR, r, sltu, mem, fb, mapped, anext, EA, in_load, case, pay_const, ubits, or_, eqbits,
                  decline, wok, fok) -> None:
         """A byte loop: the byte's class at the top, the index through tokens (module doc)."""
@@ -1200,7 +1329,7 @@ class Hot:
         n_hi0 = c.and_([1 - b for b in CR[16:32]], "h.n16")
         rs = self.rbyte
         kinds = {self.units[u].kind for u in self.scans}
-        eq_e = eqbits(idx, CR[:16], "h.eqe") if kinds & {"ascii", "jscan"} else zero
+        eq_e = eqbits(idx, CR[:16], "h.eqe") if kinds & {"ascii", "jscan", "jesc"} else zero
         ip1 = [self.incr(idx, b, f"h.ip{b}") for b in range(16)]
         eq_l = eqbits(ip1, CR[:16], "h.eql2") if kinds & {"tok", "chr"} else zero
         cls = {}
@@ -1216,6 +1345,14 @@ class Hot:
             cls["jscan"] = on_lane(lambda z, l: c.t_lt(z, 0x20, 0, 255, lits=l) + c.t_ge(z, 0x80, 0, 255, lits=l)
                                    + c.t_eq(z, 0x22, 0, 255, lits=l) + c.t_eq(z, 0x5C, 0, 255, lits=l), "h.cjs")
         full = self.jt[CHUNK_S - 1]
+        jB = jC = zero
+        ju = next((u for u in self.scans if self.units[u].kind == "jesc"), None)
+        if ju is not None:  # (a class byte stops a chunk's last position: EC1 has no class)
+            cls["jesc"] = on_lane(lambda z, l: c.t_lt(z, 0x20, 0, 255, lits=l) + c.t_eq(z, 0x22, 0, 255, lits=l)
+                                  + c.t_eq(z, 0x5C, 0, 255, lits=l) + c.t_in(z, 0x20, 0x22, 0, 255, lits=l + [full])
+                                  + c.t_in(z, 0x23, 0x5C, 0, 255, lits=l + [full]), "h.cje")
+            jB = on_lane(lambda z, l: c.t_in(z, 0x20, 0x22, 0, 255, lits=l + [self.hun[ju]]), "h.jB")
+            jC = on_lane(lambda z, l: c.t_in(z, 0x23, 0x5C, 0, 255, lits=l + [self.hun[ju]]), "h.jC")
         idx_top = c.and_(idx, "h.itop")
         n_nz = or_(CR[:16], "h.nnz2")
         stop = zero
@@ -1234,17 +1371,32 @@ class Hot:
         case([rs, bad], "M", decline)
         case([rs, in_load, stop, tf], "M", decline)
         case([rs, in_load, stop, 1 - tf], "EC0")
-        case([rs, in_load, keep, 1 - full], "SC")
+        if ju is None:
+            case([rs, in_load, keep, 1 - full], "SC")
+        else:
+            case([rs, in_load, keep, 1 - full, 1 - jB, 1 - jC], "SC")
+            case([rs, in_load, keep, 1 - full, jB], "EB", [zero] * 8)
+            case([rs, in_load, keep, 1 - full, jC], "EB", [one] + [zero] * 7)
         case([rs, in_load, keep, full], "EC1")
         case([self.rse, c.fam["EC0"]], "CW", kv)
         case([self.rse, c.fam["EC1"]], "CW", idx)
         rcw = c.and_([self.tscw, 1 - self.incm], "h.rcw")
         case([rcw, self.pEC0], "M", pay_const(TAG_OP, [one, one]))  # OP_MK
-        case([rcw, self.pMP], "M", pay_const(TAG_OP, [zero, one]))  # OP_MF
-        case([rcw, 1 - self.pEC0, 1 - self.pMP], "M", pay_const(TAG_OP, [one, zero]))  # OP_MR
         lim_b = c.and_([1 - b for b in B[16:32]], "h.b16")
         bp1 = [self.incr(B, b, f"h.bp{b}") for b in range(16)]
         b_carry = c.and_(B[:16], "h.bc")
+        if ju is None:
+            case([rcw, self.pMP], "M", pay_const(TAG_OP, [zero, one]))  # OP_MF
+            case([rcw, 1 - self.pEC0, 1 - self.pMP], "M", pay_const(TAG_OP, [one, zero]))  # OP_MR
+        else:  # MP CW(len) CW(start) MF: the two positions after MP are the escape scan's
+            hj = self.hun[ju]
+            case([rcw, self.pMP, 1 - hj], "M", pay_const(TAG_OP, [zero, one]))
+            case([rcw, self.pMP, hj, 1 - lim_b], "M", decline)
+            case([rcw, self.pMP, hj, lim_b, 1 - b_carry], "CW", bp1)
+            case([rcw, self.pMP, hj, lim_b, b_carry], "M", decline)
+            case([rcw, self.pMP2, hj], "M", pay_const(TAG_OP, [zero, one]))
+            j2 = c.and_([hj, self.pMP2], "h.j2")
+            case([rcw, 1 - self.pEC0, 1 - self.pMP, 1 - j2], "M", pay_const(TAG_OP, [one, zero]))
         for x_, u in enumerate(self.scans):
             un = self.units[u]
             t = (un.ret - cfg.rom_base) >> 2 & 0xFFFF
@@ -1258,12 +1410,20 @@ class Hot:
                 fire = c.and_([n_hi0, wok(A, "h.wa2"), self.fge, 1 - top, 1 - A[0], 1 - A[1], fok], f"h.f{u}")
             elif un.kind == "chr":
                 fire = c.and_([n_hi0, n_nz], f"h.f{u}")
+            elif un.kind == "jesc":
+                from chipformer.rv import core as C
+
+                fire = c.and_(C.lits_of(A, JESC_Q) + C.lits_of(B, JESC_B), f"h.f{u}")
             else:
                 fire = c.and_([n_hi0, sltu], f"h.f{u}")
             case([fi, 1 - fire], "M", decline)
             case([fi, fire], "M", pay_const(TAG_MP, [zero, zero, zero] + ubits(u)))
             ist = c.and_([self.hun[u], self.tMP], f"h.ist{u}")
-            if SCAN[un.kind]["start"]:
+            if un.kind == "jesc":
+                nb = or_([1 - in_load, EA[0], EA[1]] + mem[16:32], "h.jbad")
+                case([ist, nb], "M", decline)
+                case([ist, 1 - nb], "CW", mem[:16])
+            elif SCAN[un.kind]["start"]:
                 case([ist, 1 - lim_b], "M", decline)
                 case([ist, lim_b, 1 - b_carry], "CW", bp1)
                 case([ist, lim_b, b_carry], "M", decline)

@@ -327,8 +327,47 @@ static int u_asc2(trig_t* t, ures_t* r) {
   return 1;
 }
 
+/* jesc2: the escape scan as built (chipformer/rv/hot.py scan_record): s3 = '"', s7 = '\\', a bound
+ * below 2^16 from -0x3c(s0); a run stops before a class byte at a chunk's last position. Only s8 and
+ * a3 change (s11, a1, a2 are dead at the head). maskp2: the prefix probe when every prefix is skipped,
+ * s6 == 0 and the byte before the position an assignment-key character: no live register changes. */
+static int u_jesc2(trig_t* t, ures_t* r) {
+  uint32_t fr = X[R_S0] - 0x3c, i = X[R_S8] + 1, base = X[R_S5], k = 0, j = 0, a3 = X[R_A3];
+  if (X[R_S3] != 0x22 || X[R_S7] != 0x5c || i >> 16 || (fr & 3) || !inmem(fr, 4)) return 0;
+  uint32_t len = rd32(fr);
+  if (len >> 16) return 0;
+  for (;;) {
+    if (!inmem(base + i, 1)) return 0;
+    uint32_t b = rd8(base + i);
+    uint32_t cl = (b == 0x20 || b == 0x21) ? 1 : (b >= 0x23 && b < 0x5c) ? 2 : 0;
+    if (i == len || i == 0xffff || b < 0x20 || b == 0x22 || b == 0x5c || (cl && j >= 31)) break;
+    i++; k++;
+    if (j >= 31) { j = 0; continue; }
+    if (cl) a3 = cl == 1 ? 32 : 56;
+    j++;
+  }
+  if (k == 0) return 0;
+  X[R_S8] = i - 1; X[R_A3] = a3;
+  r->exit_pc = t->p[0]; r->xi = 0; r->creg = R_S8; r->cval = i - 1;
+  r->data = k;
+  r->bytes = k;
+  return 1;
+}
+static int u_maskp2(trig_t* t, ures_t* r) {
+  uint32_t a = X[R_S10] - 1;
+  if (X[R_S5] != t->p[1] || X[R_S4] != 0x5f || X[R_A7] != 10 || X[R_S6] != 0 || !inmem(a, 1)) return 0;
+  uint32_t b = rd8(a), u = b & 0xdf;
+  if (!(b == 0x5f || (b >= 0x30 && b <= 0x39) || (u >= 0x41 && u <= 0x5a))) return 0;
+  r->exit_pc = t->p[0]; r->xi = 0;
+  r->data = 2;
+  r->bytes = 1;
+  return 1;
+}
+
 static int loop_unit_run(trig_t* t, ures_t* r) {
   switch (t->kind) {
+    case U_JESC2: return u_jesc2(t, r);
+    case U_MASKP2: return u_maskp2(t, r);
     case U_TOK2: return u_tok2(t, r);
     case U_CHR2: return u_chr2(t, r);
     case U_ASC2: return u_asc2(t, r);

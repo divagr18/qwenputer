@@ -25,6 +25,7 @@ CFG_IMG = 0x10000
 
 
 RES = 0x18000  # eql results, one word per call
+MASK_TAB = 0x18800  # 12 (ptr, len) pairs, written by the program
 
 
 def prog_lines(calls, readback=()):
@@ -54,7 +55,23 @@ def prog_lines(calls, readback=()):
             "    li a5, 32", "    bltu a1, a5, js_x", "    li a5, 128", "    bgeu a1, a5, js_x", "    li a5, 34", "    beq a1, a5, js_x",
             "    li a5, 92", "    bne a1, a5, fx_js", "js_x:", "    ret"]
     src += ["fx_sha:", "    ret", "fx_sha_ret:", "    ret"]
+    src += ["fx_jesc:", "    addi s8, s8, 1", "    lw s11, -60(s0)", "    beq s8, s11, je_x", "    add s11, s8, s5",
+            "    lbu a1, 0(s11)", "    beq a1, s3, je_x", "    bne a1, s7, je_t", "    j je_x", "je_t:", "    bltu s7, a1, fx_jesc",
+            "    andi a2, a1, 126", "    li a3, 32", "    beq a2, a3, fx_jesc", "    addi a2, a1, 221", "    andi a2, a2, 255",
+            "    li a3, 56", "    bgeu a3, a2, fx_jesc", "je_x:", "    ret"]
+    fold = lambda r: [f"    addi a6, {r}, 191", "    andi a6, a6, 254", "    sltiu a6, a6, 26", "    slli a6, a6, 5", f"    or {r}, a6, {r}"]
+    src += ["fx_mask:", "    li s11, 0", "    j mk_head", "mk_next:", "    addi s11, s11, 1", "    li a0, 12", "    beq s11, a0, mk_exit",
+            "mk_head:", "    slli a1, s11, 3", "    add a1, a1, s5", "    lw a0, 0(a1)", "    lw a1, 4(a1)", "    beq s6, zero, mk_key",
+            "mk_cmp:", "    add a4, a1, s8", "    bgeu a4, s3, mk_next", "    mv a2, s10", "mk_l:", "    lbu a3, 0(a2)", "    lbu a5, 0(a0)"]
+    src += fold("a3") + fold("a5")
+    src += ["    bne a3, a5, mk_next", "    addi a2, a2, 1", "    addi a1, a1, -1", "    addi a0, a0, 1", "    bne a1, zero, mk_l",
+            "    j mk_match", "mk_key:", "    lbu a2, -1(s10)", "    beq a2, s4, mk_next", "    addi a3, a2, 208", "    andi a3, a3, 254",
+            "    bltu a3, a7, mk_next", "    andi a2, a2, 223", "    addi a2, a2, 191", "    andi a2, a2, 254", "    li a3, 26",
+            "    bltu a2, a3, mk_next", "    j mk_cmp", "mk_exit:", "    ret", "mk_match:", "    ret"]
     src += ["main:", f"    li sp, {BASE.sp:#x}"]
+    if any(cc[0] == "maskp" for cc in calls):
+        for i in range(12):  # every prefix: 4 bytes at 0x14F00
+            src += [f"    li t0, {MASK_TAB + 8 * i:#x}", "    li t1, 0x14F00", "    sw t1, 0(t0)", "    li t1, 4", "    sw t1, 4(t0)"]
     k = 0
     for cc in calls:
         if cc[0] in ("move", "cpy"):
@@ -85,6 +102,19 @@ def prog_lines(calls, readback=()):
             src += [f"    li a0, {b_:#x}", f"    li a3, {i}", f"    li a4, {e}", f"    li a2, {cur:#x}", "    call fx_js",
                     f"    li t0, {RES + 4 * k:#x}", "    sw a3, 0(t0)"]
             k += 1
+        elif cc[0] == "jesc":
+            b_, i, e, a3 = cc[1:5]
+            src += [f"    li t0, {0x18C00:#x}", f"    li t1, {e}", "    sw t1, 0(t0)", f"    li s0, {0x18C00 + 60:#x}", f"    li s5, {b_:#x}",
+                    f"    li s8, {i}", "    li s3, 34", "    li s7, 92", f"    li a3, {a3}", "    call fx_jesc",
+                    f"    li t0, {RES + 4 * k:#x}", "    sw s8, 0(t0)", "    sw a3, 4(t0)", "    li s0, 0", "    li s3, 0", "    li s5, 0", "    li s7, 0", "    li s8, 0"]
+            k += 2
+        elif cc[0] == "maskp":
+            p_, i, n, s6 = cc[1:5]
+            src += [f"    li s10, {p_:#x}", f"    li s5, {MASK_TAB:#x}", f"    li s8, {i}", f"    li s3, {n}", f"    li s6, {s6}", "    li s4, 95",
+                    "    li a7, 10", "    li a4, 111", "    li a5, 222", "    li a6, 333", "    call fx_mask", f"    li t0, {RES + 4 * k:#x}",
+                    "    sw a4, 0(t0)", "    sw a5, 4(t0)", "    sw a6, 8(t0)", "    li s10, 0", "    li s5, 0", "    li s8, 0", "    li s3, 0", "    li s6, 0", "    li s4, 0",
+                    "    li a7, 0", "    li s11, 0"]
+            k += 3
         elif cc[0] == "set":
             d, v, n = cc[1:4]
             src += [f"    li a0, {d:#x}", f"    li a1, {v}", f"    li a2, {n}", "    call fx_set"]
@@ -127,7 +157,9 @@ def machine(calls, units=True, seed=0, readback=()):
               hot.Unit("tok", p.labels["fx_tok"], p.labels["fx_tok"]), hot.Unit("chr", p.labels["fx_chr"], p.labels["fx_chr"]),
               hot.Unit("ascii", p.labels["fx_ascii"], p.labels["fx_ascii"]),
               hot.Unit("jscan", p.labels["fx_js"], p.labels["fx_js"]),
-              hot.Unit("sha", p.labels["fx_sha"], p.labels["fx_sha_ret"])]
+              hot.Unit("sha", p.labels["fx_sha"], p.labels["fx_sha_ret"]),
+              hot.Unit("jesc", p.labels["fx_jesc"], p.labels["fx_jesc"]),
+              hot.Unit("maskp", p.labels["fx_mask"], p.labels["mk_exit"], MASK_TAB)]
         for k in range(len(calls)):
             if f"bloop_{k}" in p.labels:
                 us.append(hot.Unit("bcopy", p.labels[f"bloop_{k}"], p.labels[f"bexit_{k}"]))
@@ -162,7 +194,12 @@ FIXED = [("move", 0x11000, 0x12000, 16), ("move", 0x11004, 0x12000, 84), ("move"
          ("tok", 0x16002, 200, 3), ("tok", 0x16082, 180, 0), ("tok", 0x16002, 1, 0),
          ("chr", 0x16003, 0x20, 200), ("chr", 0x16003, 0x7A, 20), ("chr", 0x16081, 0x41, 3),
          ("ascii", 0x16000, 5, 90), ("ascii", 0x16000, 0x90, 0x200), ("ascii", 0x16000, 3, 4),
-         ("set", 0x16200, 0x22, 1), ("jscan", 0x16000, 7, 200, 0x17000), ("jscan", 0x16000, 7, 0x8C, 0x17201 - 1), ("jscan", 0x16000, 6, 7, 0x17000)]
+         ("set", 0x16200, 0x22, 1), ("jscan", 0x16000, 7, 200, 0x17000), ("jscan", 0x16000, 7, 0x8C, 0x17201 - 1), ("jscan", 0x16000, 6, 7, 0x17000),
+         ("set", 0x16400, 0x61, 120), ("set", 0x16410, 0x20, 1), ("set", 0x16420, 0x41, 3), ("set", 0x16470, 0x22, 1),
+         ("jesc", 0x16400, 2, 200, 7), ("jesc", 0x16400, 0x6F, 200, 7), ("jesc", 0x16400, 2, 0x18, 0), ("jesc", 0x16400, 0x21, 0x60, 9),
+         ("set", 0x16421, 0x41, 60), ("jesc", 0x16400, 2, 200, 7),
+         ("set", 0x14F00, 0x7A, 4), ("maskp", 0x16402, 3, 500, 0), ("maskp", 0x16411, 3, 500, 0), ("maskp", 0x16402, 3, 500, 1),
+         ("maskp", 0x16402, 3, 5, 0)]
 
 
 def scan_calls(rng):
@@ -171,7 +208,15 @@ def scan_calls(rng):
     n = rng.choice([1, 2, 3, 5, 8, 30, 61, 62, 63, 64, 90, 140])
     cut = rng.randrange(n + 2)
     calls = [("set", p, rng.choice([0x41, 0x7A, 0x30]), n + 4)]
-    kd = rng.choice(["tok", "chr", "ascii", "jscan"])
+    kd = rng.choice(["tok", "chr", "ascii", "jscan", "jesc"])
+    if kd == "jesc":
+        calls = [("set", p, rng.choice([0x61, 0x41, 0x7A]), n + 4)]
+        for _ in range(rng.choice([0, 1, 3])):
+            calls.append(("set", p + rng.randrange(n + 4), rng.choice([0x20, 0x21, 0x23, 0x5B, 0x5D, 0xC3]), 1))
+        if cut < n + 4:
+            calls.append(("set", p + cut, rng.choice([0x22, 0x5C, 0x1F]), 1))
+        calls.append(("jesc", p, rng.randrange(4), rng.choice([n + 3, n, 2]), rng.choice([0, 32, 7])))
+        return calls
     stop = {"tok": rng.choice([0x20, 9, 13]), "chr": 0x0A, "ascii": rng.choice([0x80, 0xC3]),
             "jscan": rng.choice([0x22, 0x5C, 0x1F, 0x80])}[kd]
     if cut < n + 4:

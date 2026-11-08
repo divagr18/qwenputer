@@ -149,7 +149,8 @@ class MemCfg:
     image    window numbers (address >> WIN_BITS) of the read-only image
     sp       the initial stack pointer
     units    the hot-code units built in (hot.Unit): fixed ROM PCs, see chipformer/rv/hot.py
-    absent   uops no ROM word holds: core.build leaves their logic out (hot.rom_absent)"""
+    absent   uops no ROM word holds: core.build leaves their logic out (hot.rom_absent)
+    text_addr  the text buffer's base (P3, 2 KB, aligned); 0: TEXT_ADDR, the legacy map's"""
 
     name: str
     rom_bit: int
@@ -161,6 +162,18 @@ class MemCfg:
     sp: int = 0
     units: tuple = ()
     absent: tuple = ()
+    text_addr: int = 0
+
+    def __post_init__(self) -> None:
+        t = self.text_base
+        assert t % (TEXT_ROW * TEXT_ROWS) == 0, "the text buffer is aligned"
+        if self.text_addr:  # (the legacy map's sits inside its RAM window: see docs/fx/one.md)
+            assert not (self.in_load(t) or self.in_load(t + TEXT_ROW * TEXT_ROWS - 1) or self.in_rom(t)), (
+                "the text buffer collides with the map")
+
+    @property
+    def text_base(self) -> int:
+        return self.text_addr or TEXT_ADDR
 
     @property
     def rom_base(self) -> int:
