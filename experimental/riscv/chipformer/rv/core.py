@@ -462,12 +462,19 @@ def add_nibbles(c, a_bits, b_bits, n_nib, lits, name):
     return r
 
 
-def build(target: Target | None = None, text=None, cfg=None) -> RvCore:
+def build(target: Target | None = None, text=None, cfg=None, go_on_tcc: bool = True) -> RvCore:
     """The circuit; with ``text`` (P3) also the bridge to Qwen's text: a tool call's text goes
     into a buffer the program reads (TEXT_ADDR), ``</tool_call>`` starts a run (GO), putchar
     output is echoed as Qwen tokens, and the circuit owns the positions of a run. With ``cfg``
-    (spec.MemCfg) the paged map: more ROM, a dense image, demand-paged RAM (docs/fx/memory.md)."""
+    (spec.MemCfg) the paged map: more ROM, a dense image, demand-paged RAM (docs/fx/memory.md).
+
+    ``go_on_tcc`` False: ``</tool_call>`` is text like any other. The circuit does not own the
+    position after it and never predicts GO there; a run starts only when GO is fed (fx: the
+    host's unpark). That is fx's bridge: fx parses Qwen's calls itself, and the trigger made a
+    plain forward, and the --text path, take the position after every ``</tool_call>`` in the
+    text (docs/fx/fwd.md). The capture into the text buffer is unchanged."""
     c = RvCore(target, text, cfg)
+    c.go_on_tcc = bool(go_on_tcc) if text else None
     W = cfg.wbits if cfg else 16  # bits of the PC word index
     wide = W > 16  # the PC has a high head; far jumps and refreshes
     no_text = c.is_text if text else 0  # text tokens do not count as tokens of a record
@@ -1604,10 +1611,12 @@ def build(target: Target | None = None, text=None, cfg=None) -> RvCore:
         cases.append(([fam["BYTE"]], "Q", c.pay["BYTE"]))
         nl = text.printable_index(text.NL)  # a run ends in a newline
         cases.append(([fam["HALT"]], "Q", [one if nl >> i & 1 else Expr() for i in range(9)]))
-        cases.append(([c.isTCC], "GO", 0))
-        # who predicts the next token: the circuit from </tool_call> through a run's last echo
+        if go_on_tcc:
+            cases.append(([c.isTCC], "GO", 0))
+        # who predicts the next token: the circuit from </tool_call> (go_on_tcc; else from the
+        # fed GO) through a run's last echo
         owner = c.node(c.t_and([running]) + c.t_and([fam["HALT"]])
-                       + c.t_and([c.isTCC, one - running]), "owner")
+                       + (c.t_and([c.isTCC, one - running]) if go_on_tcc else []), "owner")
     c.owner = owner
     c.cases = cases  # (for debugging: literals, family, payload)
     own = [owner] if text else []

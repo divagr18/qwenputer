@@ -320,6 +320,7 @@ class Chip:
         self.elf, self.frames, self.full, self.log, self.ref = elf, frames, full_regs, log, ref
         self.units = units
         self.model_dir = model_dir  # the text bridge: Qwen's tokenizer and config
+        self.go_on_tcc = False  # fx's bridge: GO comes from the host's unpark (docs/fx/fwd.md)
         self.ex, self.build_s = None, 0.0
         self.bios = FL.Bios(FL.FX_IO_BASE)
 
@@ -342,7 +343,7 @@ class Chip:
             T = self.T = BR.Text(os.path.join(self.model_dir, "tokenizer.json"))
             v0 = json.load(open(os.path.join(self.model_dir, "config.json")))["text_config"]["vocab_size"]
             target = wide.target_of(self.model_dir)
-        self.c = core.build(target, T, self.cfg)
+        self.c = core.build(target, T, self.cfg, go_on_tcc=self.go_on_tcc)
         self.log("built", self.c.stats(), round(time.time() - t0, 1))
         core.snapshot(self.c, m)
         self.ex = exec4.Exec4(self.c, text=T, v0=v0, tables=exec4.cached_tables(self.c, T, v0))
@@ -598,6 +599,8 @@ def main():
     ap.add_argument("--probe", type=int, default=-1, help="text_paged's checks at this model call")
     ap.add_argument("--base-lp", default="")
     ap.add_argument("--probe-out", default="probe.json")
+    ap.add_argument("--go-on-tcc", action="store_true",
+                    help="--text: the old bridge, </tool_call> predicts GO (docs/fx/fwd.md: the before)")
     a = ap.parse_args()
     a.tmp = a.tmp or tempfile.gettempdir()
     a.units = [u for u in a.units.split(",") if u]
@@ -609,6 +612,7 @@ def main():
     backend = None
     log = lambda *x: print(*x, flush=True)
     chip = Chip(a.elf, a.frames, a.full_regs, log, a.cpu_ref, a.units, a.model_dir if a.text else None)
+    chip.go_on_tcc = a.go_on_tcc
     if a.backend.startswith("hf:") and a.text:
         import qwen_wide as QW
 

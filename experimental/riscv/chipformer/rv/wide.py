@@ -124,15 +124,17 @@ def wide_chat(src, c, T, dev: str = "cuda") -> tuple:
     chat = RvChat.__new__(RvChat)
     chat.model, chat.lm, chat.dev, chat.executor = m.eval(), m.model, dev, True
     chat.n_chip, chat.v0, chat.d0 = 0, meta["chip_token_offset"], meta["chip_dims_offset"]
+    chat.slim = False  # (RvChat's base-plus-chip-file mode, f12e268: not this one; its kept dims are columns here)
     chat.keep_cols = torch.tensor(meta["code_dims"] + [meta["tau_dim"], meta["mu_dim"]], device=dev)
     chat.fx_keep = None
     return chat, meta
 
 
 @torch.no_grad()
-def all_logits(chat, hcs, chunk: int = 2048) -> torch.Tensor:
+def all_logits(chat, hcs, chunk: int = 2048, cpu: bool = False) -> torch.Tensor:
     """Teacher-forced: Qwen's logits at every position of residuals hcs [n, hidden], as
-    _qwen_prefill, on a fresh cache."""
+    _qwen_prefill, on a fresh cache. cpu: each chunk's logits moved to the host (long sequences
+    beside fx's chip on one L4)."""
     from transformers import DynamicCache
     from transformers.masking_utils import create_causal_mask, create_recurrent_attention_mask
 
@@ -149,6 +151,10 @@ def all_logits(chat, hcs, chunk: int = 2048) -> torch.Tensor:
         for i in range(chat.n_chip, len(lm.layers)):
             h = lm.layers[i](h, position_embeddings=pe, position_ids=p4[0], past_key_values=cache,
                              attention_mask=masks[lm.config.layer_types[i]])
-        out.append(chat.model.lm_head(lm.norm(h))[0])
+        hn = lm.norm(h)[0]
+        for b in range(0, hn.shape[0], 512):  # (the head a slice at a time: rows are independent)
+            lg = chat.model.lm_head(hn[b:b + 512])[:, : chat.v0]
+            out.append(lg.cpu() if cpu else lg)
+        del h, hn
         pos += hcs[a:a + chunk].shape[0]
-    return torch.cat(out)[:, : chat.v0]
+    return torch.cat(out)

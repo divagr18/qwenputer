@@ -416,7 +416,7 @@ def main() -> None:
         m.n += 1
         if a.base:  # with the text bridge, as a release would have it
             T = BR.Text(Path(a.base) / "tokenizer.json")
-            r = merged_fx(core.build(core.T4B, T, cfg=cfg), T, a.out, m, T.n)
+            r = merged_fx(core.build(core.T4B, T, cfg=cfg, go_on_tcc=False), T, a.out, m, T.n)
         else:
             r = standalone(core.build(cfg=cfg), a.out, m)
     print(json.dumps({k: v for k, v in r.items()}), flush=True)

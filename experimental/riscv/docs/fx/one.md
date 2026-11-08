@@ -85,6 +85,10 @@ merged layers (`wide.py`) and the chip on the executor. 17 sequences: 16 short o
   earlier turns, so in a plain forward the chip's bridge reacts to it as if a call had arrived. The
   production path never feeds the chip that way. **A stock one-shot forward of a merged model would
   therefore not be faithful on such prompts.** This needs a direct check before any merged-form claim.
+  **Checked in `fwd.md`:** the code fires at exactly the `</tool_call>` positions and names GO
+  (the bridge's trigger, not a reaction to a call's text). The production path hid it in prefill but
+  not in generation (every generated call ended `</tool_call>\x00`). fx's bridge now builds without
+  the trigger, and the plain forward equals the text path bit for bit.
 - Of 81.3M state words compared, 4 changed while text was fed.
 
 ## What is still host-side
@@ -96,7 +100,7 @@ BYTE. Boot ran on rv32emu; its state is the snapshot. The units are specialised 
 ## Not done
 
 - wyhash is not built (E: saves about 3.4% of tokens, costs about 2% of step time).
-- The divergence of the one-shot forward on the long render is unexplained beyond the reading above.
+- The divergence of the one-shot forward on the long render: explained and fixed in `fwd.md`.
 - No merged fx-sized checkpoint; the chip ships as a sparse file (`chipfile.md`), and the HF kernels
   have not run this circuit at fx size.
 - The first `--text` attempt ran out of GPU memory (`text_oom` in `one.json`); the wide model is

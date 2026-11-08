@@ -271,11 +271,17 @@ def test_text_bridge_on_the_paged_map(T):
     assert [i for i in range(len(ses.toks) - 1) if ses.own[i] and pred[i] != ses.toks[i + 1]] == []
 
 
-def test_a_parked_machine_ignores_text(T):
+@pytest.mark.parametrize("go_on_tcc", [True, False])
+def test_a_parked_machine_ignores_text(T, go_on_tcc):
     """The live path with the bridge built in: at an ecall the machine parks, Qwen's text (with a
-    tool call in it) goes through the circuit, and fx's registers and memory are as they were."""
+    tool call in it) goes through the circuit, and fx's registers and memory are as they were.
+    With go_on_tcc (the P3 bridge) the circuit owns the position after </tool_call> and its code
+    names GO; without it (fx's bridge, docs/fx/fwd.md) it owns no text position, its output code
+    stays 0, and the host's GO still unparks the machine."""
     cfg = text_cfg()
-    c = core.build(text=T, cfg=cfg)
+    c = core.build(text=T, cfg=cfg, go_on_tcc=go_on_tcc)
+    code = [d for d in c.keep[:len(c.keep) - 2]]
+    seen_text = []
 
     def mk():
         p = assemble(SRC + EXIT, base=cfg.rom_base)
@@ -288,7 +294,9 @@ def test_a_parked_machine_ignores_text(T):
 
     class Ir(IrBackend):
         def text(self, qids, dbg=False):
-            ir.evaluate(self.c, [S.TEXT_TOKEN | q for q in qids], check=False, carry=self.carry)
+            mat = ir.evaluate(self.c, [S.TEXT_TOKEN | q for q in qids], check=False, carry=self.carry)
+            seen_text.append((list(qids), np.rint(ir.ev(self.c.owner, mat)).astype(int),
+                              np.abs(mat[:, code]).max(1), core.predictions(self.c, mat)))
             return None, None
 
     cpu = FL.LiveCPU(Ir(c), BIOS, cfg, full_regs=True)
@@ -315,3 +323,10 @@ def test_a_parked_machine_ignores_text(T):
     assert seen == [data[0] + data[600] + 0x5A5A5]
     r = FL.audit(mk(), *cpu.fed())
     assert r["wrong"] is None, r
+    ((qids, own, cmax, pred),) = seen_text
+    at = [i for i, q in enumerate(qids) if q == T.TCC]
+    assert len(at) == 1
+    if go_on_tcc:
+        assert own.nonzero()[0].tolist() == at and pred[at[0]] == S.tok("GO")
+    else:
+        assert not own.any() and not cmax.any()
