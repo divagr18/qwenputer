@@ -37,13 +37,14 @@ import tasks as TK  # noqa: E402
 
 REPO = PS.REPO
 BOX_DIR = "/opt/dlami/nvme/pr"
-# the live configuration of docs/fx/one.md: 13 units, 4,096 frames, the 16 MB window, all registers
+# the live configuration of docs/fx/one.md (4,096 frames, the 16 MB window, all registers printed), with the
+# circuit lifted from a chip file. No units: the 13-unit circuit has weights outside bf16 (pr.md), so it has no file.
 BOX_RUN = ("cd {d} && . venv/bin/activate && export HF_HOME=$HOME/.cache/huggingface HF_HUB_OFFLINE=1 "
            "TMPDIR={d}/tmp && M=$(python -c 'from huggingface_hub import snapshot_download as s; "
            "print(s(\"Qwen/Qwen3.5-4B\"))') && mkdir -p out/pr && "
-           "nohup sh -c 'python -u fx/fxio/live_chip.py ./rv32emu.so row24/fx-fastcopy.elf row24/imports.json "
-           "\"$0\" out/pr --job jobs/{run}.json --reps {seed} --full-regs --tmp tmp --frames 4096 --units all+ "
-           "{chip} > out/pr/{run}.log 2>&1; echo $? > out/pr/{run}.done' \"$M\" < /dev/null > /dev/null 2>&1 & echo launched")
+           "{{ setsid nohup sh -c 'python -u fx/fxio/live_chip.py ./rv32emu.so row24/fx-fastcopy.elf row24/imports.json "
+           "\"$0\" out/pr --job jobs/{run}.json --reps {seed} --full-regs --tmp tmp --frames 4096 {units} "
+           "{chip} > out/pr/{run}.log 2>&1; echo $? > out/pr/{run}.done' \"$M\" < /dev/null > /dev/null 2>&1 & }} && echo launched")
 
 ISSUE_TITLES = {
     "t1_bug": "total() in inventory/money.py gives the wrong sum",
@@ -125,22 +126,29 @@ def hidden_check(cache: str, branch: str, task: str | None, store: dict | None) 
 
 def cmd_run(a) -> None:
     os.makedirs(a.out, exist_ok=True)
-    issue = gh(f"repos/{REPO}/issues/{a.issue}")
-    if "pull_request" in issue or issue["state"] != "open":
-        raise SystemExit(f"#{a.issue} is not an open issue")
-    task = task_of(issue["body"] or "")
     cache = a.cache
-    g = PS.Git(cache, f"https://github.com/{REPO}.git", PS.GH_CRED)
-    base = g.fetch_base()
-    files = g.files(base)
-    stamp = dt.datetime.now(dt.timezone.utc).strftime("%Y%m%d-%H%M%S")
-    run_id, slug = f"i{a.issue}-{stamp}", f"issue-{a.issue}-{stamp}"
-    job = {"run_id": run_id, "issue": a.issue, "issue_title": issue["title"], "task": task, "repo": REPO,
-           "base_sha": base, "prompt": PR.issue_prompt(a.issue, issue["title"], issue["body"] or ""),
-           "pr_url": f"http://127.0.0.1:{a.port}", "seed": a.seed,
-           "files": {p: base64.b64encode(b).decode() for p, b in files.items()}}
-    jp = os.path.join(a.out, f"job_{run_id}.json")
-    json.dump(job, open(jp, "w"))
+    if a.resume:  # a run already launched on the box: handler, tunnel, wait, check
+        jp = os.path.join(a.out, f"job_{a.resume}.json")
+        job = json.load(open(jp))
+        run_id, task, base, a.seed = job["run_id"], job["task"], job["base_sha"], job["seed"]
+        slug = "issue-" + run_id[1:]
+        assert job["issue"] == a.issue, "the job is another issue's"
+    else:
+        issue = gh(f"repos/{REPO}/issues/{a.issue}")
+        if "pull_request" in issue or issue["state"] != "open":
+            raise SystemExit(f"#{a.issue} is not an open issue")
+        task = task_of(issue["body"] or "")
+        g = PS.Git(cache, f"https://github.com/{REPO}.git", PS.GH_CRED)
+        base = g.fetch_base()
+        files = g.files(base)
+        stamp = dt.datetime.now(dt.timezone.utc).strftime("%Y%m%d-%H%M%S")
+        run_id, slug = f"i{a.issue}-{stamp}", f"issue-{a.issue}-{stamp}"
+        job = {"run_id": run_id, "issue": a.issue, "issue_title": issue["title"], "task": task, "repo": REPO,
+               "base_sha": base, "prompt": PR.issue_prompt(a.issue, issue["title"], issue["body"] or ""),
+               "pr_url": f"http://127.0.0.1:{a.port}", "seed": a.seed,
+               "files": {p: base64.b64encode(b).decode() for p, b in files.items()}}
+        jp = os.path.join(a.out, f"job_{run_id}.json")
+        json.dump(job, open(jp, "w"))
     calls = os.path.join(a.out, f"calls_{run_id}.json")
     print(json.dumps({"run": run_id, "issue": a.issue, "task": task, "base": base}), flush=True)
     srv = subprocess.Popen([sys.executable, "-u", os.path.join(HERE, "pr_server.py"), "serve", "--port", str(a.port),
@@ -161,10 +169,13 @@ def cmd_run(a) -> None:
         else:
             raise SystemExit("the tunnel did not come up")
         print(json.dumps({"tunnel": f"box 127.0.0.1:{a.port} -> laptop 127.0.0.1:{a.port}"}), flush=True)
-        ssh(a.box, f"mkdir -p {BOX_DIR}/jobs")
-        subprocess.run(["scp", "-q", jp, f"{a.box}:{BOX_DIR}/jobs/{run_id}.json"], check=True)
-        chip = f"--chip-file {shlex.quote(a.chip_file)}" if a.chip_file else ""
-        print(ssh(a.box, BOX_RUN.format(d=BOX_DIR, run=run_id, seed=a.seed, chip=chip)).strip(), flush=True)
+        if not a.resume:
+            ssh(a.box, f"mkdir -p {BOX_DIR}/jobs")
+            subprocess.run(["scp", "-q", jp, f"{a.box}:{BOX_DIR}/jobs/{run_id}.json"], check=True)
+            chip = f"--chip-file {shlex.quote(a.chip_file)}" if a.chip_file else ""
+            # (only the job is backgrounded, with its own fds, so this ssh returns at once)
+            print(ssh(a.box, BOX_RUN.format(d=BOX_DIR, run=run_id, seed=a.seed, chip=chip,
+                                            units=f"--units {a.units}" if a.units else "")).strip(), flush=True)
         t0 = time.time()
         while True:
             time.sleep(30)
@@ -238,9 +249,11 @@ def main() -> None:
     r.add_argument("--seed", type=int, default=1)
     r.add_argument("--box", default="q35-batch")
     r.add_argument("--port", type=int, default=8765)
-    r.add_argument("--chip-file", default="chip/fx-live-u13-f4096.safetensors",
+    r.add_argument("--units", default="", help="hot-code units (the chip file has none)")
+    r.add_argument("--chip-file", default="chip/fx-live-f4096.safetensors",
                    help="on the box, relative to its run directory; '' builds the circuit in Python")
     r.add_argument("--timeout", type=float, default=4 * 3600)
+    r.add_argument("--resume", default=None, help="a RUN_ID already launched: serve, tunnel, wait, check")
     r.add_argument("--out", default="pr_out")
     c = sub.add_parser("check")
     c.add_argument("summary")

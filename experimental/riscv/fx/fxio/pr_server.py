@@ -283,6 +283,14 @@ def main() -> None:
     ap.add_argument("--log", required=True)
     a = ap.parse_args()
     h = Handler(a.cache, {a.run: {"issue": a.issue, "base": a.base, "slug": a.slug}}, log_path=a.log)
+    if os.path.exists(a.log):  # a restarted handler keeps the run's cap: earlier calls count
+        h.calls = json.load(open(a.log))
+        for c in h.calls:
+            if c.get("branch"):
+                h.attempts[a.run] = h.attempts.get(a.run, 0) + 1
+            if c["answer"].get("ok"):
+                h.count[a.run] = h.count.get(a.run, 0) + 1
+                h.runs[a.run]["url"] = c["answer"]["url"]
     head = h.git.fetch_base()
     if head != a.base:
         print(json.dumps({"note": "main moved", "main": head, "base": a.base}), flush=True)
