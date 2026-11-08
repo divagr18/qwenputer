@@ -23,7 +23,6 @@ from dataclasses import dataclass, field
 import torch
 
 from chipformer.rv import bridge as BR
-from chipformer.rv import core
 from chipformer.rv import spec as S
 
 
@@ -86,7 +85,7 @@ class RvBatch:
         chat, erow, lock = self.chat, self.rows[b], job.lock
         ids = job.ids
         nxt = self._prefill(b, ids)
-        core.snapshot(chat.c, job.machine)
+        chat._snapshot(job.machine)
         erow.start(ids)
         pos = len(ids)
         gen, n_text, n_chip_tok = [], 0, 0
@@ -150,7 +149,7 @@ class RvBatch:
                 ct = chat.circuit_token(hc)
                 q, qv = yield hc, pos
                 pos += 1
-                if ct is not None and check_head and q != ct:
+                if ct is not None and check_head and not chat.slim and q != ct:
                     mismatch += 1
                 nxt = ct if ct is not None else qv
         return {"tokens": gen, "text_tokens": n_text, "chip_tokens": n_chip_tok,

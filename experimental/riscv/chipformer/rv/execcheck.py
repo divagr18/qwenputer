@@ -57,6 +57,8 @@ def main() -> None:
                          "text_s": v["text_seconds"]}
         chat.verify, chat.fast = False, False
         e = run(chat, r, args.firmware, args.budget, args.max_chip)
+        if not args.no_verify:
+            out["exec_tokens_equal_hf"] = e["tokens"] == v["tokens"]
         first = next((i for i, (a, b) in enumerate(zip(e["tokens"], r["gen_ids"])) if a != b),
                      None if len(e["tokens"]) == len(r["gen_ids"]) else
                      min(len(e["tokens"]), len(r["gen_ids"])))

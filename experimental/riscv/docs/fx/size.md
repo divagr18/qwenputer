@@ -301,6 +301,7 @@ step is simply not to build one.
 - A load check: the executor emits its circuit and compares the terms with `chip.safetensors`, so what it
   runs is shown to be what the file holds. Emission takes 16 s on fx's circuit (M). That closes the gap
   in [Honesty](#honesty). Lifting `Exec4` to read the file directly is a larger job and is not needed.
+  (Superseded: the user asked for the lift, and `fx-chip` built it. See `chipfile.md`.)
 - A `trust_remote_code` class for the HF path, from P1's Linear swap, with chip and Qwen on separate
   residuals. Not built.
 
@@ -336,6 +337,9 @@ If a stock file must stay the only release, the stock steps reach 24.9 GB of dis
 which still does not load on a 24 GB card.
 
 ## Honesty
+
+**Since `fx-chip`** (`chipfile.md`): Executor v4 lifts its circuit from `chip.safetensors`, and the
+next paragraph describes the path before that change.
 
 **What today's fast path really runs.** `RvChat` rebuilds the chip with `core.build(...)` from Python, and
 `Exec4` runs that IR, so in the production path the chip weights in the checkpoint are loaded and never
