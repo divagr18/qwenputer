@@ -41,7 +41,7 @@ Exact zeros used (each is exact, see docs/fx/exec-v4.md): an MLP unit whose coef
 nothing (its read is the zero row, so its output is exactly 0); empty rows are not stored; a
 block skips the output dims it never reads.
 
-    ex = Exec4(c, text=T, v0=chip_token_offset)    # c: core.build(...)
+    ex = Exec4(c, text=T, v0=chip_token_offset)    # c: chipfile.load(...), in production
     core.snapshot(c, machine); ex.load_init(); ex.reset()
     toks, keep_first, keep_last = ex.run(rows, mode=Exec4.CHIP, max_steps=...)
 """
@@ -694,8 +694,6 @@ class Exec4:
     def __init__(self, c, device="cuda", nb: int | None = None, text=None, v0: int = 0,
                  tables=None, extra_layers: int = 0, flatten: bool = True, banks: bool = True,
                  plan_only: bool = False):
-        from chipformer.rv import core
-
         self.c, self.dev = c, device
         self.use_banks = banks
         D = len(c.dims)
@@ -718,7 +716,12 @@ class Exec4:
                 qhot_lv[n.level] = max(qhot_lv[n.level], getattr(n, "qhot", 2))
         self.keep_ir = list(c.keep)
         self.NKEEP = len(self.keep_ir)
-        self.NCODE, self.NFAM = core.NFAM + core.NPAY, core.NFAM
+        fields = getattr(c, "code_fields", None)  # a chip file's circuit brings its own
+        if fields is None:
+            from chipformer.rv import core
+
+            fields = (core.NFAM + core.NPAY, core.NFAM)
+        self.NCODE, self.NFAM = fields
         assert self.NCODE <= self.NKEEP <= NT
         self._build(nodes, qhot_lv)
         if plan_only:  # the plan's size, no GPU (see fxrun.py plan)
@@ -1105,7 +1108,7 @@ class Exec4:
         (chip tokens, then the printable text tokens and the newline the circuit echoes; -1:
         none). emb: the rows of Executor2.embed, sparse (every entry that is not +0.0)."""
         if tables is None:
-            tables = build_tables(self.c, self.text, self.v0)
+            tables = cached_tables(self.c, self.text, self.v0)
         self.tables = tables
         lut_id, lut_row, off, dims, vals = tables
         e0 = np.where(lut_row >= 0, off[np.maximum(lut_row, 0)], 0)
@@ -1149,6 +1152,8 @@ class Exec4:
         self.hist.zero_()
 
     def embed(self, toks):
+        if hasattr(self.c, "embed_rows"):  # a chip file's circuit: the rows are in the file
+            return torch.tensor(self.c.embed_rows(toks), device=self.dev)
         out = np.zeros((len(toks), self.D))
         out[:, ONE] = 1.0
         for d in sorted(self.c.token_fns):
@@ -1279,7 +1284,10 @@ def _with_extra_layers(c, nodes, n_layers):
 
 def cached_tables(c, text, v0: int):
     """build_tables, cached in ~/.cache/chipformer under a hash of everything they depend on
-    (the circuit and token sources, the tokenizer's printable tokens, v0)."""
+    (the circuit and token sources, the tokenizer's printable tokens, v0). A chip file's circuit
+    has them from the file."""
+    if hasattr(c, "exec_tables"):
+        return c.exec_tables()
     import hashlib
     from pathlib import Path
 

@@ -178,6 +178,9 @@ teacher-forced residual on all 63, batchcheck and 4 RvChat records, all exact.
 
 ## Honesty
 
+Since `fx-chip`, production builds no graph from Python: Exec4's circuit is lifted from
+`chip.safetensors` (`chipfile.md`). The numbers on this page are from `core.build`'s graph.
+
 - **The same arithmetic over the same weights.**
   - v4 runs the circuit's own graph (`core.build`), as Executor2 does, with the same fp32
     weights and the same per-node semantics:

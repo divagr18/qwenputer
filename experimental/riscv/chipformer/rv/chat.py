@@ -24,7 +24,7 @@ import numpy as np
 import torch
 
 from chipformer.rv import bridge as BR
-from chipformer.rv import core, elf, hf, ref
+from chipformer.rv import elf, ref
 from chipformer.rv import spec as S
 
 CALC_TOOL = {"type": "function", "function": {
@@ -119,7 +119,10 @@ class ExecRow4:
         self.ex.reset()
         if ids:
             self.ex.run(self.chat._exec_emb(ids), mode=self.ex.FORCED, max_steps=len(ids))
-        self.ex.load_init()
+        if self.chat.state_from_file:
+            self.chat.c.load_state(self.ex)
+        else:
+            self.ex.load_init()
 
     @torch.no_grad()
     def step(self, ids: int) -> torch.Tensor:
@@ -139,31 +142,61 @@ class ExecRow4:
 
 class RvChat:
     def __init__(self, path, device: str | None = None, fast: bool = True,
-                 executor: bool = False, exec_kind: str = "v4") -> None:
+                 executor: bool = False, exec_kind: str = "v4", chip=None, base=None,
+                 python_circuit: bool = False) -> None:
+        """``path``: base Qwen3.5's directory (its text model loads from its own bytes), or a
+        merged checkpoint. ``chip``: the chip file (default: path / chip.safetensors). The circuit
+        comes from that file; core.build runs only with ``python_circuit``, an audit. With the
+        executor alone a merged checkpoint is cut to Qwen's own tensors (``base``: base's
+        directory, for its norm gains); the HF chip path (no executor, or "verify") keeps it."""
         from transformers import AutoTokenizer, Qwen3_5ForCausalLM
 
         from chipformer.q35.fast import exact_matmuls
-        from chipformer.q35.ir import Target
+        from chipformer.rv import chipfile
 
         exact_matmuls()
         self.path = Path(path)
-        self.meta = json.loads((self.path / "chipformer.json").read_text())
         self.dev = device or ("cuda" if torch.cuda.is_available() else "cpu")
-        self.model = Qwen3_5ForCausalLM.from_pretrained(self.path, dtype=torch.bfloat16)
-        self.model = self.model.to(self.dev).eval()
-        self.lm = self.model.model
-        self.tok = AutoTokenizer.from_pretrained(self.path)
-        self.T = BR.Text(self.path / "tokenizer.json")
-        cfg = self.model.config
-        self.c = core.build(Target(cfg.linear_num_key_heads, cfg.linear_num_value_heads,
-                                   cfg.intermediate_size), self.T)
-        self.n_chip, self.v0 = self.meta["chip_layers"], self.meta["chip_token_offset"]
-        self.code_dims = torch.tensor(self.meta["code_dims"], device=self.dev)
-        self.eos = {248046, 248044}
-        self.fast = fast and self.dev == "cuda"
         # executor "verify": both chip paths, the HF view's hc checked against the executor's
         self.executor = executor if self.dev == "cuda" else False
         self.verify = self.executor == "verify"
+        self.state_from_file = False
+        cfg = json.loads((self.path / "config.json").read_text())
+        is_base = "text_config" in cfg
+        self.slim = is_base or bool(self.executor and not self.verify and not python_circuit)
+        self.T = BR.Text(self.path / "tokenizer.json")
+        chip = Path(chip) if chip else self.path / "chip.safetensors"
+        if python_circuit:
+            from chipformer.q35.ir import Target
+            from chipformer.rv import core
+
+            self.c = core.build(Target(cfg["linear_num_key_heads"], cfg["linear_num_value_heads"],
+                                       cfg["intermediate_size"]), self.T)
+            self.meta = json.loads((self.path / "chipformer.json").read_text())
+        else:
+            if not chip.exists():
+                raise FileNotFoundError(f"{chip}: no chip file (python -m chipformer.rv.chipbuild "
+                                        "writes one; python_circuit=True is the audit path)")
+            self.c = chipfile.load(chip)
+            m = self.c.file.meta
+            self.meta = {"chip_layers": self.c.n_chip, "chip_token_offset": self.c.v0,
+                         "code_dims": m["code_dims"], "tau_dim": m["tau_dim"], "mu_dim": m["mu_dim"],
+                         "chip_dims_offset": self.c.off}
+        if is_base:
+            self.model = chipfile.load_base(self.path, self.dev)
+        else:
+            self.model = Qwen3_5ForCausalLM.from_pretrained(self.path, dtype=torch.bfloat16)
+            if self.slim:
+                self.model = chipfile.slim_merged(self.model, self.c, base, self.dev)
+            else:
+                self.model = self.model.to(self.dev).eval()
+        self.lm = self.model.model
+        self.tok = AutoTokenizer.from_pretrained(self.path)
+        self.chip_layers, self.v0 = self.meta["chip_layers"], self.meta["chip_token_offset"]
+        self.n_chip = 0 if self.slim else self.chip_layers  # the first of Qwen's layers
+        self.code_dims = torch.tensor(self.meta["code_dims"], device=self.dev)
+        self.eos = {248046, 248044}
+        self.fast = fast and self.dev == "cuda" and not self.slim
         # the executor: "v4" (exec4.py, the chip-token loop on the GPU) or "v2" (tritonexec)
         self.exec_kind = exec_kind
         if self.executor:
@@ -209,7 +242,11 @@ class RvChat:
         return self.erow.step(ids)
 
     def _exec_hc(self, ids: int, keep: torch.Tensor) -> torch.Tensor:
-        """A text token's residual after the chip layers."""
+        """A text token's residual after the chip layers (slim: Qwen's columns are all of it, and
+        the output code stays in keep)."""
+        if self.slim:
+            self._keep = keep
+            return self.lm.embed_tokens.weight[ids]
         hc = torch.zeros(self.lm.embed_tokens.weight.shape[1], dtype=torch.bfloat16,
                          device=self.dev)
         hc[: self.d0] = self.lm.embed_tokens.weight[ids, : self.d0]
@@ -222,10 +259,17 @@ class RvChat:
         if not bool((code != 0).any()):
             return None
         bits = (code > 0).long().tolist()
-        nf = core.NFAM
+        if hasattr(self.c, "decode_code"):
+            nf = self.c.nfam
+            dec = self.c.decode_code
+        else:  # (the audit path)
+            from chipformer.rv import core
+
+            nf = core.NFAM
+            dec = lambda f, p: core.decode_code(f, p, self.T)  # noqa: E731
         fid = sum(b << i for i, b in enumerate(bits[:nf]))
         p = sum(b << i for i, b in enumerate(bits[nf:]))
-        t = core.decode_code(fid, p, self.T)
+        t = dec(fid, p)
         if t < 0:
             raise RuntimeError(f"the circuit predicts no token (family {fid}, payload {p})")
         return t - S.TEXT_TOKEN if S.is_text(t) else self.v0 + t
@@ -358,7 +402,7 @@ class RvChat:
         """Residuals after the chip layers for text the chip does not run: the embedding rows,
         and with the executor the kept dims as they stand at the park (fx_keep)."""
         x = self.lm.embed_tokens(torch.tensor(ids, device=self.dev))
-        if not self.executor:
+        if not self.executor or self.slim:
             return x
         h = torch.zeros_like(x)
         h[:, : self.d0] = x[:, : self.d0]
@@ -390,7 +434,22 @@ class RvChat:
 
     def circuit_token(self, hc) -> int | None:
         """The model id the circuit predicts at a position, None where Qwen predicts."""
+        if self.slim:
+            return self.code_token(self._keep[: len(self.code_dims)])
         return self.code_token(hc[self.code_dims])
+
+    def _snapshot(self, machine) -> None:
+        """The state a conversation starts from: a machine's (the host's loader), or with None
+        the firmware in the chip file."""
+        self.state_from_file = machine is None
+        if machine is not None:
+            from chipformer.rv import core
+
+            core.snapshot(self.c, machine)
+        elif not self.c.has_state():
+            raise ValueError("this chip file holds no firmware: pass a machine")
+        elif not self.slim:
+            self.c.apply_state()
 
     # --- a conversation --------------------------------------------------------------------
     def prompt_ids(self, messages, tools=(CALC_TOOL,)) -> list[int]:
@@ -411,10 +470,12 @@ class RvChat:
         if self.executor and not self.verify and self.exec_kind == "v4":
             return self._generate_v4(ids, machine, max_new, max_chip, check_head, verbose, lock,
                                      on_token)
+        from chipformer.rv import hf
+
         x = torch.tensor([ids], device=self.dev)
         out = self.model(input_ids=x, use_cache=True)
         cache = out.past_key_values  # (fast: Qwen's layers only)
-        core.snapshot(self.c, machine)
+        self._snapshot(machine)
         if self.executor:
             self._exec_start(ids)
         if self.fast:
@@ -520,11 +581,13 @@ class RvChat:
                      on_token) -> dict:
         """generate on executor v4: the same tokens and result; a chip token starts a burst
         (ExecRow4.burst: the circuit runs on the GPU until it predicts a token that is not a
-        chip token), whose predictions are then taken one by one as generate takes them."""
+        chip token), whose predictions are then taken one by one as generate takes them. Slim
+        has no chip output head, so no head check."""
+        check_head = check_head and not self.slim
         x = torch.tensor([ids], device=self.dev)
         out = self.model(input_ids=x, use_cache=True)
         cache = out.past_key_values
-        core.snapshot(self.c, machine)
+        self._snapshot(machine)
         self._exec_start(ids)
         logits = out.logits[0, -1]
         pos = len(ids)
@@ -701,9 +764,14 @@ def fx_session(chat: RvChat, chip, template, max_new: int = 8192, forced=None) -
 
 def replay(chat: RvChat, prompt: list[int], gen: list[int], firmware) -> dict:
     """Check a generated stream: the reference machine (fed Qwen's own tokens) must produce the
-    same chip tokens and echoes, and the IR circuit must predict every circuit-owned token."""
+    same chip tokens and echoes, and the IR circuit must predict every circuit-owned token. An
+    audit, so it may build the Python circuit: the tree's must be the chip file's."""
     from chipformer.q35 import ir
+    from chipformer.q35.ir import Target
+    from chipformer.rv import core
 
+    cc = chat.c if hasattr(chat.c, "owner") else core.build(
+        Target(chat.c.nk, chat.c.nv, chat.c.inter), chat.T)
     m = ref.Machine.from_program(elf.program(firmware))
     BR.park(m)
     ses = BR.Session(chat.T, m)
@@ -733,13 +801,13 @@ def replay(chat: RvChat, prompt: list[int], gen: list[int], firmware) -> dict:
         i += 1
     m2 = ref.Machine.from_program(elf.program(firmware))
     BR.park(m2)
-    core.snapshot(chat.c, m2)
+    core.snapshot(cc, m2)
     carry, mats = {}, []
     for a in range(0, len(stream), 2048):
-        mats.append(ir.evaluate(chat.c, stream[a:a + 2048], carry=carry))
+        mats.append(ir.evaluate(cc, stream[a:a + 2048], carry=carry))
     mat = np.concatenate(mats)
-    pred = core.predictions(chat.c, mat)
-    own = np.rint(ir.ev(chat.c.owner, mat)).astype(int)
+    pred = core.predictions(cc, mat)
+    own = np.rint(ir.ev(cc.owner, mat)).astype(int)
     bad_own = int(sum(own[x] != int(ses.own[x]) for x in range(len(stream))))
     bad = int(sum(1 for x in range(len(stream) - 1)
                   if ses.own[x] and x not in skip and pred[x] != stream[x + 1]))
@@ -756,8 +824,9 @@ def main() -> None:
     ap.add_argument("--max-new", type=int, default=600)
     ap.add_argument("--check", action="store_true")
     ap.add_argument("--slow", action="store_true", help="every layer through the HF modules")
+    ap.add_argument("--chip", help="the chip file (default: MODEL/chip.safetensors)")
     args = ap.parse_args()
-    chat = RvChat(args.model, fast=not args.slow)
+    chat = RvChat(args.model, fast=not args.slow, chip=args.chip)
     m = ref.Machine.from_program(elf.program(args.firmware))
     BR.park(m)
     ids = chat.prompt_ids([{"role": "user", "content": args.ask}])
