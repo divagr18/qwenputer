@@ -41,7 +41,7 @@ MAX_FILES_BYTES = 1 << 20
 GH_CRED = ["-c", "credential.helper=", "-c", "credential.helper=!gh auth git-credential"]
 
 FOOTER = ("\n\n---\n"
-          "*Added by the host, not by fx:* this pull request was opened by "
+          "This pull request was opened by "
           "[fx](https://github.com/vercel-labs/fx) running on the in-weights CPU of "
           "[Qwenputer](https://github.com/divagr18/qwenputer) (Executor v4), with Qwen3.5-4B as its model. "
           "The title, the text above this line and the change are fx's. Run `{run_id}`.")

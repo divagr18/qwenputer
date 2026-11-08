@@ -157,6 +157,8 @@ def cmd_run(a) -> None:
     tun = None
     try:
         wait_line(srv, "serving")
+        if '"ok"' in ssh(a.box, f"curl -s -m 5 http://127.0.0.1:{a.port}/health", check=False):
+            raise SystemExit(f"the box's port {a.port} is already forwarded (a stale tunnel?): not starting")
         tun = subprocess.Popen(["ssh", "-N", "-o", "ExitOnForwardFailure=yes", "-o", "ServerAliveInterval=30",
                                 "-R", f"127.0.0.1:{a.port}:127.0.0.1:{a.port}", a.box],
                                stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
@@ -180,10 +182,11 @@ def cmd_run(a) -> None:
         while True:
             time.sleep(30)
             if tun.poll() is not None:  # the tunnel dropped: bring it back while fx runs
+                err = tun.stderr.read().decode("utf-8", "replace").strip()[-200:]
                 tun = subprocess.Popen(["ssh", "-N", "-o", "ExitOnForwardFailure=yes", "-o", "ServerAliveInterval=30",
                                         "-R", f"127.0.0.1:{a.port}:127.0.0.1:{a.port}", a.box],
                                        stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
-                print(json.dumps({"tunnel": "reopened", "at_s": round(time.time() - t0)}), flush=True)
+                print(json.dumps({"tunnel": "reopened", "at_s": round(time.time() - t0), "was": err}), flush=True)
             st = ssh(a.box, f"cat {BOX_DIR}/out/pr/{run_id}.done 2>/dev/null; tail -c 300 {BOX_DIR}/out/pr/{run_id}.log",
                      check=False)
             first = st.split("\n", 1)[0].strip()
