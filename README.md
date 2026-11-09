@@ -5,7 +5,7 @@
 Qwenputer model: [Hugging Face](https://huggingface.co/divagr1925/Qwen3.5-4B-Qwenputer) · [ModelScope](https://www.modelscope.ai/models/Spartan1925/Qwen3.5-4B-Qwenputer)  
 Filesystem model: [Hugging Face](https://huggingface.co/divagr1925/Qwen3.5-4B-Qwenputer-Filesystem) · [ModelScope](https://www.modelscope.ai/models/Spartan1925/Qwen3.5-4B-Qwenputer-Filesystem)  
 NPU model: [Hugging Face](https://huggingface.co/divagr1925/Qwenputer-npu) · [ModelScope](https://www.modelscope.ai/models/Spartan1925/Qwenputer-npu)  
-QwenFX, a coding agent inside the model: [GitHub](https://github.com/divagr18/QwenFX) · [Hugging Face](https://huggingface.co/divagr1925/QwenFX)  
+QwenFX, a coding agent inside the model: [GitHub](https://github.com/divagr18/QwenFX) · [Hugging Face](https://huggingface.co/divagr1925/QwenFX) · [ModelScope](https://www.modelscope.ai/models/Spartan1925/QwenFX)  
 QwenPU, the vector unit: [GitHub](https://github.com/divagr18/QwenPU) · [Hugging Face](https://huggingface.co/divagr1925/QwenPU)
 
 **Qwenputer is a new kind of experimental model: Qwen3.5-4B with a 32-bit RISC-V CPU compiled and
