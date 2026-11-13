@@ -5,6 +5,7 @@
 Qwenputer model: [Hugging Face](https://huggingface.co/divagr1925/Qwen3.5-4B-Qwenputer) · [ModelScope](https://www.modelscope.ai/models/Spartan1925/Qwen3.5-4B-Qwenputer)  
 Filesystem model: [Hugging Face](https://huggingface.co/divagr1925/Qwen3.5-4B-Qwenputer-Filesystem) · [ModelScope](https://www.modelscope.ai/models/Spartan1925/Qwen3.5-4B-Qwenputer-Filesystem)  
 NPU model: [Hugging Face](https://huggingface.co/divagr1925/Qwenputer-npu) · [ModelScope](https://www.modelscope.ai/models/Spartan1925/Qwenputer-npu)  
+QwenFX, a coding agent inside the model: [GitHub](https://github.com/divagr18/QwenFX) · [Hugging Face](https://huggingface.co/divagr1925/QwenFX) · [ModelScope](https://www.modelscope.ai/models/Spartan1925/QwenFX)  
 QwenPU, the vector unit: [GitHub](https://github.com/divagr18/QwenPU) · [Hugging Face](https://huggingface.co/divagr1925/QwenPU)
 
 **Qwenputer is a new kind of experimental model: Qwen3.5-4B with a 32-bit RISC-V CPU compiled and
@@ -36,8 +37,10 @@ The Python-tool column is base Qwen calling a real Python interpreter on the hos
 | DeepMind `add_or_sub_big` | 87.5 | **97.5** | 97.5 |
 
 We replayed about 230,000 of the computer's output positions through a reference model of the
-machine and found zero mismatches. Qwen's text behaviour matches
-base: KL 6e-4, against a noise floor of 5e-4.
+machine and found zero mismatches. Qwen's text behaviour matches base on prompts without
+tool-call markup: KL 6e-4, against a noise floor of 5e-4. After each `</tool_call>` the model
+predicts the computer's run token by design, so it shouldn't be used to score transcripts that
+contain completed calls.
 
 ## Quickstart
 
@@ -81,6 +84,19 @@ Writes arrive through the token stream, so the trace is the computer's execution
 token names the row, the `VAL` token after it carries the value, and `STEP` ends the instruction.
 Nothing here needed a new layer type: the computer's memory is the same Gated DeltaNet
 recurrence Qwen3.5 already uses for language.
+
+## QwenFX: a coding agent inside the model (experimental)
+
+[QwenFX](https://github.com/divagr18/QwenFX) runs [fx](https://github.com/vercel-labs/fx),
+Vercel's coding agent, on the CPU compiled into the weights, with Qwen3.5-4B as fx's model.
+It is fx's exact compiled binary, built from its unmodified source, not a re-implementation.
+
+On a set of small repo tasks it solved 15 of 15, and it opened its own pull requests on
+[fxputer-sandbox](https://github.com/divagr18/fxputer-sandbox/pulls), one per issue. A new
+executor runs the CPU at about 24,000 trace tokens a second on an L4, so a task takes a few
+minutes. The computer loads as a 125 MB chip file beside base Qwen's own 8.4 GB of weights, and a
+live task peaks at 14 GB of GPU memory. The host still renders the chat template, keeps the files
+and does the git work; the README there says exactly what runs where.
 
 ## In-weights NPU (experimental)
 
@@ -276,8 +292,10 @@ details:
 
 ## Citing
 
-If you use Qwenputer in your work, please cite it. GitHub's "Cite this repository" button reads
-[CITATION.cff](CITATION.cff); in BibTeX:
+Author: [Divyansh Agrawal](https://orcid.org/0009-0003-0739-2473) (ORCID: [0009-0003-0739-2473](https://orcid.org/0009-0003-0739-2473)).
+
+For the source code, cite the software entry below. GitHub's "Cite this repository" button reads
+[CITATION.cff](CITATION.cff).
 
 ```bibtex
 @software{agrawal2026qwenputer,
@@ -286,7 +304,25 @@ If you use Qwenputer in your work, please cite it. GitHub's "Cite this repositor
   year    = {2026},
   version = {0.1.0},
   url     = {https://github.com/divagr18/qwenputer},
-  license = {MIT}
+  license = {MIT},
+  note    = {Author ORCID: https://orcid.org/0009-0003-0739-2473}
+}
+```
+
+For the Hugging Face model artifact, use DOI [10.57967/hf/11140](https://doi.org/10.57967/hf/11140).
+This DOI identifies the model artifact, not a GitHub source-code release.
+
+```bibtex
+@misc{agrawal2026qwenputer_model,
+  author    = {Agrawal, Divyansh},
+  title     = {{Qwen3.5-4B-Qwenputer}},
+  year      = {2026},
+  publisher = {Hugging Face},
+  version   = {5ba9ad0},
+  doi       = {10.57967/hf/11140},
+  url       = {https://huggingface.co/divagr1925/Qwen3.5-4B-Qwenputer},
+  license   = {Apache-2.0},
+  note      = {Model artifact. Author ORCID: https://orcid.org/0009-0003-0739-2473}
 }
 ```
 
