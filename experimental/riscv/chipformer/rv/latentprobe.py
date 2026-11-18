@@ -137,6 +137,17 @@ def collect(args) -> None:
         bench += [{"id": f"gsm-{i}", "src": "gsm8k", "question": r["question"]} for i, r in enumerate(g)]
     except Exception as e:  # noqa: BLE001
         print("gsm8k skipped:", e)
+    if args.n_svamp:
+        try:
+            from datasets import load_dataset
+            sv = load_dataset("ChilleD/SVAMP", split="test")
+            sv = sv.shuffle(seed=7).select(range(min(args.n_svamp, len(sv))))
+            bench += [{"id": f"svamp-{i}", "src": "svamp",
+                       "question": r.get("question_concat") or f"{r['Body']} {r['Question']}"} for i, r in enumerate(sv)]
+        except Exception as e:  # noqa: BLE001
+            print("svamp skipped:", e)
+    (out / "layers.json").write_text(json.dumps(LAYERS))
+    own_rng = random.Random(3)
 
     def prompt(q, tool):
         msgs = [{"role": "system", "content": NUDGE if tool else NUDGE_NONE},
@@ -209,6 +220,8 @@ def collect(args) -> None:
                 forced.update(range(e + 1, e + 1 + n_resp))
             own = [len(ids) - 1]
             own += [i for i in range(len(ids), len(seq) - 1) if i not in forced]
+            if args.own_sample < 1:  # keep every position before a call, a sample of the rest (call-now negatives)
+                own = [i for i in own if (i + 1 < len(seq) and seq[i + 1] == TC) or own_rng.random() < args.own_sample]
             rec["own"] = own
             rec["next_is_call"] = [int(seq[i + 1] == TC) if i + 1 < len(seq) else 0 for i in own]
             dec = own
@@ -232,6 +245,9 @@ def collect(args) -> None:
 
 # ---- fit ----
 def load(out: Path):
+    global LAYERS
+    if (out / "layers.json").exists():
+        LAYERS = json.loads((out / "layers.json").read_text())
     meta = [json.loads(x) for x in (out / "meta.jsonl").read_text().splitlines()]
     H = {}
     for f in sorted(out.glob("h*.pt")):
@@ -287,34 +303,68 @@ def commands(meta, cond):
     return out
 
 
-def pointer_fit(H, tr, te, li, rank=64, epochs=200, dev="cuda"):
-    """A bilinear pointer per slot: score(q, key) = (A q) . (B k) over the context's numbers."""
+class Order(torch.nn.Module):
+    """A learned score bias from a candidate's place: rank from the end, rank from the start, and
+    whether it is in the prompt. Lets a pointer combine content with the order priors."""
+    R = 16
+
+    def __init__(self):
+        super().__init__()
+        self.back = torch.nn.Parameter(torch.zeros(self.R))
+        self.front = torch.nn.Parameter(torch.zeros(self.R))
+        self.prompt = torch.nn.Parameter(torch.zeros(2))
+
+    def forward(self, cand, n_prompt):
+        n, dev = len(cand), self.back.device
+        j = torch.arange(n, device=dev)
+        inp = torch.tensor([int(c < n_prompt) for c in cand], device=dev)
+        return self.back[(n - 1 - j).clamp(max=self.R - 1)] + self.front[j.clamp(max=self.R - 1)] + self.prompt[inp]
+
+
+def cands(m, q):
+    return [r[1] for r in m["runs"] if r[1] < q + 1]
+
+
+def score(p, Q, K, cand, m, rank):
+    A, B, O = p
+    s = (A(Q) @ B(K).T)[0] / rank ** 0.5
+    return s + O(cand, m["n_prompt"]) if O is not None else s
+
+
+def pointer_fit(H, tr, te, li, rank=64, epochs=200, dev="cuda", order=False):
+    """A bilinear pointer per slot: score(q, key) = (A q) . (B k) over the context's numbers
+    (plus an Order bias with order=True)."""
     D = next(iter(H.values()))["h"].shape[-1]
     res = []
     for slot in range(2):
         def batch(items):
             for m, q, op, tg in items:
-                cand = [r[1] for r in m["runs"] if r[1] < q + 1]
+                cand = cands(m, q)
                 if not tg[slot] or not cand:
                     continue
                 Q = at(H, m, li, [q]).to(dev)
                 K = at(H, m, li, cand).to(dev)
-                yield Q, K, tg[slot], tg[1 - slot], op, m
+                yield Q, K, tg[slot], cand, m
         trb = list(batch(tr))
         # standardized inputs: a few of Qwen's dims are orders of magnitude larger than the rest
         qs, ks = torch.cat([b[0] for b in trb]), torch.cat([b[1] for b in trb])
         A = torch.nn.Sequential(Std(qs), torch.nn.Linear(D, rank, bias=False)).to(dev)
         B = torch.nn.Sequential(Std(ks), torch.nn.Linear(D, rank, bias=False)).to(dev)
-        opt = torch.optim.Adam([*A[1].parameters(), *B[1].parameters()], lr=1e-3, weight_decay=1e-4)
+        O = Order().to(dev) if order else None
+        groups = [{"params": [*A[1].parameters(), *B[1].parameters()], "weight_decay": 1e-4}]
+        if O is not None:
+            groups.append({"params": list(O.parameters()), "weight_decay": 0.0, "lr": 1e-2})
+        opt = torch.optim.Adam(groups, lr=1e-3)
+        p = (A, B, O)
         for _ in range(epochs // 10):
             random.shuffle(trb)
-            for Q, K, pos, _, _, _ in trb:
+            for Q, K, pos, cand, m in trb:
                 opt.zero_grad()
-                s = (A(Q) @ B(K).T)[0] / rank ** 0.5
+                s = score(p, Q, K, cand, m, rank)
                 loss = -torch.logsumexp(s[pos], 0) + torch.logsumexp(s, 0)
                 loss.backward()
                 opt.step()
-        res.append((A, B))
+        res.append(p)
     return res
 
 
@@ -328,24 +378,29 @@ class Std(torch.nn.Module):
         return (x - self.mu) / self.sd
 
 
-def evaluate(H, items, li, ptr, dev="cuda"):
-    """Per command: the op from the op probe is scored separately; here: slot picks vs targets.
-    + and * accept the swapped pair."""
-    ok = tot = 0
+def picks(H, items, li, ptr, dev="cuda", rank=64):
+    """Per command: True/False if both slots have a target in the context (+ and * accept the
+    swapped pair), else None."""
+    out = []
     with torch.no_grad():
         for m, q, op, tg in items:
-            cand = [r[1] for r in m["runs"] if r[1] < q + 1]
+            cand = cands(m, q)
             if not cand or not tg[0] or not tg[1]:
+                out.append(None)
                 continue
             Q = at(H, m, li, [q]).to(dev)
             K = at(H, m, li, cand).to(dev)
-            pick = [int((A(Q) @ B(K).T)[0].argmax()) for A, B in ptr]
+            pick = [int(score(p, Q, K, cand, m, rank).argmax()) for p in ptr]
             good = pick[0] in tg[0] and pick[1] in tg[1]
             if op in "+*":
                 good = good or (pick[0] in tg[1] and pick[1] in tg[0])
-            ok += good
-            tot += 1
-    return ok, tot
+            out.append(bool(good))
+    return out
+
+
+def evaluate(H, items, li, ptr, dev="cuda"):
+    g = [x for x in picks(H, items, li, ptr, dev) if x is not None]
+    return sum(g), len(g)
 
 
 def heuristics(items):
@@ -434,9 +489,69 @@ def fit(args) -> None:
     (out / "report.json").write_text(json.dumps(report, indent=1))
 
 
+def op_probe(H, a, b, li):
+    Xa = torch.cat([at(H, m, li, [q]) for m, q, _, _ in a]).cuda()
+    Xb = torch.cat([at(H, m, li, [q]) for m, q, _, _ in b]).cuda()
+    ya = torch.tensor([OPS.index(o) for _, _, o, _ in a]).cuda()
+    yb = torch.tensor([OPS.index(o) for _, _, o, _ in b]).cuda()
+    return (logistic(Xa, ya, Xb, 4).argmax(-1) == yb).tolist()
+
+
+def scored(a, b, H, li, order):
+    """op accuracy, pointer accuracy, command accuracy (op and both pointers right) on b."""
+    op_ok = op_probe(H, a, b, li)
+    pk = picks(H, b, li, pointer_fit(H, a, b, li, order=order))
+    both = [(o, p) for o, p in zip(op_ok, pk) if p is not None]
+    return {"op": sum(op_ok) / len(op_ok), "pointer": sum(p for _, p in both) / max(1, len(both)),
+            "command": sum(o and p for o, p in both) / max(1, len(both)), "n": len(both)}
+
+
+def refit(args) -> None:
+    """Phase 0b: is the synthetic -> benchmark transfer failure a data problem or a method problem?
+    Leave one source out: train the op and pointer probes on every other source (synthetic,
+    benchmark and word problems mixed), test on the held-out one. Each fit runs twice: content only
+    (Phase 0's pointer) and content plus a learned order bias (Order). Also a mixed random split."""
+    out = Path(args.out)
+    meta, H = load(out)
+    T = [m for m in meta if m["cond"] == "T"]
+    srcs = sorted({m["src"] for m in T})
+    by = {s: commands([m for m in T if m["src"] == s], "T") for s in srcs}
+    nsyn = commands(meta, "N")
+    report = {"sources": {}, "layers": {}}
+    for s in srcs:
+        ms = [m for m in T if m["src"] == s]
+        calls = [c for m in ms for c in m["calls"]]
+        report["sources"][s] = {"problems": len(ms), "calls": len(calls), "binary": sum(c["binary"] for c in calls),
+                                "commands": len(by[s])}
+    print(json.dumps(report["sources"]), flush=True)
+    layers = [int(x) for x in args.fit_layers.split(",")] if args.fit_layers else LAYERS
+    for L in layers:
+        li = LAYERS.index(L)
+        row = {}
+        for held in srcs:
+            if len(by[held]) < 10:
+                continue
+            a = [c for s in srcs if s != held for c in by[s]] + (nsyn if held != "synth" else [])
+            b = by[held]
+            r = {"heuristics": {k: v[0] / max(1, v[1]) for k, v in heuristics(b).items()}}
+            for name, order in (("content", False), ("content+order", True)):
+                r[name] = scored(a, b, H, li, order)
+            row[held] = r
+            print(L, held, json.dumps(r), flush=True)
+        tr, te = split(T)
+        a, b = commands(tr, "T") + nsyn, commands(te, "T")
+        mx = {name: scored(a, b, H, li, order) for name, order in (("content", False), ("content+order", True))}
+        mx["heuristics"] = {k: v[0] / max(1, v[1]) for k, v in heuristics(b).items()}
+        row["_mixed_split"] = mx
+        print(L, "mixed", json.dumps(mx), flush=True)
+        report["layers"][L] = row
+        (out / "refit-report.json").write_text(json.dumps(report, indent=1))
+    print("done", flush=True)
+
+
 def main() -> None:
     ap = argparse.ArgumentParser()
-    ap.add_argument("cmd", choices=("collect", "fit"))
+    ap.add_argument("cmd", choices=("collect", "fit", "refit"))
     ap.add_argument("out")
     ap.add_argument("--model", default="Qwen/Qwen3.5-4B")
     ap.add_argument("--n-synth", type=int, default=600)
@@ -444,8 +559,15 @@ def main() -> None:
     ap.add_argument("--n-bench", type=int, default=100)
     ap.add_argument("--n-gsm", type=int, default=150)
     ap.add_argument("--budget", type=int, default=768)
+    ap.add_argument("--n-svamp", type=int, default=0)
+    ap.add_argument("--layers", default="", help="collect: layers to save, e.g. 8,12,16,20")
+    ap.add_argument("--own-sample", type=float, default=1.0, help="collect: fraction of non-call positions kept")
+    ap.add_argument("--fit-layers", default="", help="refit: layers to fit (default: all saved)")
     args = ap.parse_args()
-    collect(args) if args.cmd == "collect" else fit(args)
+    global LAYERS
+    if args.layers:
+        LAYERS = [int(x) for x in args.layers.split(",")]
+    {"collect": collect, "fit": fit, "refit": refit}[args.cmd](args)
 
 
 if __name__ == "__main__":
