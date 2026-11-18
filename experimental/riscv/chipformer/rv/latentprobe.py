@@ -168,7 +168,10 @@ def collect(args) -> None:
         ims = tok.convert_tokens_to_ids("<|im_start|>")
         return max(i for i, t in enumerate(seq) if t == ims and tok.decode(seq[i + 1:i + 2]).strip() == "user")
 
-    meta, shard, k = [], [], 0
+    meta, shard, k = [], [], len(list(out.glob("h*.pt")))  # resume after the shards already saved
+    if (out / "meta.jsonl").exists():  # drop records whose shard was never written (killed mid-shard)
+        keep = [x for x in (out / "meta.jsonl").read_text().splitlines() if json.loads(x)["shard"] < k]
+        (out / "meta.jsonl").write_text("".join(x + "\n" for x in keep))
 
     def flush():
         nonlocal shard, k
@@ -180,6 +183,12 @@ def collect(args) -> None:
     jobs = [("T", p) for p in synth_t + bench] + [("N", p) for p in synth_n]
     done = {json.loads(x)["key"] for x in (out / "meta.jsonl").read_text().splitlines()} \
         if (out / "meta.jsonl").exists() else set()
+    if args.part:  # i/n: this process takes every n-th job
+        pi, pn = map(int, args.part.split("/"))
+        jobs = [j for ix, j in enumerate(jobs) if ix % pn == pi]
+    for d in filter(None, args.skip_from.split(",")):  # jobs another output dir already has
+        if (Path(d) / "meta.jsonl").exists():
+            done |= {json.loads(x)["key"] for x in (Path(d) / "meta.jsonl").read_text().splitlines()}
     mf = open(out / "meta.jsonl", "a")
     for n_job, (cond, p) in enumerate(jobs):
         key = f"{cond}:{p['id']}"
@@ -246,14 +255,17 @@ def collect(args) -> None:
 
 # ---- fit ----
 def load(out: Path):
+    """out: one collect directory, or several joined by commas (from collect --part)."""
     global LAYERS
-    if (out / "layers.json").exists():
-        LAYERS = json.loads((out / "layers.json").read_text())
-    meta = [json.loads(x) for x in (out / "meta.jsonl").read_text().splitlines()]
-    H = {}
-    for f in sorted(out.glob("h*.pt")):
-        for s in torch.load(f):
-            H[s["key"]] = s
+    dirs = [Path(d) for d in str(out).split(",")]
+    if (dirs[0] / "layers.json").exists():
+        LAYERS = json.loads((dirs[0] / "layers.json").read_text())
+    meta, H = [], {}
+    for d in dirs:
+        meta += [json.loads(x) for x in (d / "meta.jsonl").read_text().splitlines()]
+        for f in sorted(d.glob("h*.pt")):
+            for s in torch.load(f):
+                H[s["key"]] = s
     meta = [m for m in meta if m["key"] in H]
     return meta, H
 
@@ -547,8 +559,8 @@ def refit(args) -> None:
     Leave one source out: train the op and pointer probes on every other source (synthetic,
     benchmark and word problems mixed), test on the held-out one. Each fit runs twice: content only
     (Phase 0's pointer) and content plus a learned order bias (Order). Also a mixed random split."""
-    out = Path(args.out)
-    meta, H = load(out)
+    meta, H = load(args.out)
+    out = Path(args.out.split(",")[0])
     T = [m for m in meta if m["cond"] == "T"]
     srcs = sorted({m["src"] for m in T})
     by = {s: commands([m for m in T if m["src"] == s], "T") for s in srcs}
@@ -599,6 +611,8 @@ def main() -> None:
     ap.add_argument("--layers", default="", help="collect: layers to save, e.g. 8,12,16,20")
     ap.add_argument("--own-sample", type=float, default=1.0, help="collect: fraction of non-call positions kept")
     ap.add_argument("--fit-layers", default="", help="refit: layers to fit (default: all saved)")
+    ap.add_argument("--part", default="", help="collect: i/n, take every n-th job")
+    ap.add_argument("--skip-from", default="", help="collect: skip jobs these output dirs already have")
     ap.add_argument("--bs", type=int, default=1, help="refit: pointer minibatch size")
     args = ap.parse_args()
     global LAYERS, PTR_BS
