@@ -260,12 +260,16 @@ def load(out: Path):
     dirs = [Path(d) for d in str(out).split(",")]
     if (dirs[0] / "layers.json").exists():
         LAYERS = json.loads((dirs[0] / "layers.json").read_text())
-    meta, H = [], {}
+    meta, H, seen = [], {}, set()
     for d in dirs:
-        meta += [json.loads(x) for x in (d / "meta.jsonl").read_text().splitlines()]
+        for x in (d / "meta.jsonl").read_text().splitlines():  # a key twice (parallel hand-over): keep one
+            m = json.loads(x)
+            if m["key"] not in seen:
+                seen.add(m["key"])
+                meta.append(m)
         for f in sorted(d.glob("h*.pt")):
             for s in torch.load(f):
-                H[s["key"]] = s
+                H.setdefault(s["key"], s)  # first dir wins, as for meta
     meta = [m for m in meta if m["key"] in H]
     return meta, H
 
