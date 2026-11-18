@@ -34,6 +34,7 @@ import torch
 
 LAYERS = [4, 8, 12, 16, 20, 24, 28, 32]
 OPS = ["+", "-", "*", "/"]
+PTR_BS = 1  # refit --bs: pointer minibatch size (1 = Phase 0 per-command steps)
 NUM = re.compile(r"^[0-9]$")
 
 
@@ -331,7 +332,7 @@ def score(p, Q, K, cand, m, rank):
     return s + O(cand, m["n_prompt"]) if O is not None else s
 
 
-def pointer_fit(H, tr, te, li, rank=64, epochs=200, dev="cuda", order=False):
+def pointer_fit(H, tr, te, li, rank=64, epochs=200, dev="cuda", order=False, bs=1):
     """A bilinear pointer per slot: score(q, key) = (A q) . (B k) over the context's numbers
     (plus an Order bias with order=True)."""
     D = next(iter(H.values()))["h"].shape[-1]
@@ -356,14 +357,49 @@ def pointer_fit(H, tr, te, li, rank=64, epochs=200, dev="cuda", order=False):
             groups.append({"params": list(O.parameters()), "weight_decay": 0.0, "lr": 1e-2})
         opt = torch.optim.Adam(groups, lr=1e-3)
         p = (A, B, O)
-        for _ in range(epochs // 10):
-            random.shuffle(trb)
-            for Q, K, pos, cand, m in trb:
+        if bs <= 1:  # Phase 0: one command per step
+            for _ in range(epochs // 10):
+                random.shuffle(trb)
+                for Q, K, pos, cand, m in trb:
+                    opt.zero_grad()
+                    s = score(p, Q, K, cand, m, rank)
+                    loss = -torch.logsumexp(s[pos], 0) + torch.logsumexp(s, 0)
+                    loss.backward()
+                    opt.step()
+            res.append(p)
+            continue
+        # padded minibatches: same loss, about 100x faster
+        N, C = len(trb), max(len(b[3]) for b in trb)
+        Qp = torch.cat([b[0] for b in trb])
+        Kp = torch.zeros(N, C, D, dtype=torch.float16, device=dev)
+        mask = torch.zeros(N, C, dtype=torch.bool, device=dev)
+        tgt = torch.zeros(N, C, dtype=torch.bool, device=dev)
+        back = torch.zeros(N, C, dtype=torch.long, device=dev)
+        front = torch.zeros(N, C, dtype=torch.long, device=dev)
+        inp = torch.zeros(N, C, dtype=torch.long, device=dev)
+        for i, (Q, K, pos, cand, m) in enumerate(trb):
+            n = len(cand)
+            Kp[i, :n] = K.half()
+            mask[i, :n] = True
+            tgt[i, pos] = True
+            j = torch.arange(n, device=dev)
+            back[i, :n] = (n - 1 - j).clamp(max=Order.R - 1)
+            front[i, :n] = j.clamp(max=Order.R - 1)
+            inp[i, :n] = torch.tensor([int(c < m["n_prompt"]) for c in cand], device=dev)
+        del trb
+        for _ in range(epochs // 2):
+            perm = torch.randperm(N, device=dev)
+            for b0 in range(0, N, bs):
+                ix = perm[b0:b0 + bs]
+                s = (B(Kp[ix].float()) @ A(Qp[ix])[:, :, None])[..., 0] / rank ** 0.5
+                if O is not None:
+                    s = s + O.back[back[ix]] + O.front[front[ix]] + O.prompt[inp[ix]]
+                s = s.masked_fill(~mask[ix], -1e9)
+                loss = (torch.logsumexp(s, 1) - torch.logsumexp(s.masked_fill(~tgt[ix], -1e9), 1)).mean()
                 opt.zero_grad()
-                s = score(p, Q, K, cand, m, rank)
-                loss = -torch.logsumexp(s[pos], 0) + torch.logsumexp(s, 0)
                 loss.backward()
                 opt.step()
+        del Kp
         res.append(p)
     return res
 
@@ -500,7 +536,7 @@ def op_probe(H, a, b, li):
 def scored(a, b, H, li, order):
     """op accuracy, pointer accuracy, command accuracy (op and both pointers right) on b."""
     op_ok = op_probe(H, a, b, li)
-    pk = picks(H, b, li, pointer_fit(H, a, b, li, order=order))
+    pk = picks(H, b, li, pointer_fit(H, a, b, li, order=order, bs=PTR_BS))
     both = [(o, p) for o, p in zip(op_ok, pk) if p is not None]
     return {"op": sum(op_ok) / len(op_ok), "pointer": sum(p for _, p in both) / max(1, len(both)),
             "command": sum(o and p for o, p in both) / max(1, len(both)), "n": len(both)}
@@ -563,8 +599,10 @@ def main() -> None:
     ap.add_argument("--layers", default="", help="collect: layers to save, e.g. 8,12,16,20")
     ap.add_argument("--own-sample", type=float, default=1.0, help="collect: fraction of non-call positions kept")
     ap.add_argument("--fit-layers", default="", help="refit: layers to fit (default: all saved)")
+    ap.add_argument("--bs", type=int, default=1, help="refit: pointer minibatch size")
     args = ap.parse_args()
-    global LAYERS
+    global LAYERS, PTR_BS
+    PTR_BS = args.bs
     if args.layers:
         LAYERS = [int(x) for x in args.layers.split(",")]
     {"collect": collect, "fit": fit, "refit": refit}[args.cmd](args)
