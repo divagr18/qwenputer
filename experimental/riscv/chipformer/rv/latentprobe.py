@@ -993,9 +993,404 @@ def posfit(args) -> None:
     print("done", flush=True)
 
 
+# ---- Phase 0d: read the command at the answer, with no call ----
+DIRECT_SYS = "Answer with only the final number. Do not show any working."
+DIRECT_SUFFIX = "\n\nReply with only the final answer, as a single number."
+
+
+def anspos(args) -> None:
+    """Collect for Phase 0d. No tools. Two conditions per problem: D (direct: Qwen answers with only
+    the number) and C (Qwen works step by step in text, the evals' "Do every arithmetic step exactly"
+    prompt). Saves, per sequence: the token ids; at the position that predicts the first digit of
+    every number Qwen writes, the hidden states and the full-attention layers' attention over every
+    number token in the sequence. Labels (which numbers Qwen computes, from what) come at fit time
+    from Phase 0c's tool calls on the same problems."""
+    from transformers import AutoModelForImageTextToText, AutoTokenizer
+
+    from chipformer.q35 import evals as E
+    from chipformer.rv.chat import CALC_TOOL
+    from chipformer.rv.evalarith import NUDGE, NUDGE_NONE, run_base
+
+    out = Path(args.out)
+    out.mkdir(parents=True, exist_ok=True)
+    tok = AutoTokenizer.from_pretrained(args.model)
+    model = AutoModelForImageTextToText.from_pretrained(args.model, dtype=torch.bfloat16,
+                                                        attn_implementation="eager").to("cuda").eval()
+    tstr = lambda ids: [tok.decode([t]) for t in ids]  # noqa: E731
+    fl = full_attn_layers(model)
+    AL = sorted(fl)
+    (out / "layers.json").write_text(json.dumps(LAYERS))
+    (out / "attn_layers.json").write_text(json.dumps(AL))
+    cap = {}
+
+    def hook(L):
+        def f(mod, inp, outp):
+            if not cap.get("on"):
+                return
+            assert outp[1] is not None, "no attention weights (needs eager attention)"
+            wr = outp[1][0][:, cap["rows"]].float()  # [heads, rows, T]
+            cap[L] = (wr[:, :, cap["P"]].half().cpu(), wr[:, :, cap["P"]].sum(-1).half().cpu())
+        return f
+
+    for L, mod in fl.items():
+        mod.register_forward_hook(hook(L))
+    _, _, bench = data(args)
+    synth_t = synth(args.n_synth, 1)
+    _, states, user_start = helpers(tok, model, E, CALC_TOOL, NUDGE, NUDGE_NONE)
+
+    def prompt(q, cond):
+        sysm, suf = (DIRECT_SYS, DIRECT_SUFFIX) if cond == "D" else (NUDGE_NONE, E.SUFFIX)
+        ids = tok.apply_chat_template([{"role": "system", "content": sysm}, {"role": "user", "content": q + suf}],
+                                      add_generation_prompt=True, enable_thinking=False, tokenize=True)
+        return ids if isinstance(ids, list) else ids["input_ids"]
+
+    shard, k = [], resume(out)
+
+    def flush():
+        nonlocal shard, k
+        if shard:
+            torch.save(shard, out / f"h{k:03d}.pt")
+            k += 1
+            shard = []
+
+    probs = synth_t + bench
+    jobs = [(c, p) for p in probs for c in ("D", "C")]
+    random.Random(0).shuffle(jobs)  # parts get a mix of the short D and long C jobs
+    jobs, done = select(jobs, out, args)
+    mf = open(out / "meta.jsonl", "a")
+    for n_job, (cond, p) in enumerate(jobs):
+        key = f"{cond}:{p['id']}"
+        if key in done:
+            continue
+        ids = prompt(p["question"], cond)
+        model.set_attn_implementation("sdpa")  # decode fast; eager only for the attention pass
+        gen, _, _ = run_base(model, tok, ids, False, 48 if cond == "D" else args.budget)
+        model.set_attn_implementation("eager")
+        seq = ids + gen
+        toks = tstr(seq)
+        u0 = user_start(seq)
+        runs = [r for r in number_runs(toks) if r[0] > u0]
+        gi = [i for i, r in enumerate(runs) if r[0] >= len(ids)][:64]  # numbers Qwen wrote
+        rows = [runs[i][0] - 1 for i in gi]
+        P = sorted({t for r in runs for t in range(r[0], r[1] + 1)})
+        rec = {"key": key, "cond": cond, "src": p["src"], "id": p["id"], "n_prompt": len(ids), "len": len(seq),
+               "runs": runs, "gen_runs": gi, "rows": rows, "seq": seq,
+               "text": tok.decode(gen, skip_special_tokens=True),
+               "dig": [t for r in runs for t in range(r[0], r[1] + 1) if NUM.match(toks[t])]}
+        for g in ("gold", "answer"):
+            if g in p:
+                rec["gold"] = str(p[g])
+        cap.clear()
+        if rows:
+            cap.update(on=True, rows=rows, P=P)
+        ent = {"key": key, "pos": rows, "P": P}
+        ent["h"] = states(seq, rows) if rows else None
+        if rows:
+            ent["att"] = torch.stack([cap[L][0] for L in AL])  # [attn layers, heads, rows, P]
+            ent["pmass"] = torch.stack([cap[L][1] for L in AL])
+        cap.clear()
+        shard.append(ent)
+        rec["shard"] = k
+        mf.write(json.dumps(rec) + "\n")
+        mf.flush()
+        if len(shard) >= 64:
+            flush()
+        if n_job % 25 == 0:
+            print(n_job, len(jobs), key, len(seq), len(rows), flush=True)
+    flush()
+    print("done", flush=True)
+
+
+def num(s):
+    try:
+        return float(s)
+    except (TypeError, ValueError):
+        return None
+
+
+def same(v, R, vs):
+    """Qwen's written number (value v, string vs) equals the exact result R, up to v's decimals."""
+    if v is None or R is None:
+        return False
+    dec = len(vs.split(".")[1]) if "." in vs else 0
+    tol = 0.5 * 10 ** -dec if (dec or R != int(R)) else 0
+    return abs(v - R) <= max(1e-9 * abs(R), tol) + 1e-12
+
+
+def apply_op(op, a, b):
+    if a is None or b is None:
+        return None
+    return {"+": a + b, "-": a - b, "*": a * b, "/": a / b if b else None}[op]
+
+
+def tool_labels(dirs):
+    """Phase 0c meta: per problem id, its binary calls (op, a, b, exact result R)."""
+    lab = {}
+    for d in dirs.split(","):
+        for x in (Path(d) / "meta.jsonl").read_text().splitlines():
+            m = json.loads(x)
+            calls = []
+            for c in m["calls"]:
+                if c.get("binary") and c["op"] in OPS:
+                    a, b = num(c["operands"][0]), num(c["operands"][1])
+                    calls.append({"op": c["op"], "ops": c["operands"], "a": a, "b": b,
+                                  "R": apply_op(c["op"], a, b)})
+            lab.setdefault(m["id"], {"calls": calls, "n": len(m["calls"])})
+    return lab
+
+
+def ans_items(meta, H, lab, tok_text):
+    """Labelled rows. D: the first number Qwen writes, labelled with the problem's one tool call (problems
+    whose Phase 0c run made exactly one call, binary). C: every number Qwen writes that is not a copy
+    of an earlier number and equals the result of one of the problem's tool calls whose operands are
+    both earlier numbers; "written" when the operands and "=" are in the text right before it."""
+    items, trig = [], []
+    for m in meta:
+        s = H[m["key"]]
+        L = lab.get(m["id"])
+        if s.get("att") is None or L is None:
+            continue
+        A = s["att"].float()
+        nL, nH = A.shape[:2]
+        A = A.reshape(nL * nH, A.shape[2], A.shape[3])
+        Pix = {p: i for i, p in enumerate(s["P"])}
+        runs = m["runs"]
+        for j, gi in enumerate(m["gen_runs"]):
+            g = runs[gi]
+            before = [i for i, r in enumerate(runs) if r[1] < g[0]]
+            v = num(g[2])
+            copied = any(num(runs[i][2]) == v for i in before)
+            if m["cond"] == "C":
+                trig.append({"src": m["src"], "key": m["key"], "row": j, "y": int(not copied)})
+            cands = []
+            if m["cond"] == "D":
+                if j == 0 and L["n"] == 1 and len(L["calls"]) == 1:
+                    cands = L["calls"]
+            elif not copied:
+                cands = [c for c in L["calls"] if same(v, c["R"], g[2])]
+            for c in cands:
+                tg = [[x for x, i in enumerate(before) if num(runs[i][2]) == c[k]] for k in ("a", "b")]
+                if not tg[0] or not tg[1]:
+                    continue
+                cols = [[Pix[t] for t in range(runs[i][0], runs[i][1] + 1)] for i in before]
+                M = torch.stack([A[:, j, cl].sum(-1) for cl in cols], 1)  # [LH, runs before]
+                tail = re.sub(r"[,\s$]", "", tok_text(m["seq"][max(0, g[0] - 24):g[0]]))
+                written = tail.endswith("=") and c["ops"][0] in tail and c["ops"][1] in tail
+                items.append({"src": m["src"], "cond": m["cond"], "key": m["key"], "row": j, "op": c["op"],
+                              "tg": tg, "M": M, "written": written, "R": c["R"],
+                              "qwen_right": same(v, c["R"], g[2]), "start": [runs[i][0] for i in before]})
+                break
+    return items, trig
+
+
+def pair_ok(p0, p1, it, ordered=True):
+    if set(it["tg"][0]) == set(it["tg"][1]):  # a == b: one number, both slots
+        return p0 in it["tg"][0] and (p1 in it["tg"][0] or p1 == p0)
+    g = p0 in it["tg"][0] and p1 in it["tg"][1]
+    if it["op"] in "+*" or not ordered:
+        g = g or (p0 in it["tg"][1] and p1 in it["tg"][0])
+    return g
+
+
+def top2(sc):
+    if sc.numel() < 2:
+        return 0, 0
+    t = sc.topk(2).indices.tolist()
+    return t[0], t[1]
+
+
+def in_order(p, it):
+    """The pair in text order (the earlier number as the first operand)."""
+    a, b = p
+    return (a, b) if it["start"][a] <= it["start"][b] else (b, a)
+
+
+def ans_eval(tr, te, n_iter=400):
+    """Pointers from one query position: unordered pair = the two numbers with the most attention
+    (one head, a top-k sum, or one learned weight per head); ordered = that pair in text order, or one
+    learned weight vector per slot. Heads ranked on tr by unordered pair hits."""
+    LH = tr[0]["M"].shape[0]
+    hit = torch.zeros(LH)
+    for it in tr:
+        for h in range(LH):
+            hit[h] += pair_ok(*top2(it["M"][h]), it, ordered=False)
+    rank = hit.argsort(descending=True)
+    res = {"n": len(te), "train_top_heads": [[int(h), float(hit[h] / len(tr))] for h in rank[:6]]}
+    for kk in (1, 4, 16):
+        sel = rank[:kk]
+        pr = [top2(it["M"][sel].sum(0)) for it in te]
+        res[f"top{kk}_pair"] = sum(pair_ok(*p, it, False) for p, it in zip(pr, te)) / max(1, len(te))
+        res[f"top{kk}_ordered"] = sum(pair_ok(*in_order(p, it), it) for p, it in zip(pr, te)) / max(1, len(te))
+
+    def pad(items):
+        C = max(it["M"].shape[1] for it in items)
+        X = torch.zeros(len(items), LH, C)
+        mask = torch.zeros(len(items), C, dtype=torch.bool)
+        tg = [torch.zeros(len(items), C, dtype=torch.bool) for _ in range(2)]
+        for i, it in enumerate(items):
+            X[i, :, :it["M"].shape[1]] = it["M"]
+            mask[i, :it["M"].shape[1]] = True
+            for s in range(2):
+                tg[s][i, it["tg"][s]] = True
+        return X.cuda(), mask.cuda(), [t.cuda() for t in tg]
+
+    X, mask, tg = pad(tr)
+    Xt, mt, _ = pad(te)
+
+    def train(targets):
+        w = torch.zeros(LH, device="cuda", requires_grad=True)
+        opt = torch.optim.Adam([w], lr=0.05)
+        for _ in range(n_iter):
+            sc = (torch.einsum("h,nhc->nc", w, X) * 10).masked_fill(~mask, -1e9)
+            lz = torch.logsumexp(sc, 1)
+            loss = sum((lz - torch.logsumexp(sc.masked_fill(~t, -1e9), 1)).mean() for t in targets) \
+                + 1e-3 * w.abs().sum()
+            opt.zero_grad()
+            loss.backward()
+            opt.step()
+        with torch.no_grad():
+            return (torch.einsum("h,nhc->nc", w, Xt) * 10).masked_fill(~mt, -1e9)
+
+    both = train(tg)  # one weight vector, mass on both operands
+    pr = [top2(both[i, :it["M"].shape[1]]) for i, it in enumerate(te)]
+    res["learned_pair"] = sum(pair_ok(*p, it, False) for p, it in zip(pr, te)) / max(1, len(te))
+    res["learned_ordered_textorder"] = sum(pair_ok(*in_order(p, it), it) for p, it in zip(pr, te)) / max(1, len(te))
+    s0, s1 = train([tg[0]]), train([tg[1]])
+    ok = []
+    for i, it in enumerate(te):
+        c = it["M"].shape[1]
+        a, b = int(s0[i, :c].argmax()), int(s1[i, :c].argmax())
+        if a == b and c > 1:  # one number for both slots: the runner-up of the less sure slot
+            p0, p1 = s0[i, :c].softmax(0), s1[i, :c].softmax(0)
+            if p0[a] < p1[b]:
+                a = int(s0[i, :c].topk(2).indices[1])
+            else:
+                b = int(s1[i, :c].topk(2).indices[1])
+        ok.append(pair_ok(a, b, it))
+    res["learned_ordered_slots"] = sum(ok) / max(1, len(te))
+    res["_ok_ordered"] = ok
+    # order heuristics over the numbers before the row
+    for name, f in (("first-two", lambda c: (0, 1)), ("last-two", lambda c: (c - 2, c - 1))):
+        g = [pair_ok(*f(it["M"].shape[1]), it) for it in te if it["M"].shape[1] >= 2]
+        res[name] = sum(g) / max(1, len(g))
+    return res
+
+
+def auc(score, y):
+    pos = [s for s, t in zip(score, y) if t]
+    neg = [s for s, t in zip(score, y) if not t]
+    if not pos or not neg:
+        return None
+    p, n = torch.tensor(pos)[:, None], torch.tensor(neg)[None, :]
+    return float(((p > n).float() + 0.5 * (p == n).float()).mean())
+
+
+def ans_build(args):
+    """Labelled rows of anspos dirs, each with its hidden states [layers, D] attached (fp16); trigger
+    rows keep every computed number and a quarter of the copies."""
+    from transformers import AutoTokenizer
+
+    tok = AutoTokenizer.from_pretrained(args.model)
+    meta, H = load(args.out)
+    items, trig = ans_items(meta, H, tool_labels(args.labels), lambda ids: tok.decode(ids))
+    rng = random.Random(0)
+    trig = [t for t in trig if t["y"] or rng.random() < 0.25]
+    for x in items + trig:
+        x["h"] = H[x["key"]]["h"][:, x["row"]].half().clone()
+    d_rows = {}
+    for m in meta:
+        if m["cond"] == "D":
+            d_rows[m["src"]] = d_rows.get(m["src"], 0) + 1
+    return {"items": items, "trig": trig, "layers": LAYERS, "d_rows": d_rows}
+
+
+def anspack(args) -> None:
+    """Phase 0d: reduce this box's anspos dirs to the labelled rows (pack.pt in the first dir)."""
+    pk = ans_build(args)
+    torch.save(pk, Path(args.out.split(",")[0]) / "pack.pt")
+    print("packed", len(pk["items"]), len(pk["trig"]), flush=True)
+
+
+def ansfit(args) -> None:
+    """Phase 0d: pointers and op at the answer position, leave one source out, per condition (D direct,
+    C-bare: computed numbers in step-by-step text with no expression right before them, C-written).
+    args.out: anspos dirs, or pack.pt files (anspack), comma-separated."""
+    global LAYERS
+    if args.out.endswith(".pt"):
+        packs = [torch.load(f) for f in args.out.split(",")]
+        out = Path(args.out.split(",")[0]).parent
+    else:
+        packs = [ans_build(args)]
+        out = Path(args.out.split(",")[0])
+    LAYERS = packs[0]["layers"]
+    items = [x for pk in packs for x in pk["items"]]
+    trig = [x for pk in packs for x in pk["trig"]]
+    d_rows = {}
+    for pk in packs:
+        for k, v in pk["d_rows"].items():
+            d_rows[k] = d_rows.get(k, 0) + v
+    groups = {"D": [it for it in items if it["cond"] == "D"],
+              "C-bare": [it for it in items if it["cond"] == "C" and not it["written"]],
+              "C-written": [it for it in items if it["cond"] == "C" and it["written"]]}
+    report = {"counts": {g: {s: sum(it["src"] == s for it in v) for s in sorted({x["src"] for x in v})}
+                         for g, v in groups.items()},
+              "d_rows": d_rows,
+              "pointer": {}, "op": {}, "trigger": {}, "end_to_end": {}}
+    print(json.dumps(report["counts"]), flush=True)
+    LI = {L: i for i, L in enumerate(LAYERS)}
+
+    def hrow(it, li):
+        return it["h"][li].float()
+
+    for g, its in groups.items():
+        srcs = sorted({it["src"] for it in its})
+        report["pointer"][g], report["op"][g], report["end_to_end"][g] = {}, {}, {}
+        for held in srcs:
+            tr, te = [it for it in its if it["src"] != held], [it for it in its if it["src"] == held]
+            if len(te) < 10 or len(tr) < 20:
+                continue
+            r = ans_eval(tr, te)
+            ok = r.pop("_ok_ordered")
+            report["pointer"][g][held] = r
+            ops, best = {}, None
+            for L, li in LI.items():
+                Xa = torch.stack([hrow(it, li) for it in tr]).cuda()
+                Xb = torch.stack([hrow(it, li) for it in te]).cuda()
+                ya = torch.tensor([OPS.index(it["op"]) for it in tr]).cuda()
+                yb = torch.tensor([OPS.index(it["op"]) for it in te]).cuda()
+                o = (logistic(Xa, ya, Xb, 4).argmax(-1) == yb).tolist()
+                ops[L] = sum(o) / len(o)
+                if best is None or ops[L] > ops[best[0]]:
+                    best = (L, o)
+            report["op"][g][held] = ops
+            cmd = [a and b for a, b in zip(ok, best[1])]
+            report["end_to_end"][g][held] = {
+                "n": len(te), "qwen_writes_R": sum(it["qwen_right"] for it in te) / len(te),
+                "latent_command_right": sum(cmd) / len(te), "op_layer": best[0]}
+            print(g, held, json.dumps({"ptr": r, "op": ops, "e2e": report["end_to_end"][g][held]}), flush=True)
+            (out / "ansfit-report.json").write_text(json.dumps(report, indent=1))
+    # trigger: will the next number be computed (not a copy)? C rows, per layer, leave one source out
+    srcs = sorted({t["src"] for t in trig})
+    for L, li in LI.items():
+        row = {}
+        for held in srcs:
+            tr, te = [t for t in trig if t["src"] != held], [t for t in trig if t["src"] == held]
+            if len({t["y"] for t in te}) < 2:
+                continue
+            Xa = torch.stack([t["h"][li].float() for t in tr]).cuda()
+            Xb = torch.stack([t["h"][li].float() for t in te]).cuda()
+            ya = torch.tensor([t["y"] for t in tr]).cuda()
+            sc = logistic(Xa, ya, Xb, 2, balance=True).softmax(-1)[:, 1].tolist()
+            row[held] = {"auc": auc(sc, [t["y"] for t in te]), "n": len(te), "pos": sum(t["y"] for t in te)}
+        report["trigger"][L] = row
+        print("trigger", L, json.dumps(row), flush=True)
+        (out / "ansfit-report.json").write_text(json.dumps(report, indent=1))
+    print("done", flush=True)
+
+
 def main() -> None:
     ap = argparse.ArgumentParser()
-    ap.add_argument("cmd", choices=("collect", "fit", "refit", "argpos", "posfit"))
+    ap.add_argument("cmd", choices=("collect", "fit", "refit", "argpos", "posfit", "anspos", "anspack", "ansfit"))
     ap.add_argument("out")
     ap.add_argument("--model", default="Qwen/Qwen3.5-4B")
     ap.add_argument("--n-synth", type=int, default=600)
@@ -1010,12 +1405,13 @@ def main() -> None:
     ap.add_argument("--part", default="", help="collect: i/n, take every n-th job")
     ap.add_argument("--skip-from", default="", help="collect: skip jobs these output dirs already have")
     ap.add_argument("--bs", type=int, default=1, help="refit: pointer minibatch size")
+    ap.add_argument("--labels", default="", help="ansfit: Phase 0c argpos dirs for the tool-call labels")
     args = ap.parse_args()
     global LAYERS, PTR_BS
     PTR_BS = args.bs
     if args.layers:
         LAYERS = [int(x) for x in args.layers.split(",")]
-    {"collect": collect, "fit": fit, "refit": refit, "argpos": argpos, "posfit": posfit}[args.cmd](args)
+    {"collect": collect, "fit": fit, "refit": refit, "argpos": argpos, "posfit": posfit, "anspos": anspos, "anspack": anspack, "ansfit": ansfit}[args.cmd](args)
 
 
 if __name__ == "__main__":
