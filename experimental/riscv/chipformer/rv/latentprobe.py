@@ -110,6 +110,78 @@ def parse_call(expr: str) -> dict:
     return {"op": "multi", "operands": nums, "binary": False}
 
 
+def data(args):
+    """(synthetic T questions, synthetic N questions, benchmark and word problems)."""
+    from chipformer.q35 import arith_bench as AB
+    from chipformer.rv.evalarith import problems
+
+    synth_t = synth(args.n_synth, 1)
+    synth_n = synth(args.n_synth_n, 2)
+    bench = []
+    for d in ["dmx_mul_big", "dmx_div_big", "dmx_add_or_sub_big", "dmx_mul_div_multiple_longer"]:
+        bench += [{**p, "src": d} for p in AB.load(d, args.n_bench, 7)]
+    bench += [{**p, "src": "arith"} for p in problems("arith", args.n_bench, 7)]
+    try:
+        from datasets import load_dataset
+        g = load_dataset("openai/gsm8k", "main", split="test").shuffle(seed=7).select(range(args.n_gsm))
+        bench += [{"id": f"gsm-{i}", "src": "gsm8k", "question": r["question"]} for i, r in enumerate(g)]
+    except Exception as e:  # noqa: BLE001
+        print("gsm8k skipped:", e)
+    if args.n_svamp:
+        try:
+            from datasets import load_dataset
+            sv = load_dataset("ChilleD/SVAMP", split="test")
+            sv = sv.shuffle(seed=7).select(range(min(args.n_svamp, len(sv))))
+            bench += [{"id": f"svamp-{i}", "src": "svamp",
+                       "question": r.get("question_concat") or f"{r['Body']} {r['Question']}"} for i, r in enumerate(sv)]
+        except Exception as e:  # noqa: BLE001
+            print("svamp skipped:", e)
+    return synth_t, synth_n, bench
+
+
+def helpers(tok, model, E, CALC_TOOL, NUDGE, NUDGE_NONE):
+    def prompt(q, tool):
+        msgs = [{"role": "system", "content": NUDGE if tool else NUDGE_NONE},
+                {"role": "user", "content": q + E.SUFFIX}]
+        ids = tok.apply_chat_template(msgs, tools=[CALC_TOOL] if tool else None, add_generation_prompt=True,
+                                      enable_thinking=False, tokenize=True)
+        return ids if isinstance(ids, list) else ids["input_ids"]
+
+    @torch.no_grad()
+    def states(seq, pos):
+        hs = model(torch.tensor([seq], device="cuda"), output_hidden_states=True).hidden_states
+        idx = torch.tensor(pos, device="cuda")
+        return torch.stack([hs[L][0, idx] for L in LAYERS]).to(torch.float16).cpu()  # [L, P, D]
+
+    def user_start(seq):
+        # the last "<|im_start|>user" before the generation: candidates start there
+        ims = tok.convert_tokens_to_ids("<|im_start|>")
+        return max(i for i, t in enumerate(seq) if t == ims and tok.decode(seq[i + 1:i + 2]).strip() == "user")
+
+    return prompt, states, user_start
+
+
+def resume(out):
+    """Shards already saved; drops meta records whose shard was never written (killed mid-shard)."""
+    k = len(list(out.glob("h*.pt")))
+    if (out / "meta.jsonl").exists():
+        keep = [x for x in (out / "meta.jsonl").read_text().splitlines() if json.loads(x)["shard"] < k]
+        (out / "meta.jsonl").write_text("".join(x + "\n" for x in keep))
+    return k
+
+
+def select(jobs, out, args):
+    done = {json.loads(x)["key"] for x in (out / "meta.jsonl").read_text().splitlines()} \
+        if (out / "meta.jsonl").exists() else set()
+    if args.part:  # i/n: this process takes every n-th job
+        pi, pn = map(int, args.part.split("/"))
+        jobs = [j for ix, j in enumerate(jobs) if ix % pn == pi]
+    for d in filter(None, args.skip_from.split(",")):  # jobs another output dir already has
+        if (Path(d) / "meta.jsonl").exists():
+            done |= {json.loads(x)["key"] for x in (Path(d) / "meta.jsonl").read_text().splitlines()}
+    return jobs, done
+
+
 # ---- collect ----
 def collect(args) -> None:
     from transformers import AutoModelForImageTextToText, AutoTokenizer
@@ -342,6 +414,11 @@ def cands(m, q):
     return [r[1] for r in m["runs"] if r[1] < q + 1]
 
 
+def qs(q, slot):
+    """A command's query position for one operand slot: one position for both, or one per slot."""
+    return q[slot] if isinstance(q, (tuple, list)) else q
+
+
 def score(p, Q, K, cand, m, rank):
     A, B, O = p
     s = (A(Q) @ B(K).T)[0] / rank ** 0.5
@@ -356,6 +433,7 @@ def pointer_fit(H, tr, te, li, rank=64, epochs=200, dev="cuda", order=False, bs=
     for slot in range(2):
         def batch(items):
             for m, q, op, tg in items:
+                q = qs(q, slot)
                 cand = cands(m, q)
                 if not tg[slot] or not cand:
                     continue
@@ -436,13 +514,16 @@ def picks(H, items, li, ptr, dev="cuda", rank=64):
     out = []
     with torch.no_grad():
         for m, q, op, tg in items:
-            cand = cands(m, q)
+            cand = cands(m, qs(q, 0))
             if not cand or not tg[0] or not tg[1]:
                 out.append(None)
                 continue
-            Q = at(H, m, li, [q]).to(dev)
-            K = at(H, m, li, cand).to(dev)
-            pick = [int(score(p, Q, K, cand, m, rank).argmax()) for p in ptr]
+            pick = []
+            for slot, p in enumerate(ptr):
+                cand = cands(m, qs(q, slot))
+                Q = at(H, m, li, [qs(q, slot)]).to(dev)
+                K = at(H, m, li, cand).to(dev)
+                pick.append(int(score(p, Q, K, cand, m, rank).argmax()))
             good = pick[0] in tg[0] and pick[1] in tg[1]
             if op in "+*":
                 good = good or (pick[0] in tg[1] and pick[1] in tg[0])
@@ -459,7 +540,7 @@ def heuristics(items):
     """Order baselines: the first two numbers of the question; the last two numbers before q."""
     r = {"first-two": [0, 0], "last-two": [0, 0]}
     for m, q, op, tg in items:
-        cand = [i for i, run in enumerate(m["runs"]) if run[1] < q + 1]
+        cand = [i for i, run in enumerate(m["runs"]) if run[1] < qs(q, 0) + 1]
         if not tg[0] or not tg[1] or len(cand) < 2:
             continue
         for name, pick in (("first-two", cand[:2]), ("last-two", cand[-2:])):
@@ -542,8 +623,8 @@ def fit(args) -> None:
 
 
 def op_probe(H, a, b, li):
-    Xa = torch.cat([at(H, m, li, [q]) for m, q, _, _ in a]).cuda()
-    Xb = torch.cat([at(H, m, li, [q]) for m, q, _, _ in b]).cuda()
+    Xa = torch.cat([at(H, m, li, [qs(q, 0)]) for m, q, _, _ in a]).cuda()
+    Xb = torch.cat([at(H, m, li, [qs(q, 0)]) for m, q, _, _ in b]).cuda()
     ya = torch.tensor([OPS.index(o) for _, _, o, _ in a]).cuda()
     yb = torch.tensor([OPS.index(o) for _, _, o, _ in b]).cuda()
     return (logistic(Xa, ya, Xb, 4).argmax(-1) == yb).tolist()
@@ -601,9 +682,320 @@ def refit(args) -> None:
     print("done", flush=True)
 
 
+# ---- Phase 0c: read the operands where Qwen writes them ----
+def full_attn_layers(model):
+    """{layer index: self_attn module} of the language model's softmax-attention layers."""
+    out = {}
+    for name, mod in model.named_modules():
+        mm = re.search(r"language_model\.layers\.(\d+)\.self_attn$", name)
+        if mm:
+            out[int(mm[1])] = mod
+    return out
+
+
+def argpos(args) -> None:
+    """Collect for Phase 0c. Condition T only (Qwen writes its calls; the host answers). Saves, per
+    sequence: the token ids; hidden states at the position before each <tool_call> ("pre"), before
+    each operand's first digit ("q1", "q2", the positions that predict them) and at every number's
+    last digit (the pointer keys); and the full-attention layers' attention from every position that
+    predicts an operand digit, over every number token in the sequence (eager attention, hooked)."""
+    from transformers import AutoModelForImageTextToText, AutoTokenizer
+
+    from chipformer.q35 import evals as E
+    from chipformer.rv.chat import CALC_TOOL
+    from chipformer.rv.evalarith import NUDGE, NUDGE_NONE, run_base
+
+    out = Path(args.out)
+    out.mkdir(parents=True, exist_ok=True)
+    tok = AutoTokenizer.from_pretrained(args.model)
+    model = AutoModelForImageTextToText.from_pretrained(args.model, dtype=torch.bfloat16,
+                                                        attn_implementation="eager").to("cuda").eval()
+    TC, TCC = tok.convert_tokens_to_ids("<tool_call>"), tok.convert_tokens_to_ids("</tool_call>")
+    tstr = lambda ids: [tok.decode([t]) for t in ids]  # noqa: E731
+    fl = full_attn_layers(model)
+    AL = sorted(fl)
+    print("full-attention layers", AL, flush=True)
+    (out / "layers.json").write_text(json.dumps(LAYERS))
+    (out / "attn_layers.json").write_text(json.dumps(AL))
+    cap = {}
+
+    def hook(L):
+        def f(mod, inp, outp):
+            if not cap.get("on"):
+                return
+            w = outp[1]
+            assert w is not None, "no attention weights (needs eager attention)"
+            wr = w[0][:, cap["rows"]].float()  # [heads, rows, T]
+            mx, am = wr.max(-1)
+            wp = wr[:, :, cap["P"]]
+            cap[L] = (wp.half().cpu(), am.int().cpu(), mx.half().cpu(), wp.sum(-1).half().cpu())
+        return f
+
+    for L, mod in fl.items():
+        mod.register_forward_hook(hook(L))
+    _, _, bench = data(args)
+    synth_t = synth(args.n_synth, 1)
+    prompt, states, user_start = helpers(tok, model, E, CALC_TOOL, NUDGE, NUDGE_NONE)
+    shard, k = [], resume(out)
+
+    def flush():
+        nonlocal shard, k
+        if shard:
+            torch.save(shard, out / f"h{k:03d}.pt")
+            k += 1
+            shard = []
+
+    jobs, done = select([("T", p) for p in synth_t + bench], out, args)
+    mf = open(out / "meta.jsonl", "a")
+    for n_job, (cond, p) in enumerate(jobs):
+        key = f"{cond}:{p['id']}"
+        if key in done:
+            continue
+        ids = prompt(p["question"], True)
+        gen, n_calls, _ = run_base(model, tok, ids, True, args.budget)
+        seq = ids + gen
+        toks = tstr(seq)
+        u0 = user_start(seq)
+        runs = [r for r in number_runs(toks) if r[0] > u0]
+        rec = {"key": key, "cond": cond, "src": p["src"], "id": p["id"], "n_prompt": len(ids), "len": len(seq),
+               "runs": runs, "calls": [], "seq": seq, "n_calls": n_calls,
+               "dig": [t for r in runs for t in range(r[0], r[1] + 1) if NUM.match(toks[t])]}
+        text = tok.decode(seq[len(ids):], skip_special_tokens=False)
+        exprs = re.findall(r"<tool_call>.*?<parameter=expression>\s*(.*?)\s*</parameter>", text, re.S)
+        calls = [i for i in range(len(ids), len(seq)) if seq[i] == TC]
+        rows, qpos = [], []
+        for ci, pc in enumerate(calls):
+            c = parse_call(exprs[ci]) if ci < len(exprs) else {"op": "none", "operands": [], "binary": False}
+            end = next((i for i in range(pc, len(seq)) if seq[i] == TCC), len(seq))
+            c.update(pc=pc, pos=pc - 1, end=end, expr=exprs[ci] if ci < len(exprs) else "")
+            c["targets"] = [[ri for ri, r in enumerate(runs) if r[1] < pc and r[2] == o] for o in c["operands"]]
+            crun = [r for r in runs if pc < r[0] and r[1] < end]
+            qpos.append(pc - 1)
+            if c["binary"] and len(crun) >= 2 and [crun[0][2], crun[1][2]] == c["operands"]:
+                c["q1"], c["q2"] = crun[0][0] - 1, crun[1][0] - 1
+                qpos += [c["q1"], c["q2"]]
+                c["rows"] = []
+                for slot, r in enumerate(crun[:2]):
+                    digits = [t for t in range(r[0], r[1] + 1) if NUM.match(toks[t])]
+                    for kd, d in enumerate(digits):
+                        c["rows"].append([slot, kd, len(rows)])
+                        rows.append(d - 1)
+            rec["calls"].append(c)
+        pos = sorted(set(qpos) | {r[1] for r in runs})
+        rec["pos"] = pos
+        P = sorted({t for r in runs for t in range(r[0], r[1] + 1)})
+        cap.clear()
+        if rows:
+            cap.update(on=True, rows=rows, P=P)
+        h = states(seq, pos)
+        ent = {"key": key, "pos": pos, "h": h, "rows": rows, "P": P}
+        if rows:
+            ent["att"] = torch.stack([cap[L][0] for L in AL])  # [attn layers, heads, rows, P]
+            ent["amax"] = torch.stack([cap[L][1] for L in AL])  # argmax over the whole row
+            ent["mmax"] = torch.stack([cap[L][2] for L in AL])
+            ent["pmass"] = torch.stack([cap[L][3] for L in AL])  # mass on number tokens
+        cap.clear()
+        shard.append(ent)
+        rec["shard"] = k
+        mf.write(json.dumps(rec) + "\n")
+        mf.flush()
+        if len(shard) >= 64:
+            flush()
+        if n_job % 25 == 0:
+            print(n_job, len(jobs), key, len(seq), n_calls, len(rows), flush=True)
+    flush()
+    print("done", flush=True)
+
+
+def arg_items(T, where):
+    """Per source, binary commands with both operands located in the call, as (meta with the runs
+    before the call, query, op, targets). where: "pre" (one query, the position before <tool_call>) or
+    "arg" (one query per slot: the position before that operand's first digit)."""
+    by = {}
+    for m in T:
+        for c in m["calls"]:
+            if "q1" not in c or c["op"] not in OPS:
+                continue
+            mc = {**m, "runs": [r for r in m["runs"] if r[1] < c["pc"]]}
+            q = c["pos"] if where == "pre" else (c["q1"], c["q2"])
+            by.setdefault(m["src"], []).append((mc, q, c["op"], c["targets"], c))
+    return by
+
+
+def head_items(T, H):
+    """Per command: first-digit attention mass per candidate number [layers*heads, runs] for each slot,
+    and per continuation digit whether each head's argmax (over number tokens before the call) is the
+    matching digit of a target number."""
+    items = []
+    for m in T:
+        s = H[m["key"]]
+        if "att" not in s:
+            continue
+        A = s["att"].float()
+        nL, nH = A.shape[:2]
+        A = A.reshape(nL * nH, A.shape[2], A.shape[3])
+        Pix = {p: i for i, p in enumerate(s["P"])}
+        for c in m["calls"]:
+            if "rows" not in c or c["op"] not in OPS or not all(c["targets"]):
+                continue
+            before = [r for r in m["runs"] if r[1] < c["pc"]]
+            cols = [[Pix[t] for t in range(r[0], r[1] + 1)] for r in before]
+            allc = [x for cl in cols for x in cl]
+            it = {"src": m["src"], "op": c["op"], "tg": c["targets"], "M": [], "cont": [[], []]}
+            for slot, kd, g in c["rows"]:
+                a = A[:, g]  # [LH, P]
+                if kd == 0:
+                    it["M"].append(torch.stack([a[:, cl].sum(-1) for cl in cols], 1))  # [LH, runs]
+                else:
+                    am = a[:, allc].argmax(-1)
+                    want = set()
+                    for ri in c["targets"][slot]:
+                        r = m["runs"][ri]
+                        dg = [t for t in range(r[0], r[1] + 1) if t in m["digit"]]
+                        if kd < len(dg):
+                            want.add(Pix[dg[kd]])
+                    it["cont"][slot].append(torch.tensor([allc[int(i)] in want for i in am]))
+            if len(it["M"]) == 2:
+                items.append(it)
+    return items
+
+
+def head_eval(tr, te, n_iter=400):
+    """Training-free and lightly fit pointers from attention: the best single head and top-k sums
+    (heads ranked by first-digit hit rate on tr), and a learned weight per head (softmax over the
+    candidates, trained on tr). Pointer = both slots right (+ and * accept the swap)."""
+    def ok(picks, it):
+        g = picks[0] in it["tg"][0] and picks[1] in it["tg"][1]
+        if it["op"] in "+*":
+            g = g or (picks[0] in it["tg"][1] and picks[1] in it["tg"][0])
+        return g
+
+    LH = tr[0]["M"][0].shape[0]
+    hit = torch.zeros(LH)
+    n = 0
+    for it in tr:
+        for slot in range(2):
+            am = it["M"][slot].argmax(1)
+            hit += torch.tensor([int(a) in it["tg"][slot] for a in am], dtype=torch.float)
+            n += 1
+    rank = hit.argsort(descending=True)
+    res = {"train_hit_top": [[int(h), float(hit[h] / n)] for h in rank[:8]]}
+    for kk in (1, 4, 16):
+        sel = rank[:kk]
+        g = [ok([int(it["M"][s][sel].sum(0).argmax()) for s in range(2)], it) for it in te]
+        res[f"top{kk}"] = sum(g) / max(1, len(g))
+    # held-out first-digit hit rate of the train-best head, per slot
+    h0 = rank[0]
+    res["best_head_test_hit"] = sum(int(it["M"][s][h0].argmax()) in it["tg"][s] for it in te for s in range(2)) \
+        / max(1, 2 * len(te))
+    cont = [x[h0].item() for it in te for s in range(2) for x in it["cont"][s]]
+    res["best_head_test_cont_hit"] = sum(cont) / max(1, len(cont))
+    # learned per-head weights (one per slot)
+    def pad(items, slot):
+        C = max(it["M"][slot].shape[1] for it in items)
+        X = torch.zeros(len(items), LH, C)
+        mask = torch.zeros(len(items), C, dtype=torch.bool)
+        tgt = torch.zeros(len(items), C, dtype=torch.bool)
+        for i, it in enumerate(items):
+            c = it["M"][slot].shape[1]
+            X[i, :, :c] = it["M"][slot]
+            mask[i, :c] = True
+            tgt[i, it["tg"][slot]] = True
+        return X.cuda(), mask.cuda(), tgt.cuda()
+
+    probs = []
+    for slot in range(2):
+        X, mask, tgt = pad(tr, slot)
+        w = torch.zeros(LH, device="cuda", requires_grad=True)
+        b = torch.zeros(1, device="cuda", requires_grad=True)
+        opt = torch.optim.Adam([w, b], lr=0.05)
+        for _ in range(n_iter):
+            sc = (torch.einsum("h,nhc->nc", w, X) * 10).masked_fill(~mask, -1e9)
+            loss = (torch.logsumexp(sc, 1) - torch.logsumexp(sc.masked_fill(~tgt, -1e9), 1)).mean() + 1e-3 * w.abs().sum()
+            opt.zero_grad()
+            loss.backward()
+            opt.step()
+        with torch.no_grad():
+            def run(items):
+                Xt, mt, _ = pad(items, slot)
+                sc = (torch.einsum("h,nhc->nc", w, Xt) * 10).masked_fill(~mt, -1e9)
+                pr = sc.softmax(1)
+                return pr.argmax(1).tolist(), pr.max(1).values.tolist()
+            probs.append((run(tr), run(te)))
+    g_tr = [ok([probs[0][0][0][i], probs[1][0][0][i]], it) for i, it in enumerate(tr)]
+    conf_tr = [min(probs[0][0][1][i], probs[1][0][1][i]) for i in range(len(tr))]
+    g_te = [ok([probs[0][1][0][i], probs[1][1][0][i]], it) for i, it in enumerate(te)]
+    conf_te = [min(probs[0][1][1][i], probs[1][1][1][i]) for i in range(len(te))]
+    res["learned"] = sum(g_te) / max(1, len(g_te))
+    # abstain below a confidence threshold set on tr for 99% train accuracy
+    tau = 1.0
+    for t in sorted(set(conf_tr)):
+        acc = [g for g, c in zip(g_tr, conf_tr) if c >= t]
+        if acc and sum(acc) / len(acc) >= 0.99:
+            tau = t
+            break
+    acc = [g for g, c in zip(g_te, conf_te) if c >= tau]
+    res["abstain"] = {"tau": tau, "coverage": len(acc) / max(1, len(g_te)), "acc": sum(acc) / max(1, len(acc))}
+    res["n"] = len(te)
+    return res
+
+
+def posfit(args) -> None:
+    """Phase 0c: leave one source out, with the probes' query at the position before <tool_call> ("pre")
+    or at the position before each operand's first digit ("arg"); and pointers read from the
+    full-attention heads at the first digit (training-free top-k, and one learned weight per head)."""
+    meta, H = load(args.out)
+    out = Path(args.out.split(",")[0])
+    T = [m for m in meta if m["cond"] == "T"]
+    for m in T:
+        m["digit"] = set(m["dig"])
+    srcs = sorted({m["src"] for m in T})
+    report = {"sources": {}, "layers": {}, "heads": {}}
+    pre, arg = arg_items(T, "pre"), arg_items(T, "arg")
+    for s in srcs:
+        report["sources"][s] = {"commands": len(pre.get(s, [])),
+                                "with_targets": sum(all(x[3]) for x in pre.get(s, []))}
+    print(json.dumps(report["sources"]), flush=True)
+    # attention pointers
+    hi = head_items(T, H)
+    for held in srcs + ["_mixed_split"]:
+        if held == "_mixed_split":
+            ids = sorted({i for i in range(len(hi))})
+            random.Random(0).shuffle(ids)
+            cut = int(0.8 * len(ids))
+            tr, te = [hi[i] for i in ids[:cut]], [hi[i] for i in ids[cut:]]
+        else:
+            tr, te = [it for it in hi if it["src"] != held], [it for it in hi if it["src"] == held]
+        if len(te) < 10:
+            continue
+        r = head_eval(tr, te)
+        report["heads"][held] = r
+        print("heads", held, json.dumps(r), flush=True)
+        (out / "posfit-report.json").write_text(json.dumps(report, indent=1))
+    layers = [int(x) for x in args.fit_layers.split(",")] if args.fit_layers else LAYERS
+    strip = lambda xs: [x[:4] for x in xs]  # noqa: E731
+    for L in layers:
+        li = LAYERS.index(L)
+        row = {}
+        for held in srcs:
+            if len(pre.get(held, [])) < 10:
+                continue
+            r = {}
+            for where, by in (("pre", pre), ("arg", arg)):
+                a = strip([x for s in srcs if s != held for x in by.get(s, [])])
+                b = strip(by[held])
+                r[where] = scored(a, b, H, li, False)
+            r["heuristics"] = {k: v[0] / max(1, v[1]) for k, v in heuristics(strip(pre[held])).items()}
+            row[held] = r
+            print(L, held, json.dumps(r), flush=True)
+        report["layers"][L] = row
+        (out / "posfit-report.json").write_text(json.dumps(report, indent=1))
+    print("done", flush=True)
+
+
 def main() -> None:
     ap = argparse.ArgumentParser()
-    ap.add_argument("cmd", choices=("collect", "fit", "refit"))
+    ap.add_argument("cmd", choices=("collect", "fit", "refit", "argpos", "posfit"))
     ap.add_argument("out")
     ap.add_argument("--model", default="Qwen/Qwen3.5-4B")
     ap.add_argument("--n-synth", type=int, default=600)
@@ -623,7 +1015,7 @@ def main() -> None:
     PTR_BS = args.bs
     if args.layers:
         LAYERS = [int(x) for x in args.layers.split(",")]
-    {"collect": collect, "fit": fit, "refit": refit}[args.cmd](args)
+    {"collect": collect, "fit": fit, "refit": refit, "argpos": argpos, "posfit": posfit}[args.cmd](args)
 
 
 if __name__ == "__main__":
