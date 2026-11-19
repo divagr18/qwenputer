@@ -414,7 +414,7 @@ def cands(m, q):
     return [r[1] for r in m["runs"] if r[1] < q + 1]
 
 
-def qs(q, slot):
+def qslot(q, slot):
     """A command's query position for one operand slot: one position for both, or one per slot."""
     return q[slot] if isinstance(q, (tuple, list)) else q
 
@@ -433,7 +433,7 @@ def pointer_fit(H, tr, te, li, rank=64, epochs=200, dev="cuda", order=False, bs=
     for slot in range(2):
         def batch(items):
             for m, q, op, tg in items:
-                q = qs(q, slot)
+                q = qslot(q, slot)
                 cand = cands(m, q)
                 if not tg[slot] or not cand:
                     continue
@@ -514,14 +514,14 @@ def picks(H, items, li, ptr, dev="cuda", rank=64):
     out = []
     with torch.no_grad():
         for m, q, op, tg in items:
-            cand = cands(m, qs(q, 0))
+            cand = cands(m, qslot(q, 0))
             if not cand or not tg[0] or not tg[1]:
                 out.append(None)
                 continue
             pick = []
             for slot, p in enumerate(ptr):
-                cand = cands(m, qs(q, slot))
-                Q = at(H, m, li, [qs(q, slot)]).to(dev)
+                cand = cands(m, qslot(q, slot))
+                Q = at(H, m, li, [qslot(q, slot)]).to(dev)
                 K = at(H, m, li, cand).to(dev)
                 pick.append(int(score(p, Q, K, cand, m, rank).argmax()))
             good = pick[0] in tg[0] and pick[1] in tg[1]
@@ -540,7 +540,7 @@ def heuristics(items):
     """Order baselines: the first two numbers of the question; the last two numbers before q."""
     r = {"first-two": [0, 0], "last-two": [0, 0]}
     for m, q, op, tg in items:
-        cand = [i for i, run in enumerate(m["runs"]) if run[1] < qs(q, 0) + 1]
+        cand = [i for i, run in enumerate(m["runs"]) if run[1] < qslot(q, 0) + 1]
         if not tg[0] or not tg[1] or len(cand) < 2:
             continue
         for name, pick in (("first-two", cand[:2]), ("last-two", cand[-2:])):
@@ -623,8 +623,8 @@ def fit(args) -> None:
 
 
 def op_probe(H, a, b, li):
-    Xa = torch.cat([at(H, m, li, [qs(q, 0)]) for m, q, _, _ in a]).cuda()
-    Xb = torch.cat([at(H, m, li, [qs(q, 0)]) for m, q, _, _ in b]).cuda()
+    Xa = torch.cat([at(H, m, li, [qslot(q, 0)]) for m, q, _, _ in a]).cuda()
+    Xb = torch.cat([at(H, m, li, [qslot(q, 0)]) for m, q, _, _ in b]).cuda()
     ya = torch.tensor([OPS.index(o) for _, _, o, _ in a]).cuda()
     yb = torch.tensor([OPS.index(o) for _, _, o, _ in b]).cuda()
     return (logistic(Xa, ya, Xb, 4).argmax(-1) == yb).tolist()
